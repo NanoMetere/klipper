@@ -4,6 +4,13 @@
 //! Framing and CRC adapted from Klipper's klippy/msgproto.py.
 //! Upstream copyright (C) 2016-2024 Kevin O'Connor <kevin@koconnor.net>.
 
+#[cfg(feature = "identify")]
+pub mod identify;
+#[cfg(feature = "identify")]
+pub mod clock;
+#[cfg(feature = "identify")]
+mod vlq;
+
 pub const MIN_FRAME: usize = 5;
 pub const MAX_FRAME: usize = 64;
 pub const MAX_PAYLOAD: usize = MAX_FRAME - MIN_FRAME;

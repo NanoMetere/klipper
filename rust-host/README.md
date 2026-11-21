@@ -13,13 +13,44 @@ buffer. Tests use byte vectors from Klippy's Python implementation.
 cargo test
 ```
 
-Next: implement identify request/response handling and dictionary validation,
-then replay clock/status exchanges offline. Serial/CAN transport, scheduling,
+The bootstrap stage now decodes the compressed MCU dictionary and uses its
+message IDs for offline clock and uptime exchanges. Serial/CAN transport, scheduling,
 G-code, and the Klippy socket API for Moonraker are separate later milestones.
 Toolchanger and other plugin compatibility is not claimed by this initial port.
 
 The protocol implementation is based on Klipper's GPLv3 host code. See the
 repository's [COPYING](../COPYING).
+
+## Offline dictionary and clock replay
+
+Using a native Linux firmware dictionary built from upstream revision
+`c9559fa04ec6b11fb1a9a1610903546319fcf310`, the tests replay 105 request/reply
+pairs encoded by Klippy, including the terminating empty response. The
+dictionary contains 121 command formats and 26 response formats. Clock tests
+use IDs from that dictionary, including negative response IDs and unsigned
+values near rollover. Build timestamp/host and compiler metadata were
+normalized in the published fixture; no printer or live device was involved.
+
+The bootstrap requests 40-byte chunks and caps compressed and expanded
+dictionary sizes at 256 KiB and 2 MiB, respectively. Short, oversized, or
+misaligned chunks do not advance the exchange. Timeouts, retries, sequence
+tracking, receive-stream recovery, and clock synchronization are not part of
+this offline API yet. It does not interpret movement or heater commands.
+
+```sh
+cargo test --locked --all-targets
+cargo test --locked --no-default-features  # dependency-free frame codec
+python3 -c 'import sys; sys.stdout.buffer.write(b"".join(bytes.fromhex(l.split()[1]) for l in open("tests/fixtures/identify_wire.txt")))' \
+  | cargo run --locked --release --example identify_replay
+```
+
+To regenerate the fixture, build the pinned upstream tree with
+`CONFIG_MACH_LINUX=y` (run `make olddefconfig` and `make`), then:
+
+```sh
+python3 tests/fixtures/generate_identify.py UPSTREAM UPSTREAM/out/klipper.dict \
+  tests/fixtures/clock_wire.txt > tests/fixtures/identify_wire.txt
+```
 
 ## Frame validation microbenchmark
 
@@ -73,3 +104,8 @@ python3 bench/run.py --baseline /tmp/klipper-rust-baseline.rs
 Use `taskset -c <CPU>` to pin the benchmark. The current script reports
 the two native implementations and can optionally include a prior Rust source;
 the original Python measurement is retained above as historical context.
+
+After adding the offline bootstrap and clock codecs, a validation rerun
+measured the mixed profile at 18.02 ns/frame for the optimized Rust checker,
+36.45 for C and 43.32 for the original Rust implementation. The frame checker
+itself was not changed, and this rerun does not benchmark dictionary loading.

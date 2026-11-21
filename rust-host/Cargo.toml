@@ -5,4 +5,15 @@ edition = "2021"
 license = "GPL-3.0-only"
 publish = false
 
+[features]
+default = ["identify"]
+identify = ["dep:flate2", "dep:serde", "dep:serde_json"]
+
 [dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[[example]]
+name = "identify_replay"
+required-features = ["identify"]
