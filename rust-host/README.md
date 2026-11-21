@@ -41,3 +41,35 @@ device I/O, C resynchronization on invalid data, host scheduling, and motion.
 From this directory, run `python3 bench/run.py` with Python 3, a Rust
 compiler, and a Linux C toolchain. For the recorded upstream baseline, use
 checkout `c9559fa04ec6b11fb1a9a1610903546319fcf310` as the optional argument.
+
+### Optimized CRC comparison
+
+The production C receive check and both Rust versions were rerun on the same
+pinned x86-64 logical CPU. The median of nine rounds per profile (lower is
+better):
+
+| Valid-frame mix | Klippy C | First Rust version | Optimized Rust |
+| --- | ---: | ---: | ---: |
+| Short (5, 6, 8, 11 bytes) | 8.43 ns | 11.16 ns | 7.61 ns |
+| Mixed (5, 8, 11, 64 bytes) | 37.69 ns | 45.18 ns | 19.12 ns |
+| Long (32, 48, 63, 64 bytes) | 104.73 ns | 113.99 ns | 43.82 ns |
+
+The new CRC uses four compile-time tables (2 KiB) to consume four bytes at a
+time, then consumes up to three trailing bytes using the first table. It
+produces identical wire results for all 60 payload lengths and 16 sequence
+numbers across eight deterministic payload draws (7,680 frame cases), as
+well as the upstream vectors. The mixed median is 58% lower than the first
+Rust version and 49% lower than Klippy C. The short-frame results overlap in
+some individual runs. This remains a synthetic test, not an estimate of
+performance on a Raspberry Pi or a full printer.
+
+To rerun the three-way comparison, from `rust-host/`:
+
+```sh
+git show 3cebfed61eea618d676283d2c7d577ffd3a942d3:rust-host/src/lib.rs > /tmp/klipper-rust-baseline.rs
+python3 bench/run.py --baseline /tmp/klipper-rust-baseline.rs
+```
+
+Use `taskset -c <CPU>` to pin the benchmark. The current script reports
+the two native implementations and can optionally include a prior Rust source;
+the original Python measurement is retained above as historical context.

@@ -7,12 +7,13 @@ fn main() {
     assert_eq!(corpus.len(), 4 * 64);
     let frames: Vec<_> = corpus.chunks_exact(64).map(|s| &s[..s[0] as usize]).collect();
     let mut sum = 0;
+    let corpus_bytes: usize = frames.iter().map(|frame| frame.len()).sum();
     let iterations = 2_000_000;
     let start = Instant::now();
     for i in 0..iterations {
         sum += decode_prefix(black_box(frames[i & 3])).unwrap().unwrap().1;
     }
     let elapsed = start.elapsed();
-    assert_eq!(sum, iterations / 4 * (5 + 8 + 11 + 64));
+    assert_eq!(sum, iterations / 4 * corpus_bytes);
     println!("{:.3}", elapsed.as_nanos() as f64 / iterations as f64);
 }

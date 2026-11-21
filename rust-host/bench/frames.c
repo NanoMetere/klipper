@@ -13,6 +13,7 @@ int main(int argc, char **argv) {
     if (!file || fread(frames, 1, sizeof(frames), file) != sizeof(frames))
         return 1;
     fclose(file);
+    unsigned corpus_bytes = frames[0][0] + frames[1][0] + frames[2][0] + frames[3][0];
     uint8_t need_sync = 0;
     uint64_t sum = 0;
     const unsigned iterations = 2000000;
@@ -26,7 +27,7 @@ int main(int argc, char **argv) {
         sum += checked;
     }
     clock_gettime(CLOCK_MONOTONIC, &end);
-    if (need_sync || sum != iterations / 4 * (5 + 8 + 11 + 64))
+    if (need_sync || sum != iterations / 4 * corpus_bytes)
         return 1;
     double ns = (end.tv_sec - begin.tv_sec) * 1e9 + end.tv_nsec - begin.tv_nsec;
     printf("%.3f\n", ns / iterations);

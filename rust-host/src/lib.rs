@@ -26,12 +26,48 @@ pub enum FrameError {
     Checksum,
 }
 
+// Reflected CRC-16/CCITT polynomial used by Klipper (initial state 0xffff).
+const fn crc_tables<const N: usize>() -> [[u16; 256]; N] {
+    let mut tables = [[0u16; 256]; N];
+    let mut index = 0;
+    while index < 256 {
+        let mut v = index as u16;
+        let mut bit = 0;
+        while bit < 8 {
+            v = (v >> 1) ^ if v & 1 != 0 { 0x8408 } else { 0 };
+            bit += 1;
+        }
+        tables[0][index] = v;
+        index += 1;
+    }
+    let mut n = 1;
+    while n < N {
+        let mut index = 0;
+        while index < 256 {
+            let v = tables[n - 1][index];
+            tables[n][index] = (v >> 8) ^ tables[0][v as u8 as usize];
+            index += 1;
+        }
+        n += 1;
+    }
+    tables
+}
+
+static CRC_TABLES: [[u16; 256]; 4] = crc_tables();
+
 fn crc16(bytes: &[u8]) -> [u8; 2] {
     let mut crc = 0xffffu16;
-    for &byte in bytes {
-        let x = byte ^ crc as u8;
-        let x = u16::from(x ^ ((x & 0x0f) << 4));
-        crc = (x << 8 | crc >> 8) ^ (x >> 4) ^ (x << 3);
+    let blocks = bytes.chunks_exact(4);
+    let remaining = blocks.remainder();
+    for block in blocks {
+        let [a, b, c, d] = *block else { unreachable!("four-byte chunk") };
+        crc = CRC_TABLES[3][(a ^ crc as u8) as usize]
+            ^ CRC_TABLES[2][(b ^ (crc >> 8) as u8) as usize]
+            ^ CRC_TABLES[1][c as usize]
+            ^ CRC_TABLES[0][d as usize];
+    }
+    for &byte in remaining {
+        crc = (crc >> 8) ^ CRC_TABLES[0][(byte ^ crc as u8) as usize];
     }
     crc.to_be_bytes()
 }
@@ -92,6 +128,40 @@ mod tests {
                 sequence: *seq & SEQ_MASK,
                 payload,
             }, expected.len()))));
+        }
+    }
+
+    #[test]
+    fn crc_matches_scalar_for_every_wire_length() {
+        fn scalar(bytes: &[u8]) -> [u8; 2] {
+            let mut crc = 0xffffu16;
+            for &byte in bytes {
+                let x = byte ^ crc as u8;
+                let x = u16::from(x ^ ((x & 0x0f) << 4));
+                crc = ((x << 8) | (crc >> 8)) ^ (x >> 4) ^ (x << 3);
+            }
+            crc.to_be_bytes()
+        }
+
+        let mut prng = 0x4de8_c7a9u32;
+        for len in 0..=MAX_PAYLOAD {
+            for seq in 0..=SEQ_MASK {
+                for _ in 0..8 {
+                    let mut payload = vec![0; len];
+                    for byte in &mut payload {
+                        prng ^= prng << 13;
+                        prng ^= prng >> 17;
+                        prng ^= prng << 5;
+                        *byte = prng as u8;
+                    }
+                    let frame = encode(seq, &payload).unwrap();
+                    let offset = frame.len() - 3;
+                    assert_eq!(&frame[offset..offset + 2], &scalar(&frame[..offset]));
+                    let (decoded, size) = decode_prefix(&frame).unwrap().unwrap();
+                    assert_eq!((decoded.sequence, decoded.payload, size),
+                               (seq, payload.as_slice(), frame.len()));
+                }
+            }
         }
     }
 
