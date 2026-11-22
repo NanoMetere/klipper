@@ -243,3 +243,6 @@ mod tests {
 
     include!("wire_vectors.rs");
 }
+
+#[cfg(feature = "python-bridge")]
+mod python_bridge;

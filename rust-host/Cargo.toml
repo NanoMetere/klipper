@@ -5,10 +5,14 @@ edition = "2021"
 license = "GPL-3.0-only"
 publish = false
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [features]
 default = ["identify", "webhooks"]
 identify = ["dep:flate2", "dep:serde", "dep:serde_json"]
 webhooks = ["dep:serde_json"]
+python-bridge = []
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }

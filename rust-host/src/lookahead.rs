@@ -330,46 +330,94 @@ impl LookAhead {
 
     pub fn flush(&mut self, lazy: bool) -> Result<Vec<Profile>, Error> {
         self.budget = FLUSH_TIME;
-        let mut update_count = lazy;
-        let mut count = self.moves.len();
-        let mut info = vec![(0.0, None, 0.0); count];
-        let (mut next_start, mut next_mcr_start, mut peak) = (0.0, 0.0, 0.0);
-        let mut pending = 0;
-        for (i, m) in self.moves.iter().enumerate().rev() {
-            let reachable = next_start + m.dv2;
-            let start = m.max_start.min(reachable);
-            let reachable_mcr = next_mcr_start + m.dv2_min_cruise;
-            let mcr = m.max_min_cruise.min(reachable_mcr);
-            let mut cruise = None;
-            pending += 1;
-            if mcr < reachable_mcr {
-                if mcr + m.dv2_min_cruise > next_mcr_start || pending > 1 {
-                    if update_count && peak != 0.0 {
-                        count = i + pending;
-                        update_count = false;
-                    }
-                    peak = (mcr + reachable_mcr) * 0.5;
-                }
-                cruise = Some(((start + reachable) * 0.5).min(m.max_cruise).min(peak));
-                pending = 0;
-            }
-            info[i] = (start, cruise, next_start);
-            next_start = start;
-            next_mcr_start = mcr;
+        let planned = plan_junctions(self.moves.len(), lazy, |i| self.moves[i].limits());
+        let mut output = Vec::with_capacity(planned.len());
+        for (m, j) in self.moves.iter().zip(planned) {
+            output.push(m.profile(j.start, j.cruise, j.end)?);
         }
-        if update_count || count == 0 {
-            return Ok(Vec::new());
-        }
-        let mut output = Vec::with_capacity(count);
-        let mut prev_cruise: f64 = 0.0;
-        for (m, (start, cruise, next)) in self.moves.iter().zip(info).take(count) {
-            let cruise = cruise.unwrap_or_else(|| prev_cruise.min(start));
-            output.push(m.profile(start.min(cruise), cruise, next.min(cruise))?);
-            prev_cruise = cruise;
-        }
-        self.moves.drain(..count);
+        self.moves.drain(..output.len());
         Ok(output)
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct JunctionInput {
+    pub max_start: f64,
+    pub max_cruise: f64,
+    pub dv2: f64,
+    pub max_min_cruise: f64,
+    pub dv2_min_cruise: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct Junction {
+    pub start: f64,
+    pub cruise: f64,
+    pub end: f64,
+}
+
+impl Move {
+    fn limits(&self) -> JunctionInput {
+        JunctionInput {
+            max_start: self.max_start,
+            max_cruise: self.max_cruise,
+            dv2: self.dv2,
+            max_min_cruise: self.max_min_cruise,
+            dv2_min_cruise: self.dv2_min_cruise,
+        }
+    }
+}
+
+pub(crate) fn plan_junctions(
+    len: usize,
+    lazy: bool,
+    get: impl Fn(usize) -> JunctionInput,
+) -> Vec<Junction> {
+    let mut update_count = lazy;
+    let mut count = len;
+    let mut info = vec![(0.0, None, 0.0); count];
+    let (mut next_start, mut next_mcr_start, mut peak) = (0.0, 0.0, 0.0);
+    let mut pending = 0;
+    for i in (0..len).rev() {
+        let m = get(i);
+        let reachable = next_start + m.dv2;
+        let start = m.max_start.min(reachable);
+        let reachable_mcr = next_mcr_start + m.dv2_min_cruise;
+        let mcr = m.max_min_cruise.min(reachable_mcr);
+        let mut cruise = None;
+        pending += 1;
+        if mcr < reachable_mcr {
+            if mcr + m.dv2_min_cruise > next_mcr_start || pending > 1 {
+                if update_count && peak != 0.0 {
+                    count = i + pending;
+                    update_count = false;
+                }
+                peak = (mcr + reachable_mcr) * 0.5;
+            }
+            cruise = Some(((start + reachable) * 0.5).min(m.max_cruise).min(peak));
+            pending = 0;
+        }
+        info[i] = (start, cruise, next_start);
+        next_start = start;
+        next_mcr_start = mcr;
+    }
+    if update_count || count == 0 {
+        return Vec::new();
+    }
+    let mut output = Vec::with_capacity(count);
+    let mut prev_cruise: f64 = 0.0;
+    for (start, cruise, next) in info.into_iter().take(count) {
+        let cruise = cruise.unwrap_or_else(|| prev_cruise.min(start));
+        output.push(Junction {
+            start: start.min(cruise),
+            cruise,
+            end: next.min(cruise),
+        });
+        prev_cruise = cruise;
+    }
+    output
 }
 
 #[cfg(test)]

@@ -5,10 +5,12 @@ import argparse
 from contextlib import redirect_stdout
 from io import StringIO
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 
 KLIPPAIN = "77ea66b12d79aa08e919c24446525811e93a7c8b"
 TOOLCHANGER = "94756dfde9b729fd69f9b8780067821c5c99a528"
@@ -27,11 +29,43 @@ def pin(repo, expected):
         raise SystemExit(f"Unexpected pin for {repo.name}: {got}; expected {expected}")
 
 
+def check_motion_bridge(stock, dictionary, out, bridge):
+    from hybrid_klippy import compare_motor_traces
+    entry = Path(__file__).resolve().with_name("hybrid_klippy_entry.py")
+    klippy = stock/"klippy/klippy.py"
+    generated = (out/"test.gcode").read_text()
+    commands = ["SET_KINEMATIC_POSITION X=20 Y=20 Z=10", "G90"]
+    for n in range(80):
+        commands.append(f"G1 X{20+(n%13)*.15:.5f} Y{20+(n%11)*.2:.5f} Z10 F2400")
+    commands.append("M400")
+    script = out/"hybrid-motion.gcode"
+    script.write_text(generated+"\n"+"\n".join(commands)+"\n")
+    outputs = []
+    for engine in ("python", "rust"):
+        prep = [sys.executable, klippy] if engine == "python" else [sys.executable, entry, klippy, bridge]
+        path = out/(engine+"-motion.bin")
+        args = [out/"printer.cfg", "-i", script, "-o", path, "-d", dictionary,
+                "-d", f"tool0={dictionary}", "-d", f"tool1={dictionary}"]
+        run = subprocess.run([*prep, *args], cwd=stock, capture_output=True, text=True, timeout=60)
+        (out/(engine+"-motion.log")).write_text(run.stdout+run.stderr)
+        if run.returncode:
+            raise RuntimeError(f"{engine} fixture failed: {(run.stdout+run.stderr)[-2000:]}")
+        outputs.append(path.read_bytes())
+        if engine == "rust":
+            row = next(line for line in run.stdout.splitlines() if line.startswith("RUST_LOOKAHEAD_STATS "))
+            stats = json.loads(row.split(" ", 1)[1])
+            if stats["planned"] < 60 or stats["fallbacks"] != 0:
+                raise RuntimeError(f"unexpected motion bridge usage {stats}")
+    return compare_motor_traces(stock, dictionary, outputs)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for flag in ("klippain", "toolchanger", "led-effect", "old", "old-dictionary", "port", "port-dictionary"):
         p.add_argument(f"--{flag}", required=True, type=lambda s: Path(s).resolve())
     p.add_argument("--results", type=Path, help="empty output directory for generated stock logs")
+    p.add_argument("--bridge", type=lambda s: Path(s).resolve(),
+                   help="opt in to the Rust look-ahead kernel for the debug processes")
     a = p.parse_args()
     for worktree, commit in [(a.klippain, KLIPPAIN), (a.toolchanger, TOOLCHANGER),
                              (a.led_effect, LED_EFFECT), (a.old, OLD), (a.port, PORT)]:
@@ -48,6 +82,16 @@ def main():
     # Load only the known fixture script from the verified pinned worktree.
     sys.path.insert(0, str(a.klippain / "tests"))
     from run_toolchanger_klippy_smoke import run_case
+
+    if a.bridge:
+        entry = Path(__file__).resolve().with_name("hybrid_klippy_entry.py")
+        def run_hybrid(cmd, **kwargs):
+            if Path(cmd[1]).name != "klippy.py":
+                raise ValueError("unexpected debug runner")
+            return subprocess.run([cmd[0], str(entry), cmd[1], str(a.bridge), *cmd[2:]], **kwargs)
+        run_case.__globals__["subprocess"] = SimpleNamespace(
+            run=run_hybrid, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT,
+        )
 
     # Keep generated configs, debug command outputs and logs isolated.
     with tempfile.TemporaryDirectory(prefix="klippain-parity-") as temp:
@@ -79,6 +123,17 @@ def main():
                         unexpected += 1
                 else:
                     print(output.getvalue(), end="")
+                    if a.bridge:
+                        log = (out/"klippy.log").read_text()
+                        stats = next((line for line in log.splitlines() if line.startswith("RUST_LOOKAHEAD_STATS ")), "")
+                        if not stats:
+                            print(f"{name} {label}: no bridge diagnostic")
+                            unexpected += 1
+                        else:
+                            print(f"{name} {label}: {json.loads(stats.split(' ',1)[1])}")
+                    if a.bridge and name == "legacy" and label == "stealthchanger":
+                        count = check_motion_bridge(stock, dictionary, out, a.bridge)
+                        print(f"legacy {label}: {count} decoded motor commands matched with real plugins loaded")
                     if name != "legacy":
                         print(f"{name} {label}: unexpectedly passed; re-baseline the matrix")
                         unexpected += 1

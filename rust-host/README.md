@@ -664,6 +664,38 @@ original command bytes in order. Separate tests enforce pause/resume
 without replay, fault isolation, and read-only status differences. No
 device path, motor, external service or physical bus is opened.
 
+## Opt-in Python plugin compatibility bridge
+
+The optional `python-bridge` feature exposes the Rust junction solver to
+stock Klippy's Python `LookAheadQueue.flush`. Python keeps the actual move,
+kinematics and plugin objects and calls its original timing setters.
+This is a debug-only experiment; the normal host is unchanged and it
+must not be used on a printer.
+
+```sh
+cargo build --locked --release --features python-bridge
+python3 bench/python_lookahead.py /path/to/pinned/klipper target/release/libklipper_host_protocol.so
+python3 bench/hybrid_klippy.py /path/to/pinned/klipper /path/to/klipper.dict \
+  target/release/libklipper_host_protocol.so
+```
+
+25,836 Python move profiles and flush decisions matched exactly with
+and without the bridge. Running real stock Klippy in file debug mode
+planned 1,200 moves in Rust and produced 4,299 identical decoded motor
+commands by object ID; raw wire batching may differ. The three earlier
+Toolchanger/LED Effect smoke cases passed with the bridge loaded, and
+an extra virtual motion fixture after the actual legacy StealthChanger
+plugin setup matched 416 decoded motor commands with Rust active. The
+known probe incompatibility at the newer stock pin was unchanged.
+
+The bridge itself is **not faster on the mixed workload**: seven
+single-core rounds gave 4.063 µs/move stock Python and 4.234 µs with
+the bridge; large queues were effectively tied (4.296 vs 4.284 µs).
+Python attribute packing, the FFI boundary, and stock move object
+updates remain in the timed path. This result differs from the pure
+Rust look-ahead benchmark and does not justify running the bridge by
+default.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
