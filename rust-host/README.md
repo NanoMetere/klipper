@@ -403,7 +403,11 @@ in the dock frame, and restores only declared axes. It buffers inert motion
 and preserves physical extrusion across the logical-state restore. Across
 240 cases, including every restore-axis mask, 4,080 coordinate/feed
 observations matched the plugin's actual dock and restore methods using
-inert callbacks.
+inert callbacks. The optional scripted composition accepts explicit
+fixture lines for before/park/pickup/after, and releases the result only
+after pickup identity and coordinate restore are confirmed. A failing
+step discards the buffered profiles and leaves the selection faulted.
+It does not read or execute arbitrary config hooks.
 
 ```sh
 cargo build --locked --release --example toolchange_replay

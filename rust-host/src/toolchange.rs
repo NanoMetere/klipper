@@ -9,6 +9,9 @@ pub use catalog::{Catalog, Tool};
 #[path = "toolchange/coordinates.rs"]
 mod coordinates;
 pub use coordinates::Dock;
+#[path = "toolchange/program.rs"]
+mod program;
+pub use program::{ChangeRequest, Failure, Scripts};
 
 const MAX_TOOLS: usize = 64;
 

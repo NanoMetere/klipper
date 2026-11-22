@@ -17,12 +17,21 @@ pub struct Dock {
     restore: u8,
     outputs: Vec<Output>,
     lines_left: usize,
+    in_dock: bool,
 }
 
 impl Dock {
     /// Enter docking coordinates without moving the nominal toolhead.
     /// The caller must have installed the top tool translation already.
     pub fn enter(
+        preview: Preview,
+        owner: TransformOwner,
+        restore_axes: u8,
+    ) -> Result<Self, gcode::Error> {
+        Self::prepare(preview, owner, restore_axes)?.enter_coordinates()
+    }
+
+    pub(super) fn prepare(
         mut preview: Preview,
         owner: TransformOwner,
         restore_axes: u8,
@@ -33,9 +42,6 @@ impl Dock {
         let nozzle: [f64; 3] = preview.coords().gcode_position()[..3].try_into().unwrap();
         let barrier = preview.line("M400")?;
         preview.line(&format!("SAVE_GCODE_STATE NAME={SAVED}"))?;
-        preview.set_translation(owner, [0.0; 3])?;
-        preview.reset_last_position()?;
-        preview.line("SET_GCODE_OFFSET X=0.0 Y=0.0 Z=0.0")?;
         Ok(Self {
             preview,
             owner,
@@ -43,7 +49,20 @@ impl Dock {
             restore: restore_axes,
             outputs: vec![barrier],
             lines_left: 4096,
+            in_dock: false,
         })
+    }
+
+    pub(super) fn enter_coordinates(mut self) -> Result<Self, gcode::Error> {
+        if self.in_dock {
+            return Err(gcode::Error::InvalidSession);
+        }
+        self.outputs.push(self.preview.line("M400")?);
+        self.preview.set_translation(self.owner, [0.0; 3])?;
+        self.preview.reset_last_position()?;
+        self.preview.line("SET_GCODE_OFFSET X=0.0 Y=0.0 Z=0.0")?;
+        self.in_dock = true;
+        Ok(self)
     }
 
     /// Preview caller-supplied synthetic docking lines. This consumes the
@@ -69,6 +88,9 @@ impl Dock {
     /// Physical E is preserved, and its logical extrusion base is restored
     /// by the stock-compatible SAVE/RESTORE state engine.
     pub fn finish(mut self, new_offset: [f64; 3]) -> Result<(Preview, Vec<Output>), gcode::Error> {
+        if !self.in_dock {
+            return Err(gcode::Error::InvalidSession);
+        }
         self.outputs.push(self.preview.line("M400")?);
         self.preview.set_translation(self.owner, new_offset)?;
         self.preview.reset_last_position()?;
