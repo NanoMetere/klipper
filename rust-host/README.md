@@ -525,7 +525,10 @@ clock checkpoints. The XYZ macro path runs 138 commands with end counts
 retraction and extrusion runs 277 commands with end counts
 `[720, -120, 112, 100]`. Cold extrusion is rejected during virtual
 preflight. No physical pins, pulses, motors or physical timing are tested
-in this deterministic fixture.
+in this deterministic fixture. The sparse three-extruder mode sends 372
+commands in 50 frames and matches the six firmware position counters
+(`[4080, 400, 40, 100, 155, 50]`) at 17 checkpoints. It refuses a normal
+Linux MCU dictionary before any configuration or motion command.
 
 The same four-lane motion payloads can be packed into 38 firmware frames
 instead of 277 single-command frames without reordering them. In 30

@@ -10,7 +10,7 @@ const SETUP: &str =
 const RESET: &str = "reset_step_clock oid=%c clock=%u";
 const GET: &str = "stepper_get_position oid=%c";
 const POSITION: &str = "stepper_position oid=%c pos=%i";
-const MAX_FIXTURE_OID: u8 = 4;
+const MAX_FIXTURE_OID: u8 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -70,9 +70,9 @@ impl Codec {
         })
     }
 
-    /// Three to five fixture objects using only the inert sim0..sim9 pins.
+    /// Three to six fixture objects using only the inert sim0..sim11 pins.
     pub fn setup(&self, count: u8, pulse_ticks: u32) -> Result<(u32, Vec<Vec<u8>>), Error> {
-        if !(3..=5).contains(&count) || !(1..=10_000).contains(&pulse_ticks) {
+        if !(3..=MAX_FIXTURE_OID + 1).contains(&count) || !(1..=10_000).contains(&pulse_ticks) {
             return Err(Error::Invalid);
         }
         let count = u32::from(count);

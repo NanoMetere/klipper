@@ -453,8 +453,12 @@ mod linux {
         let trace = arg == "--clock-trace";
         let pipe = arg == "--pipeline";
         let trigger = arg == "--trigger-fixture";
-        let gpio_multitool = arg == "--gpio-multitool";
-        let gpio_batched = arg == "--gpio-batched" || gpio_multitool;
+        let gpio_multitool = match arg.as_str() {
+            "--gpio-multitool" => 2,
+            "--gpio-sparse" => 3,
+            _ => 0,
+        };
+        let gpio_batched = arg == "--gpio-batched" || gpio_multitool != 0;
         let gpio_extrusion = arg == "--gpio-extrusion" || gpio_batched;
         let gpio_fixture = arg == "--gpio-motion" || gpio_extrusion;
         let config_fixture = arg == "--config-fixture" || trigger || gpio_fixture;

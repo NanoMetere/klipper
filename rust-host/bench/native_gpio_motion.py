@@ -68,9 +68,18 @@ def main():
     upstream, binary = a.upstream.resolve(), a.binary.resolve()
     control = run(binary, upstream/"out/klipper.elf")
     assert control.returncode and "NotFixture" in control.stderr, control.stderr
+    sparse_control = run(binary, upstream/"out/klipper.elf", "--gpio-sparse")
+    assert sparse_control.returncode and "NotFixture" in sparse_control.stderr, sparse_control.stderr
     with tempfile.TemporaryDirectory(prefix="klipper-gpio-stub-") as folder:
         mcu = build(upstream, Path(folder))
-        modes = ["--gpio-motion", "--gpio-extrusion", "--gpio-batched", "--gpio-multitool"]
+        expected_positions = {
+            "--gpio-motion": [720, -120, 112],
+            "--gpio-extrusion": [720, -120, 112, 100],
+            "--gpio-batched": [720, -120, 112, 100],
+            "--gpio-multitool": [3920, -80, 40, 150, 175],
+            "--gpio-sparse": [4080, 400, 40, 100, 155, 50],
+        }
+        modes = list(expected_positions)
         series = {mode: [] for mode in modes}
         summaries = {}
         for round_number in range(a.rounds):
@@ -82,9 +91,7 @@ def main():
                 assert len(lines) == 2, lines
                 tag, crc, payloads, *positions = lines[0].split()
                 enqueue_tag, frames, elapsed = lines[1].split()
-                expected = ([720, -120, 112] if mode == modes[0]
-                            else [3920, -80, 40, 150, 175] if mode == modes[3]
-                            else [720, -120, 112, 100])
+                expected = expected_positions[mode]
                 assert tag == "GPIO_FIXTURE" and int(crc) != 0
                 assert int(payloads) > 0 and [int(p) for p in positions] == expected, outcome.stderr
                 assert enqueue_tag == "ENQUEUE" and 0 < int(frames) <= int(payloads) and int(elapsed) > 0

@@ -59,7 +59,7 @@ pub(super) fn run(
     dictionary: &Dictionary,
     extrusion: bool,
     batch: bool,
-    multitool: bool,
+    multitool: usize,
 ) -> Result<(), String> {
     // Fail before any configuration or motion command to an unmarked peer.
     let motion = Codec::from_dictionary(dictionary).map_err(err)?;
@@ -125,14 +125,14 @@ pub(super) fn run(
     })
     .map_err(err)?;
     let advance = Advance::new(0.04, &[(0.0, 0.04)]).map_err(err)?;
-    let count = if multitool {
-        5
+    let count = if multitool > 0 {
+        3 + multitool
     } else if extrusion {
         4
     } else {
         3
     };
-    let oids = [0, 1, 2, 3, 4];
+    let oids = [0, 1, 2, 3, 4, 5];
     let make_ex = || SimulatedExtruder {
         geometry: &geometry,
         temperature: 210.,
@@ -140,19 +140,25 @@ pub(super) fn run(
         inverse_direction: false,
         pressure_advance: Some(&advance),
     };
-    let mut simulation = if multitool {
+    let mut simulation = if multitool > 0 {
+        let sparse = multitool == 3;
+        let ids = if sparse { [0, 2, 6, 2] } else { [0, 1, 0, 1] };
         let pieces = [
             ToolSegment {
                 tool: 0,
                 gcode: include_str!("../preview/multitool-a.gcode"),
             },
             ToolSegment {
-                tool: 1,
+                tool: ids[1],
                 gcode: include_str!("../preview/multitool-b.gcode"),
             },
             ToolSegment {
-                tool: 0,
+                tool: ids[2],
                 gcode: include_str!("../preview/multitool-c.gcode"),
+            },
+            ToolSegment {
+                tool: ids[3],
+                gcode: include_str!("../preview/multitool-d.gcode"),
             },
         ];
         let lanes = [
@@ -162,8 +168,13 @@ pub(super) fn run(
                 extruder: make_ex(),
             },
             ToolLane {
-                id: 1,
+                id: ids[1],
                 parked_e: 1.3,
+                extruder: make_ex(),
+            },
+            ToolLane {
+                id: 6,
+                parked_e: 2.1,
                 extruder: make_ex(),
             },
         ];
@@ -173,7 +184,15 @@ pub(super) fn run(
             hz,
         };
         let trace = machine
-            .trace_tool_segments(&home, &pieces, &lanes, 2.0, clock, 20, [false; 3])
+            .trace_tool_segments(
+                &home,
+                &pieces[..multitool + 1],
+                &lanes[..multitool],
+                2.0,
+                clock,
+                20,
+                [false; 3],
+            )
             .map_err(err)?;
         let traces: Vec<_> = trace
             .motors
@@ -277,7 +296,7 @@ pub(super) fn run(
     }
     let enqueue_ns = enqueue.elapsed().as_nanos();
 
-    let mut positions = [0; 5];
+    let mut positions = [0; 6];
     let lead = (hz * 2.0) as u64;
     if planned.planned_end < lead {
         return Err("fixture planned end is before motion lead".into());
