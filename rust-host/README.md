@@ -1148,6 +1148,12 @@ the next move crosses the threshold. Signed final positions match
 stock C for 73 synthetic phase sequences each with and without static
 input shaping. This does not reproduce absolute stock clocks across
 the virtual heater wait, or allow a real MCU to be reset mid-print.
+The inert mixed-job runner then holds each compiled motion phase in a
+distinct queue and generation. A later phase cannot emit even a
+zero-release-tick command until its heater wait receives acceptable
+simulated evidence. Tests cover stale and wrong sources, multiple
+waits, large host-clock jumps, cancellation, and simulated shutdown.
+
 
 
 

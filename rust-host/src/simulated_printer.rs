@@ -16,6 +16,8 @@ use crate::{
 };
 use std::{borrow::Cow, collections::VecDeque};
 
+pub mod mixed;
+
 const NO_EXTRUDER: Extrusion = Extrusion {
     position: 0.0,
     factor: 1.0,

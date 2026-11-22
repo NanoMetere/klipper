@@ -1197,3 +1197,157 @@ fn mixed_steps_keep_the_motor_grid_across_separate_heater_clocks() {
     assert!(matches!(second.motors[1][0], Command::SetDirection(false)));
     assert_eq!(bank.targets(), [0.]);
 }
+
+#[test]
+fn phase_queue_never_releases_the_next_jobs_zero_tick_behind_a_heater_wait() {
+    use klipper_host_protocol::{
+        machine_preview::mixed::Input,
+        simulated_printer::mixed::{Program, State as ProgramState},
+        thermal::commands::{Bank, Gate, Observation, Profile, Role, Source},
+    };
+    let machine = Machine::from_config(&source()).unwrap();
+    let pos = [1., 1., 0.2];
+    let mut home = machine.virtual_homing(pos).unwrap();
+    for (axis, coordinate) in pos.into_iter().enumerate() {
+        let arm = home.arm(axis as u8, coordinate, true).unwrap();
+        let hit = Some(Counter {
+            start: 10,
+            trigger: 9,
+            halt: 9,
+        });
+        home.complete(
+            arm,
+            if axis < 2 {
+                [hit, hit, None]
+            } else {
+                [None, None, hit]
+            },
+            true,
+        )
+        .unwrap();
+    }
+    let profiles = [
+        Profile {
+            name: "extruder",
+            role: Role::Extruder(0),
+            minimum: 0.,
+            maximum: 300.,
+        },
+        Profile {
+            name: "heater_bed",
+            role: Role::Bed,
+            minimum: 0.,
+            maximum: 140.,
+        },
+    ];
+    let bank = Bank::new(&profiles, &[], Some(0), false).unwrap();
+    let text = "M109 S210\nG90\nG1 X4 F800\nM190 S60\nG1 Y5 F800\nTURN_OFF_HEATERS\n";
+    let hz = 20e6;
+    let tick = |s: f64| (hz * s) as u64;
+    let create = || {
+        let trace = machine
+            .trace_mixed(
+                &home,
+                &bank,
+                Input {
+                    script: text,
+                    extruder: None,
+                    hz,
+                    max_error: 20,
+                    invert: [false; 3],
+                },
+            )
+            .unwrap();
+        Program::new(trace, &codec(), &[2, 3, 4], bank.targets(), 0.5).unwrap()
+    };
+    let reading = |source, sampled_at, temperature| Observation {
+        source,
+        sampled_at,
+        temperature,
+        controller_busy: false,
+    };
+    let mut program = create();
+    program.start(0).unwrap();
+    assert_eq!(program.line(), Some(1));
+    assert_eq!(program.state(), ProgramState::Waiting);
+    assert_eq!(program.targets(), [210., 0.]);
+    assert!(program.advance(tick(40.), 256).unwrap().is_empty());
+    assert_eq!(
+        program
+            .temperature(
+                tick(40.),
+                Some(reading(Source::Heater(0), 38., 210.)),
+                false
+            )
+            .unwrap(),
+        Gate::Pending
+    );
+    assert_eq!(
+        program
+            .temperature(
+                tick(41.),
+                Some(reading(Source::Heater(0), 41., 210.)),
+                false
+            )
+            .unwrap(),
+        Gate::Ready
+    );
+    let mut first_generation = None;
+    for _ in 0..8 {
+        for item in program.advance(tick(50.), 64).unwrap() {
+            assert_eq!(
+                *first_generation.get_or_insert(item.generation),
+                item.generation
+            );
+        }
+    }
+    let first_generation = first_generation.unwrap();
+    assert_eq!(program.line(), Some(4));
+    assert_eq!(program.state(), ProgramState::Waiting);
+    assert_eq!(program.targets(), [210., 60.]);
+    // Look-ahead in the second move queue would have required_tick == 0
+    // for its initial direction. Keeping it as an inactive job suppresses
+    // it even if the caller jumps well beyond the whole first plan.
+    assert!(program.advance(tick(500.), 256).unwrap().is_empty());
+    assert!(program
+        .temperature(
+            tick(500.),
+            Some(reading(Source::Heater(0), 500., 65.)),
+            false
+        )
+        .is_err());
+    assert_eq!(
+        program
+            .temperature(
+                tick(500.),
+                Some(reading(Source::Heater(1), 500., 60.)),
+                false
+            )
+            .unwrap(),
+        Gate::Ready
+    );
+    let second = program.advance(tick(500.), 64).unwrap();
+    assert!(!second.is_empty());
+    assert!(second
+        .iter()
+        .all(|p| p.generation > first_generation && p.command.required_tick == 0));
+    for _ in 0..8 {
+        program.advance(tick(510.), 256).unwrap();
+    }
+    assert_eq!(program.state(), ProgramState::Finished);
+    assert_eq!(program.targets(), [0., 0.]);
+
+    let mut cancelled = create();
+    cancelled.start(0).unwrap();
+    cancelled.cancel().unwrap();
+    assert!(cancelled.advance(tick(600.), 256).unwrap().is_empty());
+    assert_eq!(cancelled.state(), ProgramState::Cancelled);
+    let mut faulted = create();
+    faulted.start(0).unwrap();
+    assert_eq!(
+        faulted.temperature(tick(3.), None, true).unwrap(),
+        Gate::Shutdown
+    );
+    assert!(faulted.advance(tick(600.), 256).unwrap().is_empty());
+    assert_eq!(faulted.state(), ProgramState::Faulted);
+}
