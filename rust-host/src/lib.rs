@@ -41,6 +41,7 @@ pub mod retry_timing;
 pub mod timed_flight;
 pub mod virtual_can;
 pub mod virtual_sd;
+pub mod print_stats;
 #[cfg(feature = "identify")]
 pub mod step_wire;
 #[cfg(feature = "identify")]

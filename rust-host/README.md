@@ -379,6 +379,24 @@ tests additionally cover absent literals, empty wildcard matches, escaped
 paths and cycles. This is read-only parsing parity for the fixture, not
 validation that all configured hardware/modules are supported.
 
+## Offline print statistics
+
+`print_stats::Stats` mirrors stock duration and filament accounting using
+explicit virtual clocks and extrusion observations. It models pauses,
+extruder changes, layer metadata and terminal status, rejecting
+non-finite readings and backwards observations. The resulting status can
+be fed into the read-only WebHooks model. It does not sense filament,
+manage hardware, or treat simulation time as elapsed physical print time.
+
+```sh
+cargo build --locked --release --examples
+python3 bench/print_stats.py /path/to/pinned/klipper
+```
+
+The comparator matched 12,480 snapshots from stock Klippy across 260
+simulated jobs, including flow changes, no extrusion, tool changes,
+layer updates, completions, cancellations and faults.
+
 ## Virtual SD checkpoints
 
 The offline `virtual_sd::Job` issues immutable LF-delimited lines, tracks
