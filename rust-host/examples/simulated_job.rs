@@ -10,6 +10,7 @@ use klipper_host_protocol::{
     simulated_printer::{Input, Simulation},
     step_wire::StepMessages,
     virtual_job::State,
+    virtual_stepper::Stepper,
 };
 use serde_json::json;
 use std::{collections::BTreeMap, env, fs};
@@ -78,6 +79,7 @@ fn run() -> Result<(), String> {
     )
     .map_err(|e| format!("{e:?}"))?;
     let mut lanes = [0; 3];
+    let mut steppers = [3, 4, 5].map(|oid| Stepper::new(oid, 0, 0));
     simulation.start(0).map_err(|e| format!("{e:?}"))?;
     let target = simulation.snapshot().planned_end;
     for _ in 0..1000 {
@@ -86,6 +88,9 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("{e:?}"))?;
         for item in emitted {
             lanes[item.lane] += 1;
+            steppers[item.lane]
+                .accept_payload(&codec, &item.command.bytes)
+                .map_err(|e| format!("{e:?}"))?;
         }
         if simulation.snapshot().state == State::Finished {
             break;
@@ -95,12 +100,21 @@ fn run() -> Result<(), String> {
     if end.state != State::Finished {
         return Err("simulation did not finish".into());
     }
+    let mut displacement = [0; 3];
+    for (slot, stepper) in displacement.iter_mut().zip(&mut steppers) {
+        let end = stepper.advance(target).map_err(|e| format!("{e:?}"))?;
+        if end.pending_blocks != 0 {
+            return Err("undrained virtual stepper".into());
+        }
+        *slot = end.position_steps;
+    }
     let (preflight_boundary, source_bytes) = simulation.preflight_boundary();
     println!(
         "{}",
         json!({"mode":"simulation", "state":"complete", "total":end.total,
         "issued":end.issued, "lanes":lanes, "clock_hz":hz, "planned_end_tick":end.planned_end,
-        "preflight_boundary":preflight_boundary, "source_bytes":source_bytes})
+        "preflight_boundary":preflight_boundary, "source_bytes":source_bytes,
+        "motor_displacement_steps":displacement})
     );
     Ok(())
 }

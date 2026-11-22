@@ -58,3 +58,7 @@ required-features = ["webhooks"]
 [[example]]
 name = "simulated_job"
 required-features = ["identify"]
+
+[[example]]
+name = "virtual_stepper_replay"
+required-features = ["identify"]

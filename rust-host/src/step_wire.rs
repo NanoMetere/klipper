@@ -12,6 +12,22 @@ pub enum Error {
     MissingFormat(&'static str),
     BadFormatId,
     InvalidTrace,
+    InvalidPayload,
+    UnknownMessage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Message {
+    NextDirection {
+        oid: u8,
+        positive: bool,
+    },
+    Block {
+        oid: u8,
+        interval: u32,
+        count: u16,
+        add: i16,
+    },
 }
 
 pub struct StepMessages {
@@ -40,6 +56,41 @@ impl StepMessages {
             return Err(Error::BadFormatId);
         }
         Ok(Self { set_dir, queue })
+    }
+
+    /// Decode one complete, unframed stepper command. It has no physical effect.
+    pub fn decode(&self, mut payload: &[u8]) -> Result<Message, Error> {
+        let mut read = || vlq::read(&mut payload).ok_or(Error::InvalidPayload);
+        let id = read()?;
+        if id != i64::from(self.set_dir) && id != i64::from(self.queue) {
+            return Err(Error::UnknownMessage);
+        }
+        let oid = u8::try_from(read()?).map_err(|_| Error::InvalidPayload)?;
+        let message = if id == i64::from(self.set_dir) {
+            let positive = match read()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::InvalidPayload),
+            };
+            Message::NextDirection { oid, positive }
+        } else {
+            let interval = read()?;
+            if !(1..=u32::MAX as i64).contains(&interval) {
+                return Err(Error::InvalidPayload);
+            }
+            let count = u16::try_from(read()?).map_err(|_| Error::InvalidPayload)?;
+            let add = i16::try_from(read()?).map_err(|_| Error::InvalidPayload)?;
+            Message::Block {
+                oid,
+                interval: interval as u32,
+                count,
+                add,
+            }
+        };
+        if !payload.is_empty() {
+            return Err(Error::InvalidPayload);
+        }
+        Ok(message)
     }
 
     /// Encode one prepared per-stepper trace. Commands are not framed or
@@ -113,6 +164,35 @@ impl StepMessages {
 mod tests {
     use super::*;
     use crate::step_compress::Block;
+
+    #[test]
+    fn decodes_exactly_one_opaque_dictionary_command() {
+        let m = StepMessages {
+            set_dir: 1,
+            queue: 2,
+        };
+        assert_eq!(
+            m.decode(&[1, 5, 1]),
+            Ok(Message::NextDirection {
+                oid: 5,
+                positive: true
+            })
+        );
+        assert_eq!(m.decode(&[1, 5, 2]), Err(Error::InvalidPayload));
+        assert_eq!(m.decode(&[1, 5, 1, 0]), Err(Error::InvalidPayload));
+        assert_eq!(m.decode(&[1, 0x80]), Err(Error::InvalidPayload));
+        assert_eq!(m.decode(&[22]), Err(Error::UnknownMessage));
+        // A negative add encoded by the stock signed VLQ representation.
+        assert_eq!(
+            m.decode(&[2, 5, 10, 3, 0x7e]),
+            Ok(Message::Block {
+                oid: 5,
+                interval: 10,
+                count: 3,
+                add: -2
+            })
+        );
+    }
 
     #[test]
     fn rejects_no_direction_and_incorrect_end_tick() {

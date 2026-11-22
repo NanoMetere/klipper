@@ -45,6 +45,8 @@ pub mod print_stats;
 #[cfg(feature = "identify")]
 pub mod step_wire;
 #[cfg(feature = "identify")]
+pub mod virtual_stepper;
+#[cfg(feature = "identify")]
 pub mod virtual_job;
 #[cfg(feature = "identify")]
 pub mod simulated_printer;

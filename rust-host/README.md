@@ -394,7 +394,15 @@ cargo run --locked --release --example simulated_job -- /path/to/klipper.dict
 ```
 
 The pinned 50 MHz Linux MCU dictionary produced 138 inert wire commands
-across three lanes. Integration tests verify that a simulated fault drops
+across three lanes. Decoding and replaying those commands in the virtual
+motors produced the expected CoreXY displacement of `[720, -120, 112]`
+steps. A separate independent recurrence expands the full edge sequence:
+43,344 timestamp and position observations across 2,721,525 edges match,
+including timing boundaries and 32-bit clock wrap. The virtual stepper can
+drop all pending edges on a latched stop. No electrical or motor timing is
+measured by these tests.
+
+Integration tests verify that a simulated fault drops
 remaining work and that separate Unix stream pairs carry read-only JSON
 subscriptions without accepting G-code or letting one slow client exhaust
 the reply queue. The named Unix listener is optional and its bind/cleanup

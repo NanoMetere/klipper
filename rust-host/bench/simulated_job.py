@@ -16,6 +16,7 @@ def main():
     assert actual["clock_hz"] == raw["config"]["CLOCK_FREQ"], actual
     assert all(i > 0 for i in actual["lanes"]) and len(actual["lanes"]) == 3, actual
     assert sum(actual["lanes"]) == actual["issued"] == actual["total"], actual
+    assert actual["motor_displacement_steps"] == [720, -120, 112], actual
     print(f"{actual['issued']} firmware-dictionary commands in three inert lanes")
 
 
