@@ -7,10 +7,11 @@ from pathlib import Path
 import shutil
 import statistics
 import subprocess
+import sys
 import tarfile
 import tempfile
 
-from mcu_config import fresh
+from mcu_config import drop_write_ack, fresh
 from planner import PIN, ROOT
 
 
@@ -96,6 +97,15 @@ def main():
             payloads, frames, expected, _ = summaries[mode]
             print(f"{mode}: {a.rounds} isolated run(s), {payloads} commands in {frames} frames; "
                   f"matched {expected}; median enqueue {statistics.median(times)*1e-6:.3f} ms")
+        sys.path.insert(0, str(upstream/"klippy"))
+        from msgproto import MessageParser
+        parser = MessageParser()
+        parser.process_identify((mcu.parent/"klipper.dict").read_bytes(), decompress=False)
+        candidates = [bytes(parser.messages_by_name[name].msgid_bytes) for name in ("queue_step", "set_next_step_dir")]
+        details = drop_write_ack(mcu, binary, "--gpio-batched",
+                                 lambda p: len(p) > 20 and any(p.startswith(t) for t in candidates))
+        assert "motion frame" in details and "GPIO_FIXTURE" not in details, details
+        print("Dropped a batched motion ACK: no extra host frame or virtual clock advance")
     print("Plain Linux MCU refused before configuration/motion")
 
 

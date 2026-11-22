@@ -93,8 +93,8 @@ def run_stock(port, cmds):
     return result[0]
 
 
-def drop_first_write_ack(mcu, binary, allocate_payload):
-    """Drop exactly the ACK following the first pin-free config write."""
+def drop_write_ack(mcu, binary, mode, target):
+    """Drop the first matched write ACK and log any later host frames."""
     with fresh(mcu) as firmware:
         front, client = pty.openpty()
         tty.setraw(client)
@@ -125,22 +125,25 @@ def drop_first_write_ack(mcu, binary, allocate_payload):
                                 break
                             frame = bytes(data[:length])
                             del data[:length]
-                            if fd == front and frame[2:-3] == allocate_payload:
-                                observed.append("allocate")
-                                drop = 0x10 | ((frame[1] + 1) & 15)
+                            if fd == front:
+                                if drop is not None:
+                                    observed.append(("after", frame[2:-3]))
+                                elif target(frame[2:-3]):
+                                    observed.append("write")
+                                    drop = 0x10 | ((frame[1] + 1) & 15)
                             if fd != front and frame[1] == drop and length == 5:
                                 observed.append("dropped")
                                 continue
                             dst = firmware.fileno() if fd == front else front
                             while frame:
                                 frame = frame[os.write(dst, frame):]
-            except (OSError, ValueError) as exc:
+            except Exception as exc:
                 errors.append(exc)
 
         worker = threading.Thread(target=relay)
         worker.start()
         try:
-            run = subprocess.run([binary, "--config-fixture", "1"], stdin=client, stdout=client,
+            run = subprocess.run([binary, mode, "1"], stdin=client, stdout=client,
                                  stderr=subprocess.PIPE, text=True, timeout=8)
         finally:
             stop.set()
@@ -149,9 +152,15 @@ def drop_first_write_ack(mcu, binary, allocate_payload):
             os.close(client)
         assert not worker.is_alive() and not errors, errors
         assert run.returncode and "unknown config write outcome" in run.stderr, run.stderr
-        assert "CONFIG " not in run.stderr and "REUSE " not in run.stderr, run.stderr
-        assert observed == ["allocate", "dropped"], observed
-        print("Dropped a config write ACK: one write only, no finalize or retry")
+        assert observed == ["write", "dropped"], observed
+        return run.stderr
+
+
+def drop_first_write_ack(mcu, binary, allocate_payload):
+    """Drop exactly the ACK following the first pin-free config write."""
+    details = drop_write_ack(mcu, binary, "--config-fixture", lambda p: p == allocate_payload)
+    assert "CONFIG " not in details and "REUSE " not in details, details
+    print("Dropped a config write ACK: one write only, no finalize or retry")
 
 
 def main():

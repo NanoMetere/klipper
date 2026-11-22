@@ -518,7 +518,9 @@ stage (collecting/encoding payloads and waiting for software PTY ACKs)
 went from 1.771 ms to 0.282 ms median (84% less wall time). This compares
 two Rust transfer strategies, not Rust vs stock Klippy's serial batching
 or actual print time. Both variants check each of the 17 motion
-checkpoints against the C firmware counters.
+checkpoints against the C firmware counters. A separate relay test drops
+the first grouped motion write ACK and checks that the host exits without
+retransmitting, sending any later frame, or advancing the inert clock.
 
 ```sh
 cargo build --locked --release --example native_mcu

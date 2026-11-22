@@ -248,7 +248,7 @@ pub(super) fn run(
     let enqueue = Instant::now();
     let mut send = |data: &[u8]| -> Result<(), String> {
         let frame = encode(link.sequence, data).map_err(err)?;
-        fixture_ack(&mut link, &frame)?;
+        fixture_ack(&mut link, &frame).map_err(|e| format!("motion frame {frame_count}: {e}"))?;
         frame_count += 1;
         Ok(())
     };
