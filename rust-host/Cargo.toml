@@ -17,3 +17,7 @@ serde_json = { version = "1", optional = true }
 [[example]]
 name = "identify_replay"
 required-features = ["identify"]
+
+[[example]]
+name = "native_mcu"
+required-features = ["identify"]

@@ -33,9 +33,9 @@ normalized in the published fixture; no printer or live device was involved.
 
 The bootstrap requests 40-byte chunks and caps compressed and expanded
 dictionary sizes at 256 KiB and 2 MiB, respectively. Short, oversized, or
-misaligned chunks do not advance the exchange. Timeouts, retries, sequence
-tracking, receive-stream recovery, and clock synchronization are not part of
-this offline API yet. It does not interpret movement or heater commands.
+misaligned chunks do not advance the exchange. Timeouts, retries, sequence tracking, and clock synchronization are not part of
+this offline API. A separate stream receiver and disposable PTY test are described
+below. It does not interpret movement or heater commands.
 
 ```sh
 cargo test --locked --all-targets
@@ -51,6 +51,51 @@ To regenerate the fixture, build the pinned upstream tree with
 python3 tests/fixtures/generate_identify.py UPSTREAM UPSTREAM/out/klipper.dict \
   tests/fixtures/clock_wire.txt > tests/fixtures/identify_wire.txt
 ```
+
+## Receive stream and disposable Linux MCU
+
+`stream::Receiver` accepts arbitrary read boundaries, yields validated frames
+and ACKs, and preserves Klippy's discard-through-sync behavior. It uses no heap
+and retains at most 63 incomplete bytes between calls. The upstream C
+differential test compared each read's exact decoded payloads and sequences,
+discard counts, pending bytes and sync state across 1,769,288 reads in 4,096
+deterministic streams, including corruption and short reads.
+
+Build the pinned upstream Linux firmware as described above. Install stock
+Klippy's Python dependencies (from that revision's requirements). Then:
+
+```sh
+sh bench/check_stream.sh /path/to/pinned/klipper
+cargo build --locked --release --example native_mcu
+python3 bench/native_mcu.py /path/to/pinned/klipper \
+  --binary target/release/examples/native_mcu --samples 1024 --rounds 8 --json /tmp/pty.json
+```
+
+The PTY runner creates its own temporary endpoint with the native firmware;
+it does not take a real serial device path. A separate recovery case injects
+81 invalid bytes and verifies that identify and 32 read-only exchanges still
+complete. The measured runs use a direct PTY with no injected data, a fresh MCU
+per run, one request in flight, and one uptime per eight requests. Stock uses
+upstream Python `SerialReader` with the upstream C serial queue; the Rust
+example uses the bounded frame receiver. The connection figure measures
+identify from each host's connect/initialization entry point, excluding
+process launch and firmware startup. Stock includes opening the endpoint and
+initializing its serial queue; Rust receives an already open descriptor.
+
+On Linux x86-64 (AMD EPYC 9V74, affinity limited to two logical CPUs, Rust
+1.100.0, Python 3.12.14, GCC 14.2.0), after one warmup per host and alternating
+host order over eight runs:
+
+| Host | Identify (median) | Clock/uptime RTT (median) | RTT (p95) |
+| --- | ---: | ---: | ---: |
+| Rust PTY example | 1.451 ms | 6.770 µs | 10.636 µs |
+| Stock Klippy serial reader | 19.741 ms | 77.617 µs | 112.840 µs |
+
+Each host completed 8,192 measured requests. This compares a minimal,
+single-in-flight Rust loop with stock's full transport path. It does not
+measure feature-equivalent scheduler performance, physical links, G-code,
+or printing time. The external harness terminates hung tests; the example
+does not yet implement a production retry, timeout, or flow-control policy.
 
 ## Frame validation microbenchmark
 

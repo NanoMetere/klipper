@@ -8,6 +8,7 @@
 pub mod identify;
 #[cfg(feature = "identify")]
 pub mod clock;
+pub mod stream;
 #[cfg(feature = "identify")]
 mod vlq;
 
