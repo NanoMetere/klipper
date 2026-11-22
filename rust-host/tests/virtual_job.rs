@@ -91,7 +91,8 @@ fn routes_a_real_offline_preview_through_virtual_nodes_without_io() {
     use klipper_host_protocol::{
         can::{Datagram, Node},
         config, decode_prefix, encode,
-        machine_preview::Machine,
+        homing::{Counter, Error as HomingError},
+        machine_preview::{Error as MachineError, Machine},
         planner::Priority,
         step_clock::Clock,
         virtual_can::{Action, Bus, Peer},
@@ -117,15 +118,28 @@ fn routes_a_real_offline_preview_through_virtual_nodes_without_io() {
         time_origin: 0.0,
         hz: 20_000_000.0,
     };
+    let script = include_str!("../examples/preview/path.gcode");
+    let mut home = machine.virtual_homing([1., 1., 0.2]).unwrap();
+    assert!(matches!(
+        machine.trace_homed(script, &home, 2., clock, 20, [false; 3]),
+        Err(MachineError::VirtualHoming(HomingError::Unhomed))
+    ));
+    for (axis, at) in [1., 1., 0.2].into_iter().enumerate() {
+        let token = home.arm(axis as u8, at, true).unwrap();
+        let counter = Some(Counter {
+            start: 12,
+            trigger: 9,
+            halt: 9,
+        });
+        let readings = if axis < 2 {
+            [counter, counter, None]
+        } else {
+            [None, None, counter]
+        };
+        home.complete(token, readings, true).unwrap();
+    }
     let trace = machine
-        .trace(
-            include_str!("../examples/preview/path.gcode"),
-            [1.0, 1.0, 0.2],
-            2.0,
-            clock,
-            20,
-            [false; 3],
-        )
+        .trace_homed(script, &home, 2., clock, 20, [false; 3])
         .unwrap();
     let end = ((2.0 + trace.duration) * clock.hz).ceil() as u64 + 1;
     let step_messages = codec();

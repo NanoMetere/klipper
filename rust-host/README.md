@@ -379,6 +379,28 @@ tests additionally cover absent literals, empty wildcard matches, escaped
 paths and cycles. This is read-only parsing parity for the fixture, not
 validation that all configured hardware/modules are supported.
 
+## Offline homing evidence
+
+`homing` projects simulated trigger and halt counters to Cartesian or
+CoreXY positions, distinguishes overshoot from contact, estimates the
+per-endstop sampling interval, and computes a second-approach position.
+`Machine::trace_homed` optionally requires all three axes to home in the
+fixture before a preview can enter the virtual job/transport pipeline.
+Incomplete, late, or failed evidence cannot mark an axis homed. CoreXY XY
+evidence requires both linked motors. There is no G28 command, GPIO,
+firmware trigger scheduling, sensor read, or live interlock here.
+
+```sh
+python3 bench/homing.py /path/to/pinned/klipper
+```
+
+With mock positions and counters, stock Python matched 1,000 interval
+calculations, 1,000 position/status cases and 922 retracts. The older
+Toolchanger compatibility pin also matched interval and position results;
+its retract math is inline, so that harness does not call it separately.
+The virtual job integration test refuses a move before homing, then sends
+the validated preview through local virtual CAN peers without hardware.
+
 ## Config-to-step offline preview
 
 `machine_preview::Machine` combines supported printer and rail settings with
@@ -387,8 +409,8 @@ trajectory, and clocked step traces. It accepts one motor per Cartesian or
 CoreXY rail and begins from a caller-supplied virtual position. An optional
 offline extruder lane requires explicit geometry, step distance and
 simulated temperature, with optional pressure advance. No physical heater
-is used. It does not implement real temperature verification, homing, bed
-transforms, tool changes or I/O; the result is not a live controller.
+is used. It does not implement real temperature verification, powered homing,
+bed transforms, tool changes or I/O; the result is not a live controller.
 
 ```sh
 python3 bench/machine_trace.py /path/to/pinned/klipper

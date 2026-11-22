@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Connects a strict machine config subset to the in-memory XYZ step trace.
-//! No homing, peripherals, tool/pin setup, protocol writes or hardware I/O.
+//! No powered homing, peripherals, tool/pin setup or hardware I/O.
 
 use crate::{
     config::Config,
     extrusion::{self, Extruder},
     gcode::{self, Output, Preview},
+    homing::{self, Kinematics, VirtualHoming},
     lookahead::{Limits, Profile},
     pressure_advance::Advance,
     step_clock::{self, Clock, Command},
@@ -25,6 +26,7 @@ pub enum Error {
     },
     Unsupported,
     InitialPosition,
+    VirtualHoming(homing::Error),
     MaximumLines,
     Gcode {
         line: usize,
@@ -174,6 +176,37 @@ impl Machine {
             .iter()
             .zip(pos)
             .all(|(&(lo, hi), x)| (lo..=hi).contains(x))
+    }
+
+    fn homing_kinematics(&self) -> Kinematics {
+        match self.motor_axis[0] {
+            Axis::X => Kinematics::Cartesian,
+            _ => Kinematics::CoreXy,
+        }
+    }
+
+    /// Create a gate using this machine's geometry. No G28 command, firmware
+    /// interface or pin action is run; the fixture must feed the evidence.
+    pub fn virtual_homing(&self, position: [f64; 3]) -> Result<VirtualHoming, Error> {
+        VirtualHoming::new(self.homing_kinematics(), position, self.motor_step)
+            .map_err(Error::VirtualHoming)
+    }
+
+    /// Inert preview path that requires a complete virtual home of the
+    /// compatible geometry. The unrestricted trace remains useful for fixtures.
+    pub fn trace_homed(
+        &self,
+        script: &str,
+        home: &VirtualHoming,
+        at: f64,
+        clock: Clock,
+        max_error: u32,
+        invert: [bool; 3],
+    ) -> Result<Trace, Error> {
+        let start = home
+            .ready_position_for(self.homing_kinematics(), self.motor_step)
+            .map_err(Error::VirtualHoming)?;
+        self.trace(script, start, at, clock, max_error, invert)
     }
 
     /// Previews a bounded script from an explicit virtual position. Inversion
