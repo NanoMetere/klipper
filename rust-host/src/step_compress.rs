@@ -23,7 +23,19 @@ pub struct Block {
 }
 
 fn ceil(n: i64, d: i64) -> i64 {
-    -(-n).div_euclid(d)
+    if n >= 0 {
+        (n + d - 1) / d
+    } else {
+        n / d
+    }
+}
+
+fn floor(n: i64, d: i64) -> i64 {
+    if n >= 0 {
+        n / d
+    } else {
+        (n - d + 1) / d
+    }
 }
 
 /// Compress a prefix of one direction's already-filtered request clocks. A
@@ -51,17 +63,30 @@ fn validate(base: u64, clocks: &[u64], max_error: u32) -> Result<(), Error> {
 }
 
 /// Compress a bounded run, validating input once and checking every output.
-pub fn compress_run(mut base: u64, clocks: &[u64], max_error: u32) -> Result<Vec<Block>, Error> {
+pub fn compress_run(base: u64, clocks: &[u64], max_error: u32) -> Result<Vec<Block>, Error> {
+    let mut blocks = Vec::new();
+    compress_each(base, clocks, max_error, |block| blocks.push(block))?;
+    Ok(blocks)
+}
+
+/// As `compress_run`, but hands each verified block to a consumer immediately
+/// without building an intermediate Vec. If this returns an error, discard
+/// the output of this entire run. Do not use it as a device write callback.
+pub fn compress_each(
+    mut base: u64,
+    clocks: &[u64],
+    max_error: u32,
+    mut emit: impl FnMut(Block),
+) -> Result<(), Error> {
     validate(base, clocks, max_error)?;
     let mut remaining = clocks;
-    let mut blocks = Vec::new();
     while !remaining.is_empty() {
         let block = compress_valid(base, remaining, max_error)?;
         remaining = &remaining[usize::from(block.count)..];
         base = block.last_clock;
-        blocks.push(block);
+        emit(block);
     }
-    Ok(blocks)
+    Ok(())
 }
 
 fn compress_valid(base: u64, clocks: &[u64], max_error: u32) -> Result<Block, Error> {
@@ -89,8 +114,14 @@ fn compress_valid(base: u64, clocks: &[u64], max_error: u32) -> Result<Block, Er
             let (min_point, max_point) = bounds(next_count as usize - 1);
             let quad = next_count * (next_count - 1) / 2;
             let c = add * quad;
-            lo = lo.max(ceil(min_point - c, next_count));
-            hi = hi.min((max_point - c).div_euclid(next_count));
+            // Most points already satisfy the current bounds. Avoid divisions
+            // unless a candidate interval must actually be tightened.
+            if lo * next_count < min_point - c {
+                lo = ceil(min_point - c, next_count);
+            }
+            if hi * next_count > max_point - c {
+                hi = floor(max_point - c, next_count);
+            }
             if lo > hi {
                 break (min_point, max_point, quad);
             }
@@ -120,8 +151,14 @@ fn compress_valid(base: u64, clocks: &[u64], max_error: u32) -> Result<Block, Er
             min_add = min_add.max(add - delta);
             max_add = max_add.min(add + delta);
         }
-        min_add = min_add.max(ceil(next_lo - outer_max * next_count, quad));
-        max_add = max_add.min((next_hi - outer_min * next_count).div_euclid(quad));
+        let required = next_lo - outer_max * next_count;
+        if min_add * quad < required {
+            min_add = ceil(required, quad);
+        }
+        let allowed = next_hi - outer_min * next_count;
+        if max_add * quad > allowed {
+            max_add = floor(allowed, quad);
+        }
         if min_add > max_add {
             break 'search preferred(best_int, best_count, best_add, zero_int, zero_count);
         }

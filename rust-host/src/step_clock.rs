@@ -4,7 +4,7 @@
 //! The output is a trace only. This does not accept or open a transport.
 
 use crate::{
-    step_compress::{compress_run, Block},
+    step_compress::{compress_each, Block},
     step_times::Event,
 };
 
@@ -109,10 +109,11 @@ pub fn encode_trace(
     let mut direction = None;
     let flush = |clock: &mut Clock, output: &mut Vec<Command>, run: &mut Vec<u64>| {
         if !run.is_empty() {
-            let moves =
-                compress_run(clock.last_encoded, run, max_error).map_err(Error::Compress)?;
-            clock.last_encoded = moves.last().unwrap().last_clock;
-            output.extend(moves.into_iter().map(Command::Steps));
+            compress_each(clock.last_encoded, run, max_error, |block| {
+                clock.last_encoded = block.last_clock;
+                output.push(Command::Steps(block));
+            })
+            .map_err(Error::Compress)?;
             run.clear();
         }
         Ok(())

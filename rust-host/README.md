@@ -514,6 +514,30 @@ sequence wraps, signed add values and multi-byte intervals. The independent
 offline planner comparison covers batching; this test does not send any
 byte to either a virtual or physical MCU.
 
+## Compression CPU improvement
+
+The compressor now avoids integer division when the current interval
+bounds already satisfy the next point. The offline step encoder also
+consumes blocks directly rather than allocating a temporary vector for
+each direction run. All 31,482 blocks still match the C reference.
+
+| Implementation | CPU ns/requested step, median |
+| --- | ---: |
+| Stock C with output validation | 11.845 |
+| Prior Rust allocating intermediate blocks | 14.945 |
+| Updated Rust emitting verified blocks | 13.758 |
+
+Nine alternating single-core rounds of 70 passes over 278,249 requested
+steps per pass on AMD EPYC 9V74. Timed work excludes parsing, file output,
+I/O, motion generation and setup. This is ~7.9% faster than prior Rust
+but still ~16% slower than the stock C helper on this corpus.
+
+```sh
+git show 3cd0582cebcebdf39f8d20031a18f6e1753a3dfd:rust-host/src/step_compress.rs > /tmp/prior-step-compress.rs
+taskset -c <CPU> python3 bench/step_compress.py /path/to/pinned/klipper \
+  --rounds 9 --repeat 70 --baseline-source /tmp/prior-step-compress.rs
+```
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
