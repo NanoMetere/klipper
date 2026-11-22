@@ -25,6 +25,7 @@ pub mod thermal;
 pub mod extrusion;
 pub mod pressure_advance;
 pub mod can;
+pub mod retry_timing;
 #[cfg(feature = "identify")]
 pub mod step_wire;
 #[cfg(feature = "webhooks")]

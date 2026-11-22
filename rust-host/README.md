@@ -587,6 +587,21 @@ interleaved with corruption and 1,241 unrelated-ID frames; per-read
 recovery/discard counts also matched. No physical devices are implied
 by the six-node fixture.
 
+## Offline adaptive retry timing
+
+`retry_timing` models the stock transport's RTT sample tracking,
+variance smoothing, timeout floor/cap, timeout doubling, fast retry,
+and Karn-style suppression after cached retransmits. The caller supplies
+the predicted wire-end time and notifies it of retired frames and sends.
+
+```sh
+python3 bench/retry_timing.py /path/to/pinned/klipper
+```
+
+18,798 ACK/timeout/fast-retry timer states matched the C reference exactly
+across PTY, UART-style and Classic CAN wire-time formulas. The C harness
+writes only to an isolated UNIX socketpair; no device timing was measured.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
