@@ -2,6 +2,14 @@
 //! Internal integer encoding for Klipper message fields.
 
 pub(crate) fn encode(out: &mut Vec<u8>, value: i32) {
+    encode_wide(out, i64::from(value));
+}
+
+pub(crate) fn encode_unsigned(out: &mut Vec<u8>, value: u32) {
+    encode_wide(out, i64::from(value));
+}
+
+fn encode_wide(out: &mut Vec<u8>, value: i64) {
     for (low, high, shift) in [
         (-0x0400_0000, 0x0c00_0000, 28),
         (-0x8_0000, 0x18_0000, 21),

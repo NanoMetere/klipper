@@ -55,6 +55,9 @@ def main():
     if dictionary.is_file():
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
+        phases.append(("mcu_config_payloads", [sys.executable, ROOT/"bench/mcu_config.py", upstream,
+                                               "--payload-binary", examples/"mcu_config_replay",
+                                               "--dictionary", dictionary]))
     else:
         print("SKIP step_wire (no matching Linux firmware dictionary supplied)", flush=True)
     if a.native_pty:
@@ -63,6 +66,8 @@ def main():
         phases.extend([
             ("native_clock", [sys.executable, ROOT/"bench/native_mcu.py", upstream, "--binary",
                               examples/"native_mcu", "--live-clock"]),
+            ("native_mcu_config", [sys.executable, ROOT/"bench/mcu_config.py", upstream, "--binary",
+                                   examples/"native_mcu"]),
             ("native_pipeline", [sys.executable, ROOT/"bench/pipeline_pty.py", upstream,
                                  examples/"native_mcu", "--waves", "8", "--rounds", "2"]),
         ])

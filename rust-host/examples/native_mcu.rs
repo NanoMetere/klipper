@@ -9,14 +9,16 @@ mod linux {
     use klipper_host_protocol::{
         clock::{ClockMessages, Error as ClockError, Response},
         clock_sync::{PrimaryClock, Sample, Update},
+        encode,
         identify::Identify,
+        mcu_config::{Error as ConfigError, Messages, Profile, Report, Session, Start},
         read_query::{Action, ReadQuery},
         stream::Receiver,
         Frame,
     };
     use std::fs::File;
     use std::io::{self, Read, Write};
-    use std::os::fd::{AsRawFd, BorrowedFd};
+    use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
     use std::time::{Duration, Instant};
 
     #[repr(C)]
@@ -169,6 +171,100 @@ mod linux {
         )
     }
 
+    fn read_config(link: &mut Link, codec: &Messages) -> Result<Report, String> {
+        link.exchange(
+            |seq| codec.get_config(seq).map_err(|e| format!("{e:?}")),
+            |frame| match codec.report(frame) {
+                Ok(report) => Ok(Some(report)),
+                Err(ConfigError::UnexpectedMessage) => Ok(None),
+                Err(e) => Err(format!("{e:?}")),
+            },
+        )
+        .map(|reply| reply.value)
+    }
+
+    fn configure_fixture(
+        link: &mut Link,
+        codec: &Messages,
+        trsync_count: u8,
+    ) -> Result<(), String> {
+        let profile = Profile::trsync_only(trsync_count, 3);
+        let mut session = Session::new(&profile);
+        let start = session
+            .first(read_config(link, codec)?, false)
+            .map_err(|e| format!("{e:?}"))?;
+        let sends = if start == Start::NeedsConfiguration {
+            let items = codec.payloads(&profile);
+            for bytes in &items {
+                // No message is ever resent after an unknown write outcome.
+                let frame = encode(link.sequence, bytes).map_err(|e| format!("{e:?}"))?;
+                let next = (link.sequence + 1) & 15;
+                link.writer.write_all(&frame).map_err(|e| e.to_string())?;
+                let deadline = Instant::now() + Duration::from_millis(700);
+                loop {
+                    let now = Instant::now();
+                    if now >= deadline
+                        || !wait_readable(link.reader.as_fd(), deadline - now)
+                            .map_err(|e| e.to_string())?
+                    {
+                        return Err("unknown config write outcome (no ACK)".into());
+                    }
+                    let mut buf = [0; 256];
+                    let read = link.reader.read(&mut buf).map_err(|e| e.to_string())?;
+                    if read == 0 {
+                        return Err("config peer closed".into());
+                    }
+                    let mut ack = false;
+                    let mut unexpected = false;
+                    link.rx.feed(&buf[..read], |f| {
+                        if f.sequence == next {
+                            if f.payload.is_empty() {
+                                ack = true;
+                            } else {
+                                unexpected = true;
+                            }
+                        }
+                    });
+                    if unexpected {
+                        return Err("MCU sent a response instead of a config ACK".into());
+                    }
+                    if ack {
+                        link.sequence = next;
+                        break;
+                    }
+                }
+            }
+            items.len()
+        } else {
+            0
+        };
+        let final_report = read_config(link, codec)?;
+        let slots = session.verify(final_report).map_err(|e| format!("{e:?}"))?;
+        eprintln!(
+            "CONFIG {start:?} {} {} {slots} {sends}",
+            final_report.crc, final_report.move_count
+        );
+        // On the same live sequence, a different profile must never send.
+        let wrong = Profile::trsync_only(trsync_count + 1, 3);
+        let mut mismatch = Session::new(&wrong);
+        if !matches!(
+            mismatch.first(read_config(link, codec)?, false),
+            Err(ConfigError::CrcMismatch { .. })
+        ) {
+            return Err("expected a local CRC mismatch".into());
+        }
+        let mut reuse = Session::new(&profile);
+        if reuse.first(read_config(link, codec)?, false) != Ok(Start::ReuseMatching) {
+            return Err("expected to reuse configured state".into());
+        }
+        let confirmed = read_config(link, codec)?;
+        if reuse.verify(confirmed) != Ok(slots) {
+            return Err("reused move slot count changed".into());
+        }
+        eprintln!("REUSE {} {slots} 0", confirmed.crc);
+        Ok(())
+    }
+
     fn clock_trace(
         link: &mut Link,
         codec: &ClockMessages,
@@ -241,13 +337,20 @@ mod linux {
         let arg = argv.next().ok_or("missing sample count")?;
         let trace = arg == "--clock-trace";
         let pipe = arg == "--pipeline";
-        let number = if trace || pipe {
+        let config_fixture = arg == "--config-fixture";
+        let number = if trace || pipe || config_fixture {
             argv.next().ok_or("missing trace size")?
         } else {
             arg
         };
         let count = number.parse::<usize>().map_err(|e| e.to_string())?;
-        let bounds = if trace { 8..=25 } else { 1..=100_000 };
+        let bounds = if trace {
+            8..=25
+        } else if config_fixture {
+            1..=16
+        } else {
+            1..=100_000
+        };
         let width = if pipe {
             argv.next()
                 .unwrap_or_default()
@@ -258,6 +361,13 @@ mod linux {
         };
         if !bounds.contains(&count) || argv.next().is_some() {
             return Err("sample count out of bounds".into());
+        }
+        if config_fixture {
+            let stdin = std::fs::read_link("/proc/self/fd/0").map_err(|e| e.to_string())?;
+            let stdout = std::fs::read_link("/proc/self/fd/1").map_err(|e| e.to_string())?;
+            if stdin != stdout || !stdin.starts_with("/dev/pts") {
+                return Err("config fixture requires a single disposable PTY".into());
+            }
         }
         // Unbuffered reads ensure poll sees all unread input. The harness supplies
         // the disposable PTY descriptors and enforces a process-wide timeout.
@@ -294,6 +404,10 @@ mod linux {
             }
         }
         let dictionary = identify.dictionary().map_err(|e| format!("{e:?}"))?;
+        if config_fixture {
+            let messages = Messages::from_dictionary(&dictionary).map_err(|e| format!("{e:?}"))?;
+            return configure_fixture(&mut link, &messages, count as u8);
+        }
         if pipe {
             let receive_window = dictionary
                 .config

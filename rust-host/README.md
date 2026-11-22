@@ -425,6 +425,26 @@ its retract math is inline, so that harness does not call it separately.
 The virtual job integration test refuses a move before homing, then sends
 the validated preview through local virtual CAN peers without hardware.
 
+## Pin-free MCU startup fixture
+
+The Rust startup gate encodes a bounded trigger-synchronizer-only profile,
+checks the firmware's reported configuration/CRC, reserves requested move
+slots, and refuses both shutdown states and CRC mismatches. It does not
+reset or recover firmware automatically. No arbitrary config strings, pin
+definitions, stepper activation, or heater commands are supported.
+
+`bench/mcu_config.py` compares 256 CRCs and 33,152 payloads with pinned
+Klippy. On fresh, disposable Linux MCU PTYs, four pin-free profiles matched
+stock configuration and move capacity (1,021 usable after reserving three).
+An identical profile reuses the configuration without writes; a differing
+CRC is refused. Dropping the first config write ACK causes the fixture to
+stop without retransmitting or finalizing the unknown state.
+
+```sh
+cargo build --locked --release --examples
+python3 bench/mcu_config.py /path/to/pinned/klipper
+```
+
 ## Fixed offline input shaping
 
 The motion preview supports fixed X/Y/Z convolution from the stock
