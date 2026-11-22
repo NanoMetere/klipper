@@ -38,6 +38,7 @@ fn main() {
                 Stage::Motion {
                     first_line,
                     outputs,
+                    ..
                 } => {
                     println!("motion {first_line}");
                     for output in outputs {

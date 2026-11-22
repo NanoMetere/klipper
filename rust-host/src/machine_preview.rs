@@ -18,6 +18,7 @@ use crate::{
     trajectory::{self, Trajectory},
 };
 
+pub mod mixed;
 pub mod tool_profiles;
 
 const SECTIONS: [&str; 3] = ["stepper_x", "stepper_y", "stepper_z"];

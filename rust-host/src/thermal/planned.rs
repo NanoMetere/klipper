@@ -13,6 +13,7 @@ use crate::{
 };
 
 const MAX_LINES: usize = 32_768;
+const MAX_PROFILES: usize = 65_536;
 
 #[derive(Debug)]
 pub enum Error {
@@ -25,11 +26,13 @@ pub enum Error {
 pub enum Stage<'a> {
     Motion {
         first_line: usize,
+        origin: [f64; 4],
         outputs: Vec<Output>,
     },
     Heater {
         line: usize,
         outcome: commands::Output<'a>,
+        targets: Vec<f64>,
     },
 }
 
@@ -55,15 +58,21 @@ pub fn preflight<'a>(
     }
     let mut staged = initial.clone();
     let mut stages = Vec::new();
+    let mut profile_count = 0;
     for part in split_mixed(script).map_err(Error::Split)? {
         match part {
             Chunk::Motion { first_line, text } => {
+                let origin = preview.physical_position();
                 let mut outputs = Vec::new();
                 for (idx, line) in text.lines().enumerate() {
                     let n = first_line + idx;
                     let output = preview
                         .line_with(line, |before, after| verify_move(n, before, after))
                         .map_err(|error| Error::Motion { line: n, error })?;
+                    profile_count += output.moves.len();
+                    if profile_count > MAX_PROFILES {
+                        return Err(Error::Limit);
+                    }
                     if !output.moves.is_empty() || output.dwell_seconds.is_some() {
                         outputs.push(output);
                     }
@@ -72,6 +81,10 @@ pub fn preflight<'a>(
                     line: first_line + text.lines().count(),
                     error,
                 })?;
+                profile_count += moves.len();
+                if profile_count > MAX_PROFILES {
+                    return Err(Error::Limit);
+                }
                 if !moves.is_empty() {
                     outputs.push(Output {
                         moves,
@@ -80,6 +93,7 @@ pub fn preflight<'a>(
                 }
                 stages.push(Stage::Motion {
                     first_line,
+                    origin,
                     outputs,
                 });
             }
@@ -87,7 +101,11 @@ pub fn preflight<'a>(
                 let outcome = staged
                     .command(command)
                     .map_err(|error| Error::Heater { line, error })?;
-                stages.push(Stage::Heater { line, outcome });
+                stages.push(Stage::Heater {
+                    line,
+                    outcome,
+                    targets: staged.targets().to_vec(),
+                });
             }
         }
     }
@@ -132,9 +150,11 @@ mod tests {
                     wait: Some(Wait::Controller { target: 210., .. }),
                     ..
                 },
+            ..
         }, Stage::Motion { outputs: b, .. }, Stage::Heater {
             line: 9,
             outcome: Thermal::AllOff,
+            ..
         }] = result.stages.as_slice()
         else {
             panic!("wrong heater boundaries");

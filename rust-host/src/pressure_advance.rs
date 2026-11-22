@@ -158,13 +158,24 @@ impl Advance {
         timeline: &Trajectory,
         distance: f64,
     ) -> Result<Vec<Event>, step_times::Error> {
+        let initial = timeline.segments().first().map_or(0., |s| s.position[0]);
+        self.crossings_from(timeline, distance, initial)
+    }
+
+    /// Match phase-local nominal geometry without resetting the previously
+    /// quantized motor position to a fractional nominal E coordinate.
+    pub(crate) fn crossings_from(
+        &self,
+        timeline: &Trajectory,
+        distance: f64,
+        initial: f64,
+    ) -> Result<Vec<Event>, step_times::Error> {
         let segs = timeline.segments();
         let Some((first, last)) = segs.first().zip(segs.last()) else {
             return Ok(Vec::new());
         };
-        let start = [first.position[0], 0.0, 0.0];
-        let mut solver = Solver::new(Axis::X, distance, start)?;
-        let head = idle(first.at - 1.0, 1.0, start[0]);
+        let mut solver = Solver::new(Axis::X, distance, [initial, 0., 0.])?;
+        let head = idle(first.at - 1.0, 1.0, first.position[0]);
         let tail = idle(last.end(), 1.0, last.local(last.duration)[0]);
         let mut out = Vec::new();
         let mut solve = |idx: usize, start: f64, end: f64| -> Result<(), step_times::Error> {

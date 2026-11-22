@@ -1141,6 +1141,14 @@ It returns no partial plan if any later phase is invalid. The reference
 adds the same conservative barriers to stock Klippy: 180 mixed files,
 2,160 motion profiles and 720 boundary positions match. This compares
 the explicit-barrier schedule, not stock's overlap at heater commands.
+The machine-bound compiler can also encode those stages on separate
+inert clocks without resetting the underlying fractional step grid.
+A sub-half-step move before a wait is not lost or counted twice when
+the next move crosses the threshold. Signed final positions match
+stock C for 73 synthetic phase sequences each with and without static
+input shaping. This does not reproduce absolute stock clocks across
+the virtual heater wait, or allow a real MCU to be reset mid-print.
+
 
 
 

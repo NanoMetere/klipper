@@ -1100,3 +1100,100 @@ fn dispatching_heater_text_only_commits_after_a_valid_motion_gate() {
     ));
     assert_eq!(bank.targets(), [0.]);
 }
+
+#[test]
+fn mixed_steps_keep_the_motor_grid_across_separate_heater_clocks() {
+    use klipper_host_protocol::{
+        extrusion::{Extruder, Settings},
+        machine_preview::{
+            mixed::{Input, Stage},
+            SimulatedExtruder,
+        },
+        step_clock::Command,
+        thermal::commands::{Bank, Output as Heat, Profile, Role},
+    };
+    let machine = Machine::from_config(&source()).unwrap();
+    let pos = [1., 1., 0.2];
+    let mut home = machine.virtual_homing(pos).unwrap();
+    for (axis, coordinate) in pos.into_iter().enumerate() {
+        let token = home.arm(axis as u8, coordinate, true).unwrap();
+        let hit = Some(Counter {
+            start: 8,
+            trigger: 7,
+            halt: 7,
+        });
+        home.complete(
+            token,
+            if axis < 2 {
+                [hit, hit, None]
+            } else {
+                [None, None, hit]
+            },
+            true,
+        )
+        .unwrap();
+    }
+    let profiles = [Profile {
+        name: "extruder",
+        role: Role::Extruder(0),
+        minimum: 0.,
+        maximum: 300.,
+    }];
+    let bank = Bank::new(&profiles, &[], Some(0), false).unwrap();
+    let geometry = Extruder::new(Settings {
+        nozzle: 0.4,
+        filament: 1.75,
+        max_area: 2.0,
+        retraction_distance: 2.,
+        retraction_velocity: 20.,
+        retraction_accel: 300.,
+        corner_velocity: 1.,
+        min_simulated_temperature: 170.,
+    })
+    .unwrap();
+    let ex = SimulatedExtruder {
+        geometry: &geometry,
+        temperature: 210.,
+        step_distance: 0.004,
+        inverse_direction: false,
+        pressure_advance: None,
+    };
+    let code = "G91\nM83\nG1 X.006 E.0015 F300\nM109 S200\nG1 X.006 E.0015\nM104 S0\n";
+    let plan = machine
+        .trace_mixed(
+            &home,
+            &bank,
+            Input {
+                script: code,
+                extruder: Some(ex),
+                hz: 20e6,
+                max_error: 0,
+                invert: [false, true, false],
+            },
+        )
+        .unwrap();
+    let [Stage::Motion { trace: first, .. }, Stage::Heater {
+        line: 4,
+        outcome: Heat::Set { wait: Some(_), .. },
+        targets,
+    }, Stage::Motion { trace: second, .. }, Stage::Heater { line: 6, .. }] = plan.phases.as_slice()
+    else {
+        panic!("incomplete plan");
+    };
+    assert_eq!(targets, &[200.]);
+    assert!(first.motors.iter().all(Vec::is_empty));
+    assert!(first.extruder.as_ref().unwrap().is_empty());
+    let count = |lane: &[Command]| {
+        lane.iter()
+            .map(|cmd| match cmd {
+                Command::Steps(b) => u32::from(b.count),
+                _ => 0,
+            })
+            .sum::<u32>()
+    };
+    assert_eq!(count(&second.motors[0]), 1);
+    assert_eq!(count(&second.motors[1]), 1);
+    assert_eq!(count(second.extruder.as_ref().unwrap()), 1);
+    assert!(matches!(second.motors[1][0], Command::SetDirection(false)));
+    assert_eq!(bank.targets(), [0.]);
+}
