@@ -25,6 +25,7 @@ pub mod thermal;
 pub mod extrusion;
 pub mod pressure_advance;
 pub mod bed_mesh;
+pub mod probe;
 pub mod can;
 pub mod retry_timing;
 pub mod timed_flight;

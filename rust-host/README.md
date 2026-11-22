@@ -738,6 +738,24 @@ E interpolation, two nonzero tool translations and coordinate rebasing.
 See `bench/tool_transform.py`. Heights are generated, not measured
 printer data, and installing/clearing a preview mesh never moves hardware.
 
+## Offline probe sampling
+
+`probe` projects trigger coordinates into bed and tool positions and
+applies stock mean/median, tolerance, and whole-set retries. The
+simulated precondition rejects an unhomed session; invalid sensor
+values and timeouts end it without a result. No pin, trigger
+transport, deployment script or real homing is involved.
+
+```sh
+python3 bench/probe.py /path/to/pinned/klipper --legacy /path/to/legacy/klipper
+```
+
+700 synthetic outcomes matched both actual stock Python helpers at
+the legacy and port pins: 258 success, 399 tolerance failures and
+43 timeout paths. This isolates sampling parity from the separate
+real Toolchanger constructor mismatch; it does not fix or load that
+plugin in Rust.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
