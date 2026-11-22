@@ -16,6 +16,7 @@ pub mod flight;
 pub mod lookahead;
 pub mod gcode;
 pub mod trajectory;
+pub mod step_times;
 #[cfg(feature = "identify")]
 mod vlq;
 

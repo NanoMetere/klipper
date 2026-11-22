@@ -310,6 +310,23 @@ included zero phases, short phases, idle gaps and samples at boundaries.
 A Rust unit test also builds a timeline from in-memory G-code profiles.
 No performance or hardware claim is made from this comparison.
 
+## Offline raw step crossings
+
+`step_times` applies Cartesian and CoreXY motor transforms and the stock
+iterative crossing algorithm to bounded portions of trajectory segments.
+It emits relative step times, direction, and commit markers; this is before
+tick conversion, short-reversal cancellation, step compression, and MCU I/O.
+
+```sh
+python3 bench/step_times.py /path/to/pinned/klipper
+```
+
+The unchanged C solver (with an in-memory sink before compression) and Rust
+matched all 34,805 crossings, 64,048 commit markers, and commanded positions
+at 5,000 segment boundaries. Cases include direction changes, inactive
+axes, and separately flushed segment portions. This does not validate
+actual step pulses or compressed firmware commands.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
