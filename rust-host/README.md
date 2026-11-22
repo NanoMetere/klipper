@@ -156,6 +156,28 @@ new host process and a freshly started MCU establish a new uptime epoch.
 This verifies teardown and fresh startup, not automatic live recovery in a
 long-running printer process. It does not send motion or heater commands.
 
+## Offline command release planner
+
+`planner::Planner` keeps bounded FIFO command lanes and batches ready
+commands into protocol-sized payloads. It models the pinned C scheduler's
+release clock, deadline priority, background priority, bounded flight and
+receive-byte windows, and minimum UART / classic CAN wire-time estimates.
+It does not drive a device. The caller still needs to own ACK progression,
+retransmission, burst writes, failure rollback and clock-epoch validation.
+
+```sh
+python3 bench/planner.py /path/to/pinned/klipper
+```
+
+The offline comparison invokes unchanged pinned C queue functions without
+starting their worker or opening a device. Across 22,504 mixed snapshots,
+Rust matched the stock action and wake time. The 5,755 emitted frames also
+matched byte-for-byte (including sequence, packing and CRC). Inputs covered
+PTY / UART / classic CAN timing models, multiple FIFO lanes, delayed release,
+background deadlines and backpressure. Empty waits are normalized to an
+idle result. These cases do not establish physical bus timing or print
+scheduler safety.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

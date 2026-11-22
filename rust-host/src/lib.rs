@@ -11,6 +11,7 @@ pub mod clock;
 pub mod stream;
 pub mod read_query;
 pub mod clock_sync;
+pub mod planner;
 #[cfg(feature = "identify")]
 mod vlq;
 
