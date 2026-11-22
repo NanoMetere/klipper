@@ -501,7 +501,7 @@ mod linux {
     pub fn run() -> Result<(), String> {
         let mut argv = std::env::args().skip(1);
         let arg = argv.next().ok_or("missing sample count")?;
-        if arg == "--gpio-dual" {
+        if matches!(arg.as_str(), "--gpio-dual" | "--gpio-dual-packed") {
             let fd = argv
                 .next()
                 .ok_or("secondary simulator descriptor required")?
@@ -515,7 +515,7 @@ mod linux {
             if a == b {
                 return Err("the two fixture PTYs must be independent".into());
             }
-            return crate::gpio_dual::run([primary, secondary]);
+            return crate::gpio_dual::run([primary, secondary], arg == "--gpio-dual-packed");
         }
 
         let trace = arg == "--clock-trace";

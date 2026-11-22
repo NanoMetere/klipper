@@ -15,8 +15,9 @@ use klipper_host_protocol::{
     toolchange::{Catalog, Scripts},
     virtual_job::{Job, RoutedLane, State},
     virtual_stepper::Stepper,
+    MAX_PAYLOAD,
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Instant};
 
 fn err(e: impl std::fmt::Debug) -> String {
     format!("{e:?}")
@@ -190,7 +191,7 @@ impl Peer {
     }
 }
 
-pub(super) fn run(links: [Link; 2]) -> Result<(), String> {
+pub(super) fn run(links: [Link; 2], batched: bool) -> Result<(), String> {
     let mut attested = Vec::new();
     let mut dictionaries = Vec::new();
     // Identify and attest both peers before either receives a single config write.
@@ -273,19 +274,47 @@ pub(super) fn run(links: [Link; 2]) -> Result<(), String> {
     }
     job.start(0).map_err(err)?;
     let mut sent = [0, 0];
+    let mut frames = [0, 0];
+    let began = Instant::now();
+    let mut submit = |board: usize, payload: &[u8]| -> Result<(), String> {
+        attested[board]
+            .send(payload)
+            .map_err(|e| format!("peer {board} motion: {e}"))?;
+        frames[board] += 1;
+        Ok(())
+    };
+    let mut frame = [0; MAX_PAYLOAD];
+    let mut used = 0;
+    let mut owner = 0;
     while job.snapshot().state != State::Finished {
         for item in job.poll(end, 256).map_err(err)? {
             let lane = item.lane;
             let (board, _) = ROUTE[lane];
-            motors[lane]
-                .accept_payload(&wire, &item.command.bytes)
-                .map_err(err)?;
-            attested[board]
-                .send(&item.command.bytes)
-                .map_err(|e| format!("peer {board} motion: {e}"))?;
+            let bytes = item.command.bytes.as_slice();
+            motors[lane].accept_payload(&wire, bytes).map_err(err)?;
+            if bytes.is_empty() || bytes.len() > MAX_PAYLOAD {
+                return Err("invalid local fixture command size".into());
+            }
+            if batched {
+                // Flush at every peer change. This preserves the global
+                // planned order, not just each board's local wire order.
+                if used > 0 && (owner != board || used + bytes.len() > MAX_PAYLOAD) {
+                    submit(owner, &frame[..used])?;
+                    used = 0;
+                }
+                owner = board;
+                frame[used..used + bytes.len()].copy_from_slice(bytes);
+                used += bytes.len();
+            } else {
+                submit(board, bytes)?;
+            }
             sent[board] += 1;
         }
     }
+    if used > 0 {
+        submit(owner, &frame[..used])?;
+    }
+    let enqueue_ns = began.elapsed().as_nanos();
     let lead = (hz * 2.) as u64;
     let mut final_pos = [0; 5];
     for n in 0..=16 {
@@ -306,5 +335,6 @@ pub(super) fn run(links: [Link; 2]) -> Result<(), String> {
         "GPIO_DUAL {} {} {} {} {} {} {}",
         sent[0], sent[1], final_pos[0], final_pos[1], final_pos[2], final_pos[3], final_pos[4]
     );
+    eprintln!("DUAL_ENQUEUE {} {} {enqueue_ns}", frames[0], frames[1]);
     Ok(())
 }

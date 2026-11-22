@@ -63,9 +63,10 @@ def main():
     p.add_argument("upstream", type=Path, help=f"checkout at {PIN} with a Linux .config and build")
     p.add_argument("--binary", type=Path, default=ROOT/"target/release/examples/native_mcu")
     p.add_argument("--rounds", type=int, default=1)
+    p.add_argument("--dual-rounds", type=int, default=1)
     a = p.parse_args()
-    if not 1 <= a.rounds <= 99:
-        p.error("--rounds must be between 1 and 99")
+    if not 1 <= a.rounds <= 99 or not 1 <= a.dual_rounds <= 99:
+        p.error("--rounds and --dual-rounds must be between 1 and 99")
     upstream, binary = a.upstream.resolve(), a.binary.resolve()
     control = run(binary, upstream/"out/klipper.elf")
     assert control.returncode and "NotFixture" in control.stderr, control.stderr
@@ -116,7 +117,7 @@ def main():
                                  lambda p: len(p) > 20 and any(p.startswith(t) for t in candidates))
         assert "motion frame" in details and "GPIO_FIXTURE" not in details, details
         print("Dropped a batched motion ACK: no extra host frame or virtual clock advance")
-        check_dual(upstream, mcu, binary)
+        check_dual(upstream, mcu, binary, a.dual_rounds)
     print("Plain Linux MCU refused before configuration/motion")
 
 

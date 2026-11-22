@@ -499,6 +499,18 @@ shared checkpoints. If either dictionary is unmarked, neither receives
 configuration. A dropped secondary motion ACK stops all later messages
 and prevents advancing either virtual clock; this is not a physical
 cross-board emergency stop or real CAN timing validation.
+Packing only consecutive commands for the same peer reduces the two
+boards' frame counts from 140 + 28 to 19 + 5. Decoding the actual host
+traffic verifies identical cross-board command order, and both
+directions of the enqueue benchmark check all 17 counters. Thirty
+alternating pairs took a median 3.464 → 0.533 ms until the last
+software ACK (85% lower versus per-command Rust framing). Fault
+injection still halts both peers before either virtual clock advances.
+
+```sh
+python3 bench/native_gpio_motion.py /path/to/pinned/klipper --dual-rounds 30
+```
+
 
 
 ## Inert multiple-extruder coordinates
