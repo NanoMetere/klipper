@@ -9,6 +9,7 @@ use crate::{
     print_stats::{self, Extrusion, Stats},
     step_clock::{Clock, Command},
     step_wire::StepMessages,
+    thermal::commands::{self as thermal, Gate, Observation, Source, Wait},
     verify_heater::{Decision as HeaterDecision, Fault as HeaterFault, Monitor},
     virtual_job::{self, Issued, Job, State},
     virtual_sd,
@@ -31,6 +32,8 @@ pub enum Error {
     Machine(machine_preview::Error),
     Job(virtual_job::Error),
     Status(print_stats::Error),
+    Thermal(thermal::Error),
+    ThermalGate,
 }
 
 pub struct Simulation {
@@ -43,6 +46,7 @@ pub struct Simulation {
     reading: Extrusion,
     extruder_lane: bool,
     tools: Option<ToolState>,
+    heat_wait: Option<HeatWait>,
 }
 
 /// Inputs bound to the explicitly virtual run; no external paths are opened.
@@ -73,6 +77,89 @@ struct ToolState {
     readings: Vec<(u8, Extrusion)>,
     changes: VecDeque<(u64, u8)>,
     planned_active: u8,
+}
+
+enum HeatSource {
+    Heater(usize),
+    Sensor(String),
+}
+
+enum HeatCondition {
+    Controller {
+        index: usize,
+        target: f64,
+    },
+    Range {
+        source: HeatSource,
+        minimum: f64,
+        maximum: f64,
+    },
+}
+
+struct HeatWait {
+    condition: HeatCondition,
+    max_sample_age: f64,
+}
+
+impl HeatWait {
+    fn new(wait: Wait<'_>, max_sample_age: f64) -> Result<Self, Error> {
+        if !(0.0..=3600.).contains(&max_sample_age) {
+            return Err(Error::Thermal(thermal::Error::Observation));
+        }
+        let condition = match wait {
+            Wait::Controller { index, target }
+                if index < 32 && target.is_finite() && target != 0. =>
+            {
+                HeatCondition::Controller { index, target }
+            }
+            Wait::Range {
+                source,
+                minimum,
+                maximum,
+            } if minimum < maximum && (minimum.is_finite() || maximum.is_finite()) => {
+                let source = match source {
+                    Source::Heater(index) if index < 32 => HeatSource::Heater(index),
+                    Source::Sensor(name) if (1..=128).contains(&name.len()) => {
+                        HeatSource::Sensor(name.into())
+                    }
+                    _ => return Err(Error::ThermalGate),
+                };
+                HeatCondition::Range {
+                    source,
+                    minimum,
+                    maximum,
+                }
+            }
+            _ => return Err(Error::ThermalGate),
+        };
+        Ok(Self {
+            condition,
+            max_sample_age,
+        })
+    }
+    fn wait(&self) -> Wait<'_> {
+        match &self.condition {
+            HeatCondition::Controller { index, target } => Wait::Controller {
+                index: *index,
+                target: *target,
+            },
+            HeatCondition::Range {
+                source,
+                minimum,
+                maximum,
+            } => {
+                let source = match source {
+                    HeatSource::Heater(index) => Source::Heater(*index),
+                    HeatSource::Sensor(name) => Source::Sensor(name),
+                };
+                Wait::Range {
+                    source,
+                    minimum: *minimum,
+                    maximum: *maximum,
+                }
+            }
+        }
+    }
 }
 
 fn preflight<'a>(
@@ -167,6 +254,7 @@ impl Simulation {
             reading: NO_EXTRUDER,
             extruder_lane: trace.extruder.is_some(),
             tools: None,
+            heat_wait: None,
         })
     }
 
@@ -242,6 +330,7 @@ impl Simulation {
                 changes,
                 planned_active: input.initial_tool,
             }),
+            heat_wait: None,
         })
     }
 
@@ -310,6 +399,9 @@ impl Simulation {
     }
 
     pub fn resume(&mut self, clock: u64) -> Result<(), Error> {
+        if self.heat_wait.is_some() {
+            return Err(Error::ThermalGate);
+        }
         let at = self.seconds(clock)?;
         self.job.resume(clock).map_err(Error::Job)?;
         self.stats
@@ -317,6 +409,52 @@ impl Simulation {
             .map_err(Error::Status)?;
         self.last_clock = clock;
         Ok(())
+    }
+
+    /// Pause the virtual release cursor at an already planned command
+    /// boundary. A generic resume cannot bypass this simulated wait.
+    pub fn begin_temperature_wait(
+        &mut self,
+        wait: Wait<'_>,
+        max_sample_age: f64,
+    ) -> Result<(), Error> {
+        if self.heat_wait.is_some() {
+            return Err(Error::ThermalGate);
+        }
+        let pending = HeatWait::new(wait, max_sample_age)?;
+        self.pause()?;
+        self.heat_wait = Some(pending);
+        Ok(())
+    }
+
+    /// Evaluate only a supplied inert observation, at a caller-selected host
+    /// tick. Missing/stale data leave the virtual release cursor blocked.
+    pub fn poll_temperature_wait(
+        &mut self,
+        clock: u64,
+        reading: Option<Observation<'_>>,
+        shutdown: bool,
+    ) -> Result<Gate, Error> {
+        let at = self.seconds(clock)?;
+        let state = self.heat_wait.as_ref().ok_or(Error::ThermalGate)?;
+        let gate = state
+            .wait()
+            .poll(at, state.max_sample_age, reading, shutdown)
+            .map_err(Error::Thermal)?;
+        // A paused job always emits no records. Moving this host clock does
+        // not move the virtual job cursor.
+        debug_assert_eq!(self.job.snapshot().state, State::Paused);
+        let work = self.advance(clock, 1)?;
+        debug_assert!(work.is_empty());
+        match gate {
+            Gate::Pending => (),
+            Gate::Ready => {
+                self.heat_wait = None;
+                self.resume(clock)?;
+            }
+            Gate::Shutdown => self.fail("simulated heater wait shut down")?,
+        }
+        Ok(gate)
     }
 
     /// Attach an inert extrusion observation to print status. This is
@@ -367,6 +505,7 @@ impl Simulation {
     pub fn cancel(&mut self) -> Result<(), Error> {
         let at = self.seconds(self.last_clock)?;
         self.job.cancel().map_err(Error::Job)?;
+        self.heat_wait = None;
         if let Some(tools) = &mut self.tools {
             tools.changes.clear();
         }
@@ -406,6 +545,7 @@ impl Simulation {
             return Err(Error::Status(print_stats::Error::Metadata));
         }
         self.job.fault().map_err(Error::Job)?;
+        self.heat_wait = None;
         if let Some(tools) = &mut self.tools {
             tools.changes.clear();
         }
@@ -443,7 +583,13 @@ impl Simulation {
                 object.as_object().unwrap().clone(),
             )
         });
-        Ok(base && tools)
+        let heat = serde_json::json!({ "mode":"simulation", "waiting":self.heat_wait.is_some() });
+        Ok(base
+            && tools
+            && source.set_object(
+                "virtual_heat_wait".into(),
+                heat.as_object().unwrap().clone(),
+            ))
     }
 
     fn seconds(&self, clock: u64) -> Result<f64, Error> {

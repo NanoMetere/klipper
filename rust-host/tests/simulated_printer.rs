@@ -940,3 +940,111 @@ fn checked_dock_applies_lane_geometry_to_staged_and_restore_moves() {
     assert_eq!(changer.state(), ChangerState::Faulted);
     assert_eq!(changer.active(), None);
 }
+
+#[test]
+fn temperature_wait_blocks_virtual_release_until_the_right_fresh_source() {
+    use klipper_host_protocol::thermal::commands::{
+        Bank, Command, Gate, Heater, Observation, Output, Profile, Role, Source,
+    };
+    let mut simulation = plan("TEST_PATH\n");
+    let profiles = [Profile {
+        name: "extruder",
+        role: Role::Extruder(0),
+        minimum: 0.,
+        maximum: 300.,
+    }];
+    let mut bank = Bank::new(&profiles, &["chamber"], Some(0), false).unwrap();
+    let Output::Set {
+        wait: Some(wait), ..
+    } = bank
+        .command(Command::Set {
+            heater: Heater::Extruder(None),
+            target: 205.,
+            wait: true,
+        })
+        .unwrap()
+    else {
+        panic!("controller wait not produced");
+    };
+    let hz = 20e6;
+    let tick = |s: f64| (s * hz) as u64;
+    let end = simulation.snapshot().planned_end;
+    simulation.start(0).unwrap();
+    simulation.advance(tick(0.25), 32).unwrap();
+    simulation.begin_temperature_wait(wait, 0.5).unwrap();
+    assert!(matches!(
+        simulation.resume(tick(3.0)),
+        Err(simulated_printer::Error::ThermalGate)
+    ));
+    assert!(simulation.advance(tick(3.), 256).unwrap().is_empty());
+    assert_eq!(simulation.snapshot().simulated_tick, tick(0.25));
+    let fresh = Observation {
+        sampled_at: 3.0,
+        temperature: 205.,
+        controller_busy: false,
+        source: Source::Heater(0),
+    };
+    assert!(simulation
+        .poll_temperature_wait(
+            tick(3.),
+            Some(Observation {
+                source: Source::Sensor("chamber"),
+                ..fresh
+            }),
+            false
+        )
+        .is_err());
+    assert_eq!(
+        simulation
+            .poll_temperature_wait(tick(4.), Some(fresh), false)
+            .unwrap(),
+        Gate::Pending
+    );
+    assert_eq!(
+        simulation
+            .poll_temperature_wait(tick(4.5), None, false)
+            .unwrap(),
+        Gate::Pending
+    );
+    let verify = |simulation: &mut Simulation, expected: bool| {
+        let mut snapshot = Snapshot::default();
+        let mut client = Session::default();
+        let mut replies = Vec::new();
+        assert!(simulation.publish(&mut snapshot).unwrap());
+        client.feed(b"{\"id\":1,\"method\":\"objects/query\",\"params\":{\"objects\":{\"virtual_heat_wait\":null}}}\x03",
+                    &snapshot,1.,|frame| collect(frame,&mut replies));
+        assert_eq!(
+            replies[0]["result"]["status"]["virtual_heat_wait"]["waiting"],
+            expected
+        );
+    };
+    verify(&mut simulation, true);
+    assert_eq!(
+        simulation
+            .poll_temperature_wait(
+                tick(5.),
+                Some(Observation {
+                    sampled_at: 4.9,
+                    ..fresh
+                }),
+                false
+            )
+            .unwrap(),
+        Gate::Ready
+    );
+    assert_eq!(simulation.snapshot().state, State::Running);
+    assert_eq!(simulation.snapshot().simulated_tick, tick(0.25));
+    verify(&mut simulation, false);
+    assert!(!simulation.advance(end + tick(5.), 256).unwrap().is_empty());
+
+    let mut stopped = plan("TEST_PATH\n");
+    stopped.start(0).unwrap();
+    stopped.begin_temperature_wait(wait, 0.5).unwrap();
+    assert_eq!(
+        stopped.poll_temperature_wait(tick(2.), None, true).unwrap(),
+        Gate::Shutdown
+    );
+    assert_eq!(stopped.snapshot().state, State::Faulted);
+    assert!(stopped.advance(end + tick(5.), 256).unwrap().is_empty());
+    verify(&mut stopped, false);
+}

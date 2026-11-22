@@ -1110,6 +1110,15 @@ taskset -c 3 python3 bench/virtual_job_timing.py /path/to/baseline/virtual_job_t
   target/release/examples/virtual_job_timing --prepare --rounds 25
 ```
 
+A simulated job can pause its release cursor at a temperature wait
+created by the offline heater command model. Generic resume does not
+bypass this pause. No queued work is released on missing, stale, or
+wrong-source readings; a sufficiently fresh matching observation can
+resume without replaying the elapsed wall clock as motion. A simulated
+shutdown faults instead. The read-only `virtual_heat_wait` status
+reports whether this gate is active. It does not issue heater commands
+or assure that any physical reading is valid.
+
 ## Offline motion wire encoding
 
 `step_wire` uses the identified dictionary's actual `set_next_step_dir`
