@@ -14,6 +14,9 @@ mod linux {
         mcu_config::{Error as ConfigError, Messages, Profile, Report, Session, Start},
         read_query::{Action, ReadQuery},
         stream::Receiver,
+        trigger_sync::{
+            Error as TriggerError, Messages as TriggerMessages, Reason, State as TriggerState,
+        },
         Frame,
     };
     use std::fs::File;
@@ -171,6 +174,73 @@ mod linux {
         )
     }
 
+    fn receive_fixture<T>(
+        link: &mut Link,
+        expected_sequence: u8,
+        timeout: Duration,
+        timeout_error: &str,
+        mut accept: impl FnMut(Frame<'_>) -> Result<Option<T>, String>,
+    ) -> Result<T, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(timeout_error.into());
+            }
+            match wait_readable(link.reader.as_fd(), deadline - now) {
+                Ok(false) => return Err(timeout_error.into()),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.to_string()),
+                Ok(true) => {}
+            }
+            let mut buf = [0; 256];
+            let read = match link.reader.read(&mut buf) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.to_string()),
+                Ok(0) => return Err("fixture peer closed".into()),
+                Ok(n) => n,
+            };
+            let mut received = None;
+            link.rx.feed(&buf[..read], |f| {
+                if f.sequence == expected_sequence && received.is_none() {
+                    received = accept(f).transpose();
+                }
+            });
+            if let Some(value) = received {
+                return value;
+            }
+        }
+    }
+
+    fn fixture_write<T>(
+        link: &mut Link,
+        frame: &[u8],
+        accept: impl FnMut(Frame<'_>) -> Result<Option<T>, String>,
+    ) -> Result<T, String> {
+        let next = (link.sequence + 1) & 15;
+        // No message is ever resent after an unknown write outcome.
+        link.writer.write_all(frame).map_err(|e| e.to_string())?;
+        let value = receive_fixture(
+            link,
+            next,
+            Duration::from_millis(700),
+            "unknown config write outcome (no ACK or expected response)",
+            accept,
+        )?;
+        link.sequence = next;
+        Ok(value)
+    }
+
+    fn fixture_ack(link: &mut Link, frame: &[u8]) -> Result<(), String> {
+        fixture_write(link, frame, |f| {
+            if f.payload.is_empty() {
+                Ok(Some(()))
+            } else {
+                Err("MCU sent a response instead of a fixture ACK".into())
+            }
+        })
+    }
+
     fn read_config(link: &mut Link, codec: &Messages) -> Result<Report, String> {
         link.exchange(
             |seq| codec.get_config(seq).map_err(|e| format!("{e:?}")),
@@ -196,43 +266,8 @@ mod linux {
         let sends = if start == Start::NeedsConfiguration {
             let items = codec.payloads(&profile);
             for bytes in &items {
-                // No message is ever resent after an unknown write outcome.
                 let frame = encode(link.sequence, bytes).map_err(|e| format!("{e:?}"))?;
-                let next = (link.sequence + 1) & 15;
-                link.writer.write_all(&frame).map_err(|e| e.to_string())?;
-                let deadline = Instant::now() + Duration::from_millis(700);
-                loop {
-                    let now = Instant::now();
-                    if now >= deadline
-                        || !wait_readable(link.reader.as_fd(), deadline - now)
-                            .map_err(|e| e.to_string())?
-                    {
-                        return Err("unknown config write outcome (no ACK)".into());
-                    }
-                    let mut buf = [0; 256];
-                    let read = link.reader.read(&mut buf).map_err(|e| e.to_string())?;
-                    if read == 0 {
-                        return Err("config peer closed".into());
-                    }
-                    let mut ack = false;
-                    let mut unexpected = false;
-                    link.rx.feed(&buf[..read], |f| {
-                        if f.sequence == next {
-                            if f.payload.is_empty() {
-                                ack = true;
-                            } else {
-                                unexpected = true;
-                            }
-                        }
-                    });
-                    if unexpected {
-                        return Err("MCU sent a response instead of a config ACK".into());
-                    }
-                    if ack {
-                        link.sequence = next;
-                        break;
-                    }
-                }
+                fixture_ack(link, &frame)?;
             }
             items.len()
         } else {
@@ -262,6 +297,74 @@ mod linux {
             return Err("reused move slot count changed".into());
         }
         eprintln!("REUSE {} {slots} 0", confirmed.crc);
+        Ok(())
+    }
+
+    fn trigger_report(
+        codec: &TriggerMessages,
+        frame: Frame<'_>,
+    ) -> Result<Option<TriggerState>, String> {
+        if frame.payload.is_empty() {
+            return Ok(None);
+        }
+        match codec.response(frame) {
+            Ok(state) if state.oid == 0 => Ok(Some(state)),
+            Ok(_) | Err(TriggerError::UnexpectedMessage) => Ok(None),
+            Err(e) => Err(format!("{e:?}")),
+        }
+    }
+
+    fn trigger_fixture(
+        link: &mut Link,
+        codec: &TriggerMessages,
+        clock: &ClockMessages,
+        hz: f64,
+    ) -> Result<(), String> {
+        let err = |e| format!("{e:?}");
+        let begin_arm = |link: &mut Link| {
+            let arm = codec
+                .arm(link.sequence, 0, 0, 0, Reason::CommsTimeout)
+                .map_err(err)?;
+            fixture_ack(link, &arm)
+        };
+        begin_arm(link)?;
+        let stop = codec
+            .trigger(link.sequence, 0, Reason::HostRequest)
+            .map_err(err)?;
+        let report = fixture_write(link, &stop, |f| trigger_report(codec, f))?;
+        if report.can_trigger || report.reason != Reason::HostRequest || report.clock != 0 {
+            return Err(format!("unexpected host-trigger state: {report:?}"));
+        }
+        eprintln!("TRIGGER host {}", report.reason.code());
+
+        begin_arm(link)?;
+        let read = read_clock(link, clock, false)?;
+        let Response::Clock(current) = read.value else {
+            return Err("expected fixture clock".into());
+        };
+        let expire = current.wrapping_add((hz * 0.15) as u32);
+        let arm_timeout = codec.expire(link.sequence, 0, expire).map_err(err)?;
+        fixture_ack(link, &arm_timeout)?;
+        let sequence = link.sequence;
+        let timeout = receive_fixture(
+            link,
+            sequence,
+            Duration::from_secs(1),
+            "no fixture timeout response",
+            |f| trigger_report(codec, f),
+        )?;
+        let lateness = timeout.clock.wrapping_sub(expire);
+        if timeout.can_trigger || timeout.reason != Reason::CommsTimeout || lateness > hz as u32 {
+            return Err(format!("unexpected timeout state: {timeout:?}"));
+        }
+        let stop = codec
+            .trigger(link.sequence, 0, Reason::HostRequest)
+            .map_err(err)?;
+        let stopped = fixture_write(link, &stop, |f| trigger_report(codec, f))?;
+        if stopped.can_trigger || stopped.reason != Reason::CommsTimeout || stopped.clock != 0 {
+            return Err("firmware changed the terminal trigger reason".into());
+        }
+        eprintln!("TRIGGER timeout {} {}", stopped.reason.code(), lateness);
         Ok(())
     }
 
@@ -337,7 +440,8 @@ mod linux {
         let arg = argv.next().ok_or("missing sample count")?;
         let trace = arg == "--clock-trace";
         let pipe = arg == "--pipeline";
-        let config_fixture = arg == "--config-fixture";
+        let trigger = arg == "--trigger-fixture";
+        let config_fixture = arg == "--config-fixture" || trigger;
         let number = if trace || pipe || config_fixture {
             argv.next().ok_or("missing trace size")?
         } else {
@@ -406,7 +510,21 @@ mod linux {
         let dictionary = identify.dictionary().map_err(|e| format!("{e:?}"))?;
         if config_fixture {
             let messages = Messages::from_dictionary(&dictionary).map_err(|e| format!("{e:?}"))?;
-            return configure_fixture(&mut link, &messages, count as u8);
+            configure_fixture(&mut link, &messages, count as u8)?;
+            if trigger {
+                let codec =
+                    TriggerMessages::from_dictionary(&dictionary).map_err(|e| format!("{e:?}"))?;
+                let clock =
+                    ClockMessages::from_dictionary(&dictionary).map_err(|e| format!("{e:?}"))?;
+                let hz = dictionary
+                    .config
+                    .get("CLOCK_FREQ")
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|v| (1e3..=1e9).contains(v))
+                    .ok_or("invalid fixture clock rate")?;
+                return trigger_fixture(&mut link, &codec, &clock, hz);
+            }
+            return Ok(());
         }
         if pipe {
             let receive_window = dictionary

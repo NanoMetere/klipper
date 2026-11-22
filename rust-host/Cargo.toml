@@ -42,3 +42,7 @@ required-features = ["identify"]
 [[example]]
 name = "mcu_config_replay"
 required-features = ["identify"]
+
+[[example]]
+name = "trigger_sync_replay"
+required-features = ["identify"]

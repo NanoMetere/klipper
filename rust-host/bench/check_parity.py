@@ -51,6 +51,8 @@ def main():
     phases.extend([
         ("build_fixture_binaries", ["cargo", "build", "--locked", "--release", "--examples"]),
         ("webhooks", [sys.executable, ROOT/"bench/webhooks.py", upstream, examples/"webhook_replay"]),
+        ("trigger_timing", [sys.executable, ROOT/"bench/trigger_sync.py", upstream,
+                            "--binary", examples/"trigger_sync_replay"]),
     ])
     if dictionary.is_file():
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
@@ -68,6 +70,8 @@ def main():
                               examples/"native_mcu", "--live-clock"]),
             ("native_mcu_config", [sys.executable, ROOT/"bench/mcu_config.py", upstream, "--binary",
                                    examples/"native_mcu"]),
+            ("native_trigger_sync", [sys.executable, ROOT/"bench/trigger_sync.py", upstream, "--native",
+                                     "--binary", examples/"native_mcu"]),
             ("native_pipeline", [sys.executable, ROOT/"bench/pipeline_pty.py", upstream,
                                  examples/"native_mcu", "--waves", "8", "--rounds", "2"]),
         ])

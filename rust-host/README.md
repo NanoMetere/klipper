@@ -440,9 +440,18 @@ An identical profile reuses the configuration without writes; a differing
 CRC is refused. Dropping the first config write ACK causes the fixture to
 stop without retransmitting or finalizing the unknown state.
 
+The pin-free trigger-sync fixture also matches 3,600 stock single- and
+multi-MCU report/deadline vectors. On the software MCU, the Rust and stock
+paths agree on host-request and watchdog-expiry reasons. A stop query
+preserves the terminal expiry reason. These tests do not attach an endstop,
+drive any pin, or validate physical multi-MCU synchronization.
+
 ```sh
 cargo build --locked --release --examples
 python3 bench/mcu_config.py /path/to/pinned/klipper
+python3 bench/trigger_sync.py /path/to/pinned/klipper
+python3 bench/trigger_sync.py /path/to/pinned/klipper --native \
+  --binary target/release/examples/native_mcu
 ```
 
 ## Fixed offline input shaping

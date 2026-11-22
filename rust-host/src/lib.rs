@@ -10,6 +10,8 @@ pub mod identify;
 pub mod clock;
 #[cfg(feature = "identify")]
 pub mod mcu_config;
+#[cfg(feature = "identify")]
+pub mod trigger_sync;
 pub mod stream;
 pub mod read_query;
 pub mod clock_sync;
