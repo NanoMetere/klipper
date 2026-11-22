@@ -79,6 +79,8 @@ def main():
                                  "--binary", target/"release/klipper-preview"]),
         ("fan", [sys.executable, ROOT/"bench/fan.py", upstream,
                   "--binary", examples/"fan_replay"]),
+        ("mixed_motion", [sys.executable, ROOT/"bench/mixed_motion.py", upstream,
+                          "--binary", examples/"mixed_preflight"]),
         ("thermal_commands", [sys.executable, ROOT/"bench/thermal_commands.py", upstream,
                               "--binary", examples/"thermal_command_replay"]),
         ("verify_heater", [sys.executable, ROOT/"bench/verify_heater.py", upstream,

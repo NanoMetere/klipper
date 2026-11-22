@@ -1135,6 +1135,13 @@ boundaries in a mixed file while leaving all nonheater G-code and its
 line numbers intact. It does not time, validate, or release motion
 chunks. A future integrated executor must enforce each barrier before
 submitting work from the next motion chunk.
+A separate preflight now carries one coordinate/extrusion state across
+those chunks, with an explicit full look-ahead flush at each boundary.
+It returns no partial plan if any later phase is invalid. The reference
+adds the same conservative barriers to stock Klippy: 180 mixed files,
+2,160 motion profiles and 720 boundary positions match. This compares
+the explicit-barrier schedule, not stock's overlap at heater commands.
+
 
 
 
