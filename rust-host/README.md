@@ -475,6 +475,25 @@ with the four pinned Toolchanger modules and pinned LED Effect module in
 requirements. The runner checks pins/module bytes and isolates debug
 artifacts. Use `--results` with a new empty directory to retain stock logs.
 
+## Offline thermal model
+
+`thermal` ports stock PID and watermark controller mathematics and
+temperature smoothing. It computes a simulated duty request only. A
+disabled target or stale host signal produces zero modeled duty; invalid
+or out-of-range sensor samples and backwards clocks latch an error.
+This is not a heater driver and does not implement sensor conversion,
+heater verification, PWM scheduling, MCU watchdogs, or emergency stop.
+
+```sh
+python3 bench/thermal.py /path/to/pinned/klipper
+```
+
+22,000 deterministic synthetic samples matched the stock PID and
+watermark model with a dummy output sink, including target changes,
+saturation, varying sample intervals and a stale-host gate. Rust unit
+tests independently check the invalid input and latch behavior. No
+heater or hardware was used.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

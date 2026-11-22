@@ -21,6 +21,7 @@ pub mod step_compress;
 pub mod step_clock;
 pub mod config;
 pub mod machine_preview;
+pub mod thermal;
 #[cfg(feature = "webhooks")]
 pub mod webhooks;
 #[cfg(feature = "identify")]
