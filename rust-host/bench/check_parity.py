@@ -77,6 +77,8 @@ def main():
                            "--binary", examples/"tool_motion_replay"]),
         ("fan", [sys.executable, ROOT/"bench/fan.py", upstream,
                   "--binary", examples/"fan_replay"]),
+        ("thermal_commands", [sys.executable, ROOT/"bench/thermal_commands.py", upstream,
+                              "--binary", examples/"thermal_command_replay"]),
         ("verify_heater", [sys.executable, ROOT/"bench/verify_heater.py", upstream,
                           "--binary", examples/"verify_heater_replay"]),
         ("virtual_stepper", [sys.executable, ROOT/"bench/virtual_stepper.py",

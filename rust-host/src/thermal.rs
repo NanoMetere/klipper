@@ -2,6 +2,7 @@
 //! Offline thermal controller math, adapted from Klipper extras/heaters.py.
 //! Upstream copyright (C) 2016-2025 Kevin O'Connor <kevin@koconnor.net>.
 //! No sensor, PWM or transport integration. Not suitable for driving a heater.
+pub mod commands;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {

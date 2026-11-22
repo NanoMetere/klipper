@@ -901,6 +901,21 @@ saturation, varying sample intervals and a stale-host gate. Rust unit
 tests independently check the invalid input and latch behavior. No
 heater or hardware was used.
 
+The separate `thermal::commands` model routes stock M104/M109,
+M140/M190, named heater targets, all-off, and sensor-range waits
+against declared offline heaters. Explicit T selects a contiguous
+stock heater index, not a sparse physical Toolchanger number. The
+reference calls the actual Klippy command handlers using inert
+observations: 1,848 target snapshots, outcomes and poll counts matched
+in normal and debug modes. The Rust model rejects non-finite values;
+missing or stale samples never complete a wait, and a sample from the
+wrong source is rejected. No sensor or heater I/O is available.
+
+```sh
+cargo build --locked --release --example thermal_command_replay
+python3 bench/thermal_commands.py /path/to/pinned/klipper
+```
+
 ## Offline motion wire encoding
 
 `step_wire` uses the identified dictionary's actual `set_next_step_dir`
