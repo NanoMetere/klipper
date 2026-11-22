@@ -454,12 +454,21 @@ clock checkpoints. The XYZ macro path runs 138 commands with end counts
 `[720, -120, 112]`. A second path with input shaping, pressure advance,
 retraction and extrusion runs 277 commands with end counts
 `[720, -120, 112, 100]`. Cold extrusion is rejected during virtual
-preflight. No physical pins, pulses, motors or wall-clock timing are tested
+preflight. No physical pins, pulses, motors or physical timing are tested
 in this deterministic fixture.
+
+The same four-lane motion payloads can be packed into 38 firmware frames
+instead of 277 single-command frames without reordering them. In 30
+rotating-order runs against the same fixture, the measured host enqueue
+stage (collecting/encoding payloads and waiting for software PTY ACKs)
+went from 1.771 ms to 0.282 ms median (84% less wall time). This compares
+two Rust transfer strategies, not Rust vs stock Klippy's serial batching
+or actual print time. Both variants check each of the 17 motion
+checkpoints against the C firmware counters.
 
 ```sh
 cargo build --locked --release --example native_mcu
-python3 bench/native_gpio_motion.py /path/to/pinned/klipper
+python3 bench/native_gpio_motion.py /path/to/pinned/klipper --rounds 30
 # Or add --native-gpio to bench/check_parity.py --native-pty.
 ```
 

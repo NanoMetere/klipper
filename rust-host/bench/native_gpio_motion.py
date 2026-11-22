@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import statistics
 import subprocess
 import tarfile
 import tempfile
@@ -61,23 +62,38 @@ def main():
     p.add_argument("--binary", type=Path, default=ROOT/"target/release/examples/native_mcu")
     p.add_argument("--rounds", type=int, default=1)
     a = p.parse_args()
-    if not 1 <= a.rounds <= 10:
-        p.error("--rounds must be between 1 and 10")
+    if not 1 <= a.rounds <= 99:
+        p.error("--rounds must be between 1 and 99")
     upstream, binary = a.upstream.resolve(), a.binary.resolve()
     control = run(binary, upstream/"out/klipper.elf")
     assert control.returncode and "NotFixture" in control.stderr, control.stderr
     with tempfile.TemporaryDirectory(prefix="klipper-gpio-stub-") as folder:
         mcu = build(upstream, Path(folder))
-        cases = {"--gpio-motion": [720, -120, 112], "--gpio-extrusion": [720, -120, 112, 100]}
-        for mode, expected in cases.items():
-            for _ in range(a.rounds):
+        modes = ["--gpio-motion", "--gpio-extrusion", "--gpio-batched"]
+        series = {mode: [] for mode in modes}
+        summaries = {}
+        for round_number in range(a.rounds):
+            split = round_number % len(modes)
+            for mode in modes[split:] + modes[:split]:
                 outcome = run(binary, mcu, mode)
                 assert outcome.returncode == 0, (mode, outcome.stderr)
-                tag, crc, payloads, *positions = outcome.stderr.split()
+                lines = outcome.stderr.splitlines()
+                assert len(lines) == 2, lines
+                tag, crc, payloads, *positions = lines[0].split()
+                enqueue_tag, frames, elapsed = lines[1].split()
+                expected = [720, -120, 112] if mode == modes[0] else [720, -120, 112, 100]
                 assert tag == "GPIO_FIXTURE" and int(crc) != 0
                 assert int(payloads) > 0 and [int(p) for p in positions] == expected, outcome.stderr
-            print(f"{mode}: {a.rounds} isolated run(s), {payloads} commands; C firmware and "
-                  f"Rust agree on motor counts {expected}")
+                assert enqueue_tag == "ENQUEUE" and 0 < int(frames) <= int(payloads) and int(elapsed) > 0
+                summary = (int(payloads), int(frames), expected, int(crc))
+                assert summaries.setdefault(mode, summary) == summary
+                series[mode].append(int(elapsed))
+        plain, packed = (summaries[mode] for mode in modes[1:])
+        assert plain[0] == packed[0] and packed[1] < plain[1] and packed[2:] == plain[2:], summaries
+        for mode, times in series.items():
+            payloads, frames, expected, _ = summaries[mode]
+            print(f"{mode}: {a.rounds} isolated run(s), {payloads} commands in {frames} frames; "
+                  f"matched {expected}; median enqueue {statistics.median(times)*1e-6:.3f} ms")
     print("Plain Linux MCU refused before configuration/motion")
 
 

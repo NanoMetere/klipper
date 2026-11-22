@@ -17,14 +17,20 @@ use klipper_host_protocol::{
     step_wire::StepMessages,
     virtual_job::State,
     virtual_stepper::Stepper,
+    MAX_PAYLOAD,
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Instant};
 
 fn err(e: impl std::fmt::Debug) -> String {
     format!("{e:?}")
 }
 
-pub(super) fn run(mut link: Link, dictionary: &Dictionary, extrusion: bool) -> Result<(), String> {
+pub(super) fn run(
+    mut link: Link,
+    dictionary: &Dictionary,
+    extrusion: bool,
+    batch: bool,
+) -> Result<(), String> {
     // Fail before any configuration or motion command to an unmarked peer.
     let motion = Codec::from_dictionary(dictionary).map_err(err)?;
     link.shutdown_watch = ShutdownWatch::new(dictionary);
@@ -144,15 +150,39 @@ pub(super) fn run(mut link: Link, dictionary: &Dictionary, extrusion: bool) -> R
     }
     simulation.start(0).map_err(err)?;
     let mut virtual_motors = oids.map(|oid| Stepper::new(oid, 0, 0));
+    let mut frame_count = 0usize;
+    let mut payload = Vec::with_capacity(MAX_PAYLOAD);
+    let enqueue = Instant::now();
+    let mut send = |data: &[u8]| -> Result<(), String> {
+        let frame = encode(link.sequence, data).map_err(err)?;
+        fixture_ack(&mut link, &frame)?;
+        frame_count += 1;
+        Ok(())
+    };
     while simulation.snapshot().state != State::Finished {
         for item in simulation.advance(planned.planned_end, 256).map_err(err)? {
             virtual_motors[item.lane]
                 .accept_payload(&wire, &item.command.bytes)
                 .map_err(err)?;
-            let frame = encode(link.sequence, &item.command.bytes).map_err(err)?;
-            fixture_ack(&mut link, &frame)?;
+            let command = &item.command.bytes;
+            if command.is_empty() || command.len() > MAX_PAYLOAD {
+                return Err("invalid fixture motion payload size".into());
+            }
+            if batch {
+                if payload.len() + command.len() > MAX_PAYLOAD {
+                    send(&payload)?;
+                    payload.clear();
+                }
+                payload.extend_from_slice(command);
+            } else {
+                send(command)?;
+            }
         }
     }
+    if !payload.is_empty() {
+        send(&payload)?;
+    }
+    let enqueue_ns = enqueue.elapsed().as_nanos();
 
     let mut positions = [0; 4];
     let lead = (hz * 2.0) as u64;
@@ -212,5 +242,6 @@ pub(super) fn run(mut link: Link, dictionary: &Dictionary, extrusion: bool) -> R
         eprint!(" {position}");
     }
     eprintln!();
+    eprintln!("ENQUEUE {frame_count} {enqueue_ns}");
     Ok(())
 }
