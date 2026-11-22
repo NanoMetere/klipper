@@ -1350,4 +1350,65 @@ fn phase_queue_never_releases_the_next_jobs_zero_tick_behind_a_heater_wait() {
     );
     assert!(faulted.advance(tick(600.), 256).unwrap().is_empty());
     assert_eq!(faulted.state(), ProgramState::Faulted);
+
+    let mut strict = create().require_motion_commit().unwrap();
+    strict.start(0).unwrap();
+    strict
+        .temperature(tick(1.), Some(reading(Source::Heater(0), 1., 210.)), false)
+        .unwrap();
+    for _ in 0..8 {
+        strict.advance(tick(12.), 256).unwrap();
+    }
+    assert_eq!(strict.state(), ProgramState::AwaitingMotionCommit);
+    assert_eq!(strict.line(), Some(2));
+    assert_eq!(strict.targets(), [210., 0.]);
+    let mut snapshots = Vec::new();
+    let mut view = Snapshot::default();
+    let mut client = Session::default();
+    strict.publish_status(&mut view);
+    client.feed(b"{\"id\":1,\"method\":\"objects/subscribe\",\"params\":{\"objects\":{\"virtual_mixed_job\":null}}}\x03",
+                &view,1.,|frame|collect(frame,&mut snapshots));
+    assert_eq!(
+        snapshots[0]["result"]["status"]["virtual_mixed_job"]["state"],
+        "waiting_for_motion_proof"
+    );
+    let expected = strict.pending_motion_commit().unwrap();
+    assert!(strict
+        .commit_motion(
+            tick(13.),
+            klipper_host_protocol::simulated_printer::mixed::MotionProof {
+                generation: expected.generation + 1,
+                ..expected
+            }
+        )
+        .is_err());
+    assert!(strict
+        .commit_motion(
+            tick(13.),
+            klipper_host_protocol::simulated_printer::mixed::MotionProof {
+                accepted_commands: expected.accepted_commands - 1,
+                ..expected
+            }
+        )
+        .is_err());
+    assert!(strict
+        .commit_motion(
+            tick(13.),
+            klipper_host_protocol::simulated_printer::mixed::MotionProof {
+                simulated_tick: expected.simulated_tick - 1,
+                ..expected
+            }
+        )
+        .is_err());
+    assert!(strict.advance(tick(14.), 256).unwrap().is_empty());
+    assert_eq!(strict.state(), ProgramState::AwaitingMotionCommit);
+    strict.commit_motion(tick(15.), expected).unwrap();
+    assert_eq!(strict.line(), Some(4));
+    assert_eq!(strict.state(), ProgramState::Waiting);
+    assert_eq!(strict.targets(), [210., 60.]);
+    strict.publish_status(&mut view);
+    assert!(client.update(&view, 2., |frame| collect(frame, &mut snapshots)));
+    let body = &snapshots[1]["params"]["status"]["virtual_mixed_job"];
+    assert_eq!(body["state"], "waiting_for_temperature");
+    assert!(body["motion_proof"].is_null());
 }

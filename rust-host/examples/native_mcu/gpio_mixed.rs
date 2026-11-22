@@ -100,8 +100,10 @@ pub(super) fn run(
                 inverse_direction:false,pressure_advance:None}),
         hz,max_error:20,invert:[false;3],
     }).map_err(err)?;
-    let mut program =
-        Program::new(trace, &wire, &[0, 1, 2, 3], bank.targets(), 0.5).map_err(err)?;
+    let mut program = Program::new(trace, &wire, &[0, 1, 2, 3], bank.targets(), 0.5)
+        .map_err(err)?
+        .require_motion_commit()
+        .map_err(err)?;
     let lead = (hz * 0.1) as u32;
     let capacity = peer.configure(4, lead, hz)?;
     let tick = |n: f64| (n * hz) as u64;
@@ -199,6 +201,18 @@ pub(super) fn run(
                 ));
             }
         }
+        let mut proof = program
+            .pending_motion_commit()
+            .ok_or("ended phase not awaiting MCU proof")?;
+        let full_tick = tick(5.);
+        if proof.simulated_tick > full_tick {
+            return Err("fixture phase was longer than its observed test advance".into());
+        }
+        proof.accepted_commands = dispatched[stage];
+        proof.simulated_tick = full_tick;
+        program
+            .commit_motion(tick(wall + 13.), proof)
+            .map_err(err)?;
     }
     if program.state() != State::Finished || program.targets() != [0., 0.] {
         return Err("virtual job did not finish with heater targets cleared".into());

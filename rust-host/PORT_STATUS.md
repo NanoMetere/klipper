@@ -43,8 +43,10 @@ x86-64 (AMD EPYC 9V74), not a Raspberry Pi. Use the runnable commands in
 - State: virtual job/SD/control boundaries, read-only status snapshots
   and connection-pair tests. The mixed preview provides separate
   motion queues around typed heater boundaries and never infers that
-  a real heater is ready. Thermal waits consume only explicit
-  simulation observations. No endpoints operate a real heater, probe,
+  a real heater is ready. The GPIO-free firmware exercise additionally
+  checks that both temperature evidence and prior motion completion
+  are required before the next phase. Thermal waits consume only
+  explicit simulation observations. No endpoints operate a real heater, probe,
   motor or tool dock.
 
 ## Remaining integration work

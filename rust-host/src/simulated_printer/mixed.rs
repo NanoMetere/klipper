@@ -17,9 +17,19 @@ pub enum State {
     Ready,
     Running,
     Waiting,
+    AwaitingMotionCommit,
     Finished,
     Cancelled,
     Faulted,
+}
+
+/// Inert completion evidence supplied by a fixture, not proven by the
+/// existence of queued messages or the wall clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MotionProof {
+    pub generation: u64,
+    pub accepted_commands: usize,
+    pub simulated_tick: u64,
 }
 
 enum Pending {
@@ -43,6 +53,8 @@ pub struct Program {
     targets: Vec<f64>,
     hz: f64,
     clock: u64,
+    require_commit: bool,
+    pending_commit: Option<MotionProof>,
 }
 
 impl Program {
@@ -145,7 +157,23 @@ impl Program {
             targets: initial_targets.to_vec(),
             hz: trace.hz,
             clock: 0,
+            require_commit: false,
+            pending_commit: None,
         })
+    }
+
+    /// Require the caller to supply inert phase completion evidence before
+    /// the next heater command or motion generation can be armed.
+    pub fn require_motion_commit(mut self) -> Result<Self, Error> {
+        if self.state != State::Ready {
+            return Err(Error::MotionCommit);
+        }
+        self.require_commit = true;
+        Ok(self)
+    }
+
+    pub fn pending_motion_commit(&self) -> Option<MotionProof> {
+        self.pending_commit
     }
 
     pub fn state(&self) -> State {
@@ -156,6 +184,39 @@ impl Program {
     }
     pub fn targets(&self) -> &[f64] {
         &self.targets
+    }
+
+    /// Report modeled state only; this status object has no mutation endpoint.
+    #[cfg(feature = "webhooks")]
+    pub fn publish_status(&self, snapshot: &mut crate::webhooks::Snapshot) -> bool {
+        let state = match self.state {
+            State::Ready => "ready",
+            State::Running => "running",
+            State::Waiting => "waiting_for_temperature",
+            State::AwaitingMotionCommit => "waiting_for_motion_proof",
+            State::Finished => "finished",
+            State::Cancelled => "cancelled",
+            State::Faulted => "faulted",
+        };
+        let pending = self.pending_commit.map(|p| {
+            serde_json::json!({
+                "generation": p.generation,
+                "accepted_commands": p.accepted_commands,
+                "simulated_tick": p.simulated_tick,
+            })
+        });
+        let data = serde_json::json!({
+            "mode": "simulation",
+            "state": state,
+            "line": self.line,
+            "heater_targets_c": self.targets,
+            "motion_proof": pending,
+            "pending_stages": self.stages.len(),
+        });
+        snapshot.set_object(
+            "virtual_mixed_job".into(),
+            data.as_object().unwrap().clone(),
+        )
     }
 
     pub fn start(&mut self, clock: u64) -> Result<(), Error> {
@@ -179,11 +240,38 @@ impl Program {
             return Ok(Vec::new());
         };
         let out = running.poll(clock, budget).map_err(Error::Job)?;
-        if running.snapshot().state == JobState::Finished {
+        let stage = running.snapshot();
+        if stage.state == JobState::Finished {
             self.running = None;
-            self.load(clock)?;
+            if self.require_commit {
+                self.pending_commit = Some(MotionProof {
+                    generation: stage.generation,
+                    accepted_commands: stage.total,
+                    simulated_tick: stage.planned_end,
+                });
+                self.state = State::AwaitingMotionCommit;
+            } else {
+                self.load(clock)?;
+            }
         }
         Ok(out)
+    }
+
+    /// Check the exact motion generation and accepted count, plus a tick
+    /// at or beyond the virtual phase end. Invalid evidence leaves the gate
+    /// closed. This caller-supplied evidence is simulation-only.
+    pub fn commit_motion(&mut self, clock: u64, proof: MotionProof) -> Result<(), Error> {
+        self.time(clock)?;
+        let expected = self.pending_commit.ok_or(Error::MotionCommit)?;
+        if proof.generation != expected.generation
+            || proof.accepted_commands != expected.accepted_commands
+            || proof.simulated_tick < expected.simulated_tick
+        {
+            return Err(Error::MotionCommit);
+        }
+        self.clock = clock;
+        self.pending_commit = None;
+        self.load(clock)
     }
 
     pub fn temperature(
@@ -211,7 +299,10 @@ impl Program {
     }
 
     pub fn cancel(&mut self) -> Result<(), Error> {
-        if !matches!(self.state, State::Ready | State::Running | State::Waiting) {
+        if !matches!(
+            self.state,
+            State::Ready | State::Running | State::Waiting | State::AwaitingMotionCommit
+        ) {
             return Err(Error::Job(virtual_job::Error::InvalidState));
         }
         self.clear(State::Cancelled);
@@ -258,6 +349,7 @@ impl Program {
 
     fn clear(&mut self, state: State) {
         self.stages.clear();
+        self.pending_commit = None;
         self.running = None;
         self.waiting = None;
         self.state = state;

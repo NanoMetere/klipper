@@ -1159,6 +1159,13 @@ In the GPIO-free Linux firmware fixture, a two-phase mixed job sends
 the second phase sends zero commands and all four counters remain at
 the first-phase values. This fixture has no physical heat or sensors
 and refuses an ordinary Linux MCU dictionary.
+The fixture also opts into an explicit motion completion gate: software
+ACK count, generation, and an observed virtual tick covering phase end
+must match after the firmware counters agree. Draining the host queue
+or waiting on its wall clock is not sufficient. The read-only
+`virtual_mixed_job` snapshot distinguishes waiting for motion proof from
+waiting for temperature. Wrong proof leaves the next stage closed.
+
 
 The CLI can display this staged plan without running it. This opt-in
 variant uses stock heater indices and a fixed initial extruder, not

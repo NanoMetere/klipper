@@ -36,6 +36,7 @@ pub enum Error {
     Status(print_stats::Error),
     Thermal(thermal::Error),
     ThermalGate,
+    MotionCommit,
 }
 
 pub struct Simulation {
