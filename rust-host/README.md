@@ -398,12 +398,20 @@ The root tool catalog separately matches 836 numbered records across
 reads, including global and per-tool XYZ offsets, restore axes and
 detection presence. Unassigned slots are left out of this numbered
 view. The catalog never resolves or opens the detection pins.
+The separate dock-coordinate adapter saves the nozzle position, previews
+in the dock frame, and restores only declared axes. It buffers inert motion
+and preserves physical extrusion across the logical-state restore. Across
+240 cases, including every restore-axis mask, 4,080 coordinate/feed
+observations matched the plugin's actual dock and restore methods using
+inert callbacks.
 
 ```sh
 cargo build --locked --release --example toolchange_replay
 python3 bench/toolchange_order.py /path/to/legacy/klipper /path/to/toolchanger
 cargo build --locked --release --example tool_catalog_replay
 python3 bench/tool_catalog.py /path/to/legacy/klipper /path/to/toolchanger
+cargo build --locked --release --example tool_dock_replay
+python3 bench/tool_dock.py /path/to/legacy/klipper /path/to/toolchanger
 ```
 
 ## Offline heater fault gate

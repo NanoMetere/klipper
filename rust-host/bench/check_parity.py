@@ -76,6 +76,9 @@ def main():
         phases.append(("tool_catalog", [sys.executable, ROOT/"bench/tool_catalog.py",
                                         a.legacy_klippy.resolve(), a.toolchanger_reference.resolve(),
                                         "--binary", examples/"tool_catalog_replay"]))
+        phases.append(("tool_dock", [sys.executable, ROOT/"bench/tool_dock.py",
+                                     a.legacy_klippy.resolve(), a.toolchanger_reference.resolve(),
+                                     "--binary", examples/"tool_dock_replay"]))
     if dictionary.is_file():
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
