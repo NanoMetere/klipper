@@ -240,6 +240,32 @@ This measures a matched, pre-encoded read-only workload over PTY, not an
 individual request RTT, print time, CPU load, or full Klippy feature parity.
 The example uses a fixed retry timer and does not exercise physical I/O.
 
+## Offline motion look-ahead
+
+`lookahead` implements stock XYZ plus one optional E axis geometry, move and
+junction speed limits, minimum cruise ratio, and full or lazy flush. It
+returns velocity and timing profiles only. Homing, travel limits, extrusion
+temperature and kinematics validation are outside this module; do not drive
+a device from this API.
+
+```sh
+taskset -c <CPU> python3 bench/lookahead.py /path/to/pinned/klipper
+```
+
+The pinned Python 3.12 baseline uses `Move`, `LookAheadQueue`, and the stock
+extruder junction method directly; no device or reactor is started.
+25,836 moves and 6,366 flushes agreed in queue decisions. Profile fields
+matched within the harness's 2e-12 tolerance (largest observed absolute
+difference 3.47e-18); cases include reversals, diagonal paths, extrude-only
+moves, externally limited motion, zero junction caps, and lazy flush tails.
+The Rust XYZ norm follows Python 3.12's compensated sum, which matters near
+degenerate corners.
+
+Seven alternating single-CPU rounds had medians of 110.4 ns/move Rust and
+3997.3 ns/move stock Python on AMD EPYC 9V74; fixture parsing is untimed.
+This measures host geometry and look-ahead only, not motor steps or
+print duration.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
