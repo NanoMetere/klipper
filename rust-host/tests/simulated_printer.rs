@@ -151,6 +151,34 @@ fn contact_fault_drops_the_remaining_simulated_commands() {
     assert!(simulation.resume(100_000_000).is_err());
 }
 
+#[test]
+fn simulated_heater_failure_prevents_any_remaining_motion() {
+    use klipper_host_protocol::verify_heater::{Decision, Fault, Monitor, Settings};
+    let mut simulation = plan("G4 P9000\nTEST_PATH\n");
+    simulation.start(0).unwrap();
+    let mut heater = Monitor::new(Settings {
+        check_gain_time: 1.,
+        ..Settings::standard(false)
+    })
+    .unwrap();
+    assert!(matches!(
+        simulation.heater_sample(&mut heater, 20., 220.).unwrap(),
+        Decision::Continue { .. }
+    ));
+    simulation.advance(20_000_000, 256).unwrap();
+    assert!(matches!(
+        simulation.heater_sample(&mut heater, 20., 220.).unwrap(),
+        Decision::Continue { .. }
+    ));
+    simulation.advance(40_000_000, 256).unwrap();
+    assert_eq!(
+        simulation.heater_sample(&mut heater, 20., 220.).unwrap(),
+        Decision::Fault(Fault::NotHeating)
+    );
+    assert_eq!(simulation.snapshot().state, State::Faulted);
+    assert!(simulation.advance(500_000_000, 256).unwrap().is_empty());
+}
+
 #[cfg(unix)]
 mod socket_tests {
     use super::*;

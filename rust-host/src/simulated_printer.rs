@@ -9,6 +9,7 @@ use crate::{
     print_stats::{self, Extrusion, Stats},
     step_clock::Clock,
     step_wire::StepMessages,
+    verify_heater::{Decision as HeaterDecision, Fault as HeaterFault, Monitor},
     virtual_job::{self, Issued, Job, State},
     virtual_sd,
 };
@@ -158,6 +159,31 @@ impl Simulation {
         self.stats
             .note_finish(at, print_stats::State::Cancelled, "")
             .map_err(Error::Status)
+    }
+
+    /// Inspect a simulated heater observation at the current host clock.
+    /// A failed monitor latches the active virtual job before it can emit
+    /// more commands. This does not run any physical heater shutdown path.
+    pub fn heater_sample(
+        &mut self,
+        monitor: &mut Monitor,
+        temperature: f64,
+        target: f64,
+    ) -> Result<HeaterDecision, Error> {
+        let at = self.seconds(self.last_clock)?;
+        let result = monitor.sample(at, temperature, target);
+        if let HeaterDecision::Fault(reason) = result {
+            if matches!(
+                self.job.snapshot().state,
+                State::Ready | State::Running | State::Paused
+            ) {
+                self.fail(match reason {
+                    HeaterFault::NotHeating => "simulated heater not heating at expected rate",
+                    HeaterFault::InvalidObservation => "invalid simulated heater observation",
+                })?;
+            }
+        }
+        Ok(result)
     }
 
     pub fn fail(&mut self, message: &str) -> Result<(), Error> {

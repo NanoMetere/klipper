@@ -379,6 +379,20 @@ tests additionally cover absent literals, empty wildcard matches, escaped
 paths and cycles. This is read-only parsing parity for the fixture, not
 validation that all configured hardware/modules are supported.
 
+## Offline heater fault gate
+
+The stock heater progress/deficit check is modeled separately from PID and
+watermark calculations. The comparator matched 68,906 synthetic readings
+across 320 heater profiles, including all 119 stock fault decisions. Stale
+or invalid samples are a distinct sticky virtual fault. In the integrated
+demonstrator a virtual fault clears pending motion; no actual sensor,
+heater, shutdown procedure or firmware watchdog is exercised.
+
+```sh
+cargo build --locked --release --example verify_heater_replay
+python3 bench/verify_heater.py /path/to/pinned/klipper
+```
+
 ## Integrated software-only run
 
 `simulated_printer::Simulation` brings together virtual homing evidence,

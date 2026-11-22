@@ -60,6 +60,8 @@ def main():
                         "--binary", examples/"virtual_sd_replay"]),
         ("print_stats", [sys.executable, ROOT/"bench/print_stats.py", upstream,
                          "--binary", examples/"print_stats_replay"]),
+        ("verify_heater", [sys.executable, ROOT/"bench/verify_heater.py", upstream,
+                          "--binary", examples/"verify_heater_replay"]),
         ("virtual_stepper", [sys.executable, ROOT/"bench/virtual_stepper.py",
                              "--binary", examples/"virtual_stepper_replay"]),
     ])
