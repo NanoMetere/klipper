@@ -568,6 +568,25 @@ the full `bench/machine_trace.py` comparison also matched 381 Cartesian
 and 423 CoreXY direction/step records across four lanes, including the
 E lane. No physical material flow was measured.
 
+## Offline Classic CAN packetization
+
+`can` splits a bounded Klipper write into up-to-eight-byte data fields
+and reassembles response streams independently for assigned node IDs.
+It rejects non-standard IDs, extended/RTR flags and invalid lengths.
+No hardware discovery, admin commands, SocketCAN access or interface
+changes occur. This does not simulate physical arbitration.
+
+```sh
+python3 bench/can.py /path/to/pinned/klipper
+```
+
+Against the pinned C writer using only an isolated local datagram
+socketpair and C receive-frame validation, all 12,106 fragments and
+1,440 extracted frames matched. The six synthetic node streams were
+interleaved with corruption and 1,241 unrelated-ID frames; per-read
+recovery/discard counts also matched. No physical devices are implied
+by the six-node fixture.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
