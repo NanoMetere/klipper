@@ -21,6 +21,7 @@ fn log(p: &Preview, o: Output) {
         .position()
         .into_iter()
         .chain(p.coords().gcode_position())
+        .chain(p.coords().homing_origin())
         .chain([p.coords().physical_feed_rate()])
     {
         print!(" {v:.17e}");

@@ -21,9 +21,17 @@ def fixture():
                 "G1X2Y2Z.4", "G92 X0 E0", "G1X0.00000000001 E.2", "G1X0",
                 "M220 S50", "M221 S90", "G91", "G1 E-.15 F650", "G4 P20",
                 "M400", "g90", "M220", "M221", "G92", "G1X0", "M83")
+    yield from ('SAVE_GCODE_STATE NAME="Park Slot"', 'SET_GCODE_OFFSET X=2 Z_ADJUST=.5',
+                'SET_GCODE_OFFSET X_ADJUST=-.2 MOVE=1 MOVE_SPEED=17',
+                'G1 X12 E6 F900', 'M221 S120', 'G91', 'G1 Y1 E-.75',
+                'RESTORE_GCODE_STATE NAME="Park Slot" MOVE=1 MOVE_SPEED=15',
+                'SAVE_GCODE_STATE', 'SET_GCODE_OFFSET Y=3 Y_ADJUST=5 # Y wins',
+                'G91', 'G1 Z.28', 'RESTORE_GCODE_STATE MOVE=0')
+    for i in range(32):
+        yield f"SAVE_GCODE_STATE NAME=S{i}"
     r = random.Random(20261123)
     for i in range(7000):
-        op = r.randrange(20)
+        op = r.randrange(25)
         if op == 0:
             yield r.choice(["M82", "M83", "G90", "G91"])
         elif op == 1:
@@ -32,6 +40,12 @@ def fixture():
             yield f"{r.choice(['M220','M221'])} S{r.randrange(70, 125)}"
         elif op == 3:
             yield "M400" if i % 2 else f"G4 P{r.randrange(1200)}"
+        elif op == 4:
+            yield f"SET_GCODE_OFFSET {r.choice(['X','Y','Z','X_ADJUST','Y_ADJUST','E_ADJUST'])}={r.uniform(-2, 2):.5f} MOVE={r.randrange(2)}"
+        elif op == 5:
+            yield f"SAVE_GCODE_STATE NAME=S{r.randrange(32)}"
+        elif op == 6:
+            yield f"RESTORE_GCODE_STATE NAME=S{r.randrange(32)} MOVE={r.randrange(2)}"
         else:
             axes = r.sample("XYZEF", r.randrange(1, 6))
             values = {a: r.uniform(-0.35, 0.8) if a in "ZE" else r.uniform(-14, 14)
@@ -55,7 +69,13 @@ def stock(lines, emit, settings=None, emit_profiles=None):
     dispatch.output_callbacks = []
     dispatch.is_fileinput = False
     handlers = dispatch.gcode_handlers
-    dispatch.register_command = lambda name, f, *args, **kwargs: handlers.update({name: f})
+    def register(name, f, *args, **kwargs):
+        if name in ("SET_GCODE_OFFSET", "SAVE_GCODE_STATE", "RESTORE_GCODE_STATE"):
+            handlers[name] = lambda params: f(dispatch._get_extended_params(params))
+        else:
+            handlers[name] = f
+
+    dispatch.register_command = register
     printer = SimpleNamespace(lookup_object=lambda _: dispatch, register_event_handler=lambda *_: None)
     dispatch.printer = printer
     coords = GCodeMove(SimpleNamespace(get_printer=lambda: printer))
@@ -109,7 +129,7 @@ def stock(lines, emit, settings=None, emit_profiles=None):
             emit_profiles(tuple(moves), dwell or 0.)
         if emit:
             print("line", len(moves), -1. if dwell is None else dwell)
-            print("state", *coords.last_position, *coords._get_gcode_position(), coords.speed)
+            print("state", *coords.last_position, *coords._get_gcode_position(), *coords.homing_position, coords.speed)
         for m in moves:
             total += m.accel_t + m.cruise_t + m.decel_t
             if emit:

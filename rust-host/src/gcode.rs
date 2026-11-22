@@ -4,6 +4,10 @@
 //! Not a command dispatcher or a hardware control interface.
 
 use crate::lookahead::{self, Limits, LookAhead, Move, Profile};
+use std::collections::BTreeMap;
+
+#[path = "gcode/extended.rs"]
+mod extended;
 
 const MAX_LINE: usize = 4096;
 const AXES: [u8; 4] = *b"XYZE";
@@ -17,6 +21,8 @@ pub enum Error {
     Nonfinite,
     InvalidSession,
     MoveOutsidePreview,
+    UnknownState,
+    StateLimit,
     Motion(lookahead::Error),
 }
 
@@ -38,6 +44,7 @@ pub enum Effect {
 pub struct State {
     base: [f64; 4],
     last: [f64; 4],
+    homing: [f64; 4],
     absolute_xyz: bool,
     absolute_e_allowed: bool,
     speed: f64,
@@ -50,6 +57,7 @@ impl Default for State {
         Self {
             base: [0.0; 4],
             last: [0.0; 4],
+            homing: [0.0; 4],
             absolute_xyz: true,
             absolute_e_allowed: true,
             speed: 25.0,
@@ -68,6 +76,10 @@ impl State {
         let mut pos = std::array::from_fn(|i| self.last[i] - self.base[i]);
         pos[3] /= self.flow;
         pos
+    }
+
+    pub fn homing_origin(&self) -> [f64; 4] {
+        self.homing
     }
 
     pub fn physical_feed_rate(&self) -> f64 {
@@ -162,20 +174,26 @@ impl State {
             }
             _ => return Err(Error::UnsupportedCommand),
         };
-        if [next.speed, next.speed_factor, next.flow]
+        next.validate()?;
+        *self = next;
+        Ok(result)
+    }
+
+    fn validate(&self) -> Result<(), Error> {
+        if [self.speed, self.speed_factor, self.flow]
             .iter()
             .any(|v| !v.is_finite() || *v <= 0.0)
-            || next
+            || self
                 .last
                 .iter()
-                .chain(&next.base)
-                .chain(&next.gcode_position())
+                .chain(&self.base)
+                .chain(&self.homing)
+                .chain(&self.gcode_position())
                 .any(|v| !v.is_finite())
         {
             return Err(Error::Nonfinite);
         }
-        *self = next;
-        Ok(result)
+        Ok(())
     }
 }
 
@@ -274,6 +292,7 @@ pub struct Output {
 /// separately from the requested G-code position. Never opens any device.
 pub struct Preview {
     coords: State,
+    saved: BTreeMap<String, State>,
     failed: bool,
     planner: LookAhead,
     limits: Limits,
@@ -302,6 +321,7 @@ impl Preview {
                 last: position,
                 ..State::default()
             },
+            saved: BTreeMap::new(),
             failed: false,
             planner,
             limits,
@@ -326,7 +346,10 @@ impl Preview {
             return Err(Error::InvalidSession);
         }
         let mut candidate = self.coords;
-        let effect = candidate.apply(line)?;
+        let effect = match extended::apply(&mut candidate, &mut self.saved, line)? {
+            Some(effect) => effect,
+            None => candidate.apply(line)?,
+        };
         let mut out = Output::default();
         match effect {
             Effect::Linear { position, speed } => {
@@ -413,6 +436,39 @@ mod tests {
             }
         );
         assert_eq!(state.gcode_position(), [1., 3.5, 0., 2.]);
+    }
+
+    #[test]
+    fn saved_coordinate_modes_restore_xyz_but_not_physical_e() {
+        let limits = Limits::new(160.0, 2000.0, 5.0, 0.5).unwrap();
+        let mut p = Preview::new(limits, 128, None).unwrap();
+        for line in [
+            "G1 X2 E1",
+            "SAVE_GCODE_STATE NAME='A Case'",
+            "SET_GCODE_OFFSET X=3 X_ADJUST=9 MOVE=1 MOVE_SPEED=8",
+            "G91",
+            "M83",
+            "G1 X4 E2",
+            "RESTORE_GCODE_STATE NAME='A Case' MOVE=1",
+        ] {
+            p.line(line).unwrap();
+        }
+        assert_eq!(p.coords().position(), [2.0, 0.0, 0.0, 3.0]);
+        assert_eq!(p.coords().gcode_position(), [2.0, 0.0, 0.0, 1.0]);
+        assert_eq!(p.coords().homing_origin(), [0.0; 4]);
+        let before = *p.coords();
+        assert!(matches!(
+            p.line("RESTORE_GCODE_STATE NAME='a case'"),
+            Err(Error::UnknownState)
+        ));
+        assert!(matches!(
+            p.line("SET_GCODE_OFFSET X=1 X=2"),
+            Err(Error::DuplicateParameter)
+        ));
+        assert!(p.line("SET_GCODE_OFFSET X=8 MOVE=1 MOVE_SPEED=-1").is_err());
+        assert_eq!(*p.coords(), before);
+        p.line("G1 X1 E2").unwrap();
+        assert_eq!(p.coords().position(), [1.0, 0.0, 0.0, 4.0]);
     }
 
     #[test]

@@ -271,7 +271,9 @@ print duration.
 The preview accepts a strict subset of ordinary G-code: G0/G1 (XYZEF),
 G21, G90/G91, G92, M82/M83, M220/M221, G4 and M400. It handles the
 coordinate and feed/flow state, no-op moves, lazy flush and full-stop
-boundaries. It deliberately rejects macros, unknown words, duplicate
+boundaries. The preview also accepts coordinate-only `SET_GCODE_OFFSET`
+and named `SAVE_GCODE_STATE` / `RESTORE_GCODE_STATE`. Saving and restoring
+state does not execute arbitrary macros. The preview rejects unknown words, duplicate
 parameters, line numbers/checksums, and inches. There is no printer
 configuration, homing, step generation, heater/fan control, or device I/O.
 
@@ -279,15 +281,17 @@ configuration, homing, step generation, heater/fan control, or device I/O.
 taskset -c <CPU> python3 bench/gcode_preview.py /path/to/pinned/klipper
 ```
 
-7,020 input lines and the final flush matched the pinned stock dispatcher,
+7,065 input lines and the final flush matched the pinned stock dispatcher,
 coordinate handlers and look-ahead using an in-memory test toolhead.
-5,370 move profiles matched to within 2e-12 absolute/relative tolerance
-(maximum absolute difference 1.39e-17 on this run). Python equipment and
-kinematics checks were stubbed; this does not establish machine safety.
+5,096 move profiles, requested/gcode coordinates, and homing offsets
+matched exactly in this run. The corpus includes offset adjustment,
+quoted case-sensitive state names, restore with and without movement,
+and preserving E's relative coordinate after a restore. Python equipment
+and kinematic safety checks were stubbed.
 
 On the same single logical CPU, seven alternating rounds had median host
-processing cost of 0.329 µs/line Rust and 6.745 µs/line Python. Inputs
-were already in memory, with G-code parsing, coordinate handling, and
+processing cost of 0.395 µs/line Rust and 8.274 µs/line Python. Inputs
+were already in memory, with parsing, coordinate handling, and motion
 look-ahead timed; startup, file I/O, step generation and hardware are
 excluded. The compared algorithm produces the same planned timing, not
 faster physical motion.
