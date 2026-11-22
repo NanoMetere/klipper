@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Opt-in Klippy adapter for the Rust junction solver; Python retains I/O."""
-import array
+import struct
 import ctypes
 import threading
 
@@ -25,6 +25,9 @@ def install(toolhead, library):
     base = ctypes.POINTER(ctypes.c_double)
     plan.argtypes = (base, base, ctypes.c_size_t, ctypes.c_uint8)
     workspace = threading.local()
+    row, triple = struct.Struct("=5d"), struct.Struct("=3d")
+    pack = row.pack_into
+    input_stride, output_stride = row.size, triple.size
     stats = {"calls": 0, "fallbacks": 0, "planned": 0}
 
     def flush(self, lazy=False):
@@ -32,31 +35,37 @@ def install(toolhead, library):
         count = len(queue)
         if not 1 <= count <= 4096:
             return old(self, lazy)
-        # CPython converts the flat list to doubles in one array operation.
-        bits = array.array("d", [
-            f for m in queue for f in (m.max_start_v2, m.max_cruise_v2, m.delta_v2,
-                                      m.max_mcr_start_v2, m.mcr_delta_v2)
-        ])
-        inputs = (ctypes.c_double * (5 * count)).from_buffer(bits)
-        output = getattr(workspace, "output", None)
-        if output is None:
-            output = workspace.output = (ctypes.c_double * (3 * 4096))()
-        try:
-            total = plan(inputs, output, count, int(bool(lazy)))
-        except (TypeError, ValueError, OverflowError):
-            total = -1
-        stats["calls"] += 1
-        if not 0 <= total <= count:
-            stats["fallbacks"] += 1
+        if getattr(workspace, "busy", False):
             return old(self, lazy)
-        self.junction_flush = toolhead.LOOKAHEAD_FLUSH_TIME
-        for i in range(total):
-            j = i * 3
-            queue[i].set_junction(output[j], output[j+1], output[j+2])
-        result = queue[:total]
-        del queue[:total]
-        stats["planned"] += total
-        return result
+        workspace.busy = True
+        try:
+            buffers = getattr(workspace, "buffers", None)
+            if buffers is None:
+                inputs = (ctypes.c_double * (5 * 4096))()
+                output = (ctypes.c_double * (3 * 4096))()
+                buffers = workspace.buffers = (inputs, output, memoryview(output).cast("B"))
+            inputs, output, output_bytes = buffers
+            stats["calls"] += 1
+            try:
+                for i, m in enumerate(queue):
+                    pack(inputs, i * input_stride, m.max_start_v2, m.max_cruise_v2,
+                         m.delta_v2, m.max_mcr_start_v2, m.mcr_delta_v2)
+                total = plan(inputs, output, count, bool(lazy))
+            except (AttributeError, TypeError, ValueError, OverflowError, struct.error):
+                total = -1
+            if not 0 <= total <= count:
+                stats["fallbacks"] += 1
+                return old(self, lazy)
+            self.junction_flush = toolhead.LOOKAHEAD_FLUSH_TIME
+            result = queue[:total]
+            for move, j in zip(result, triple.iter_unpack(output_bytes[:total * output_stride]),
+                               strict=True):
+                move.set_junction(*j)
+            del queue[:total]
+            stats["planned"] += total
+            return result
+        finally:
+            workspace.busy = False
 
     flush._klipper_rust_bridge = True
     toolhead.LookAheadQueue.flush = flush

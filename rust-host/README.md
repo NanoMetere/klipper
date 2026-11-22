@@ -707,6 +707,24 @@ taskset -c 2 python3 bench/machine_trace.py /path/to/pinned/klipper \
   --rounds 30 --shape-timing --baseline-rust /path/to/baseline/rust-host
 ```
 
+The optional Python/Rust look-ahead adapter reuses aligned per-thread
+buffers and packs/unpacks rows directly. A separate benchmark replays
+6,366 queues captured from actual stock Klippy Move/LookAheadQueue
+objects (25,836 planned moves) and times the full flush, including
+Python/Rust conversions and applying the profiles. Across two
+45-round, rotating-order runs, median CPU time changed from
+47.906 to 44.712 ms and from 45.990 to 42.003 ms versus the old adapter
+(7–9% less). Stock medians were 48.309 and 46.044 ms. The actual Klippy
+debug-output fixture independently matched all 4,299 decoded motor
+commands with zero bridge fallbacks. This times the look-ahead seam,
+not the complete host process.
+
+```sh
+taskset -c 2 python3 bench/hybrid_lookahead_timing.py /path/to/pinned/klipper \
+  target/release/libklipper_host_protocol.so --rounds 45 \
+  --baseline-adapter /path/to/baseline/klipper_rust_lookahead.py
+```
+
 Step timing now retains the clock epoch until compression advances it,
 rather than revalidating and recomputing it on every crossing. Two
 60-round rotating-order runs matched the same 6,835 records and modeled
