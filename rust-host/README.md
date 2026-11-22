@@ -707,6 +707,15 @@ taskset -c 2 python3 bench/machine_trace.py /path/to/pinned/klipper \
   --rounds 30 --shape-timing --baseline-rust /path/to/baseline/rust-host
 ```
 
+Step timing now retains the clock epoch until compression advances it,
+rather than revalidating and recomputing it on every crossing. Two
+60-round rotating-order runs matched the same 6,835 records and modeled
+time. On one pinned core, median CPU time was 7.789 ms stock, 4.955 ms
+before the cache, and 4.750 ms after; on a second core the medians were
+7.699, 4.910, and 4.772 ms. The cache reduced median CPU time by about
+3–4% over the immediately preceding Rust kernel, not by 3–4% of actual
+print time.
+
 ## Config-to-step offline preview
 
 `machine_preview::Machine` combines supported printer and rail settings with

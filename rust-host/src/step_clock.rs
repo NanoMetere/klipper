@@ -30,16 +30,29 @@ impl Clock {
     /// The order of operations and half-tick offset follow stock. Do not
     /// round absolute seconds before subtraction (loses boundary precision).
     pub fn to_tick(self, segment_at: f64, step_offset: f64) -> Result<u64, Error> {
+        self.tick_from_epoch(self.epoch()?, segment_at, step_offset)
+    }
+
+    fn epoch(self) -> Result<f64, Error> {
         if !self.time_origin.is_finite()
             || !(1.0..=1e12).contains(&self.hz)
-            || !segment_at.is_finite()
-            || !step_offset.is_finite()
-            || step_offset < 0.0
             || self.last_encoded >= (1 << 53)
         {
             return Err(Error::InvalidTime);
         }
-        let last_time = self.time_origin + (self.last_encoded as f64 - 0.5) / self.hz;
+        Ok(self.time_origin + (self.last_encoded as f64 - 0.5) / self.hz)
+    }
+
+    fn tick_from_epoch(
+        self,
+        last_time: f64,
+        segment_at: f64,
+        step_offset: f64,
+    ) -> Result<u64, Error> {
+        // The relative range check below also rejects a non-finite component.
+        if step_offset < 0.0 {
+            return Err(Error::InvalidTime);
+        }
         let relative = (step_offset + (segment_at - last_time)) * self.hz;
         if !(0.0..(1_u64 << 53) as f64).contains(&relative) {
             return Err(Error::InvalidTime);
@@ -122,15 +135,22 @@ pub fn encode_trace(
                   clock: &mut Clock,
                   output: &mut Vec<Command>,
                   run: &mut Vec<u64>,
-                  direction: &mut Option<bool>| {
+                  direction: &mut Option<bool>,
+                  epoch: &mut Option<f64>| {
         if *direction != Some(s.positive) {
-            flush(clock, output, run)?;
+            if !run.is_empty() {
+                flush(clock, output, run)?;
+                *epoch = None;
+            }
             output.push(Command::SetDirection(s.positive ^ invert));
             *direction = Some(s.positive);
         }
         run.push(s.clock);
         Ok(())
     };
+    // Recompute only after compression releases a run and rebases the clock.
+    // Validate lazily: an empty (or commit-only) input consumes no clock.
+    let mut epoch = None;
     for e in events {
         let send = match *e {
             Event::Commit => filter.commit(),
@@ -138,20 +158,44 @@ pub fn encode_trace(
                 direction_positive,
                 segment_time,
                 offset,
-            } => filter.append(
-                Step {
-                    clock: clock.to_tick(segment_time, offset)?,
-                    positive: direction_positive,
-                },
-                clock.hz,
-            )?,
+            } => {
+                let last_time = match epoch {
+                    Some(time) => time,
+                    None => {
+                        let time = clock.epoch()?;
+                        epoch = Some(time);
+                        time
+                    }
+                };
+                filter.append(
+                    Step {
+                        clock: clock.tick_from_epoch(last_time, segment_time, offset)?,
+                        positive: direction_positive,
+                    },
+                    clock.hz,
+                )?
+            }
         };
         if let Some(step) = send {
-            commit(step, &mut clock, &mut output, &mut run, &mut direction)?;
+            commit(
+                step,
+                &mut clock,
+                &mut output,
+                &mut run,
+                &mut direction,
+                &mut epoch,
+            )?;
         }
     }
     if let Some(step) = filter.commit() {
-        commit(step, &mut clock, &mut output, &mut run, &mut direction)?;
+        commit(
+            step,
+            &mut clock,
+            &mut output,
+            &mut run,
+            &mut direction,
+            &mut epoch,
+        )?;
     }
     flush(&mut clock, &mut output, &mut run)?;
     Ok(output)
@@ -204,6 +248,44 @@ mod tests {
                 .sum::<usize>(),
             4
         );
+    }
+
+    #[test]
+    fn rejects_nonfinite_crossings_but_needs_no_epoch_without_one() {
+        let base = Clock {
+            last_encoded: 0,
+            time_origin: 0.0,
+            hz: 1_000_000.,
+        };
+        let invalid = Clock {
+            hz: f64::NAN,
+            ..base
+        };
+        assert_eq!(
+            encode_trace(invalid, &[Event::Commit], 0, false),
+            Ok(vec![])
+        );
+        assert_eq!(
+            encode_trace(invalid, &[step(1000, true)], 0, false),
+            Err(Error::InvalidTime)
+        );
+        for (segment_time, offset) in [
+            (f64::NAN, 0.),
+            (f64::INFINITY, 0.),
+            (0., f64::NAN),
+            (0., f64::INFINITY),
+            (1., -0.1),
+        ] {
+            let event = Event::Crossing {
+                segment_time,
+                offset,
+                direction_positive: true,
+            };
+            assert_eq!(
+                encode_trace(base, &[event], 0, false),
+                Err(Error::InvalidTime)
+            );
+        }
     }
 
     #[test]
