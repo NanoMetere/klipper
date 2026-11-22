@@ -4,6 +4,7 @@
 mod linux {
     use klipper_host_protocol::{
         clock::{ClockMessages, Error as ClockError, Response},
+        clock_sync::{PrimaryClock, Sample, Update},
         identify::Identify,
         read_query::{Action, ReadQuery},
         stream::Receiver,
@@ -42,8 +43,15 @@ mod linux {
         Ok(rc > 0)
     }
 
+    struct Reply<T> {
+        value: T,
+        sent: Option<f64>,
+        received: f64,
+    }
+
     struct Link {
         rx: Receiver,
+        epoch: Instant,
         reader: File,
         writer: File,
         sequence: u8,
@@ -57,11 +65,13 @@ mod linux {
             &mut self,
             request: impl Fn(u8) -> Result<Vec<u8>, String>,
             mut accept: impl FnMut(Frame<'_>) -> Result<Option<T>, String>,
-        ) -> Result<T, String> {
+        ) -> Result<Reply<T>, String> {
             let mut query = ReadQuery::new(self.sequence);
             let start = Instant::now();
             let mut result = None;
             let mut started = false;
+            let mut sent = None;
+            let mut received = 0.0;
             let mut bytes = [0; 256];
             loop {
                 match query.poll(start.elapsed()) {
@@ -71,6 +81,7 @@ mod linux {
                     } => {
                         let frame = request(sequence)?;
                         if prepend_sync {
+                            sent = None;
                             self.frame_retries += 1;
                             let mut wire = [0x7e; 65];
                             wire[1..=frame.len()].copy_from_slice(&frame);
@@ -79,6 +90,9 @@ mod linux {
                                 .map_err(|e| e.to_string())?;
                         } else {
                             self.response_retries += usize::from(started);
+                            // PTY has zero modeled wire time and no other outgoing
+                            // flight. A fresh app retry receives a fresh boundary.
+                            sent = Some(1.0 + self.epoch.elapsed().as_secs_f64());
                             self.writer.write_all(&frame).map_err(|e| e.to_string())?;
                         }
                         started = true;
@@ -97,7 +111,8 @@ mod linux {
                             Ok(0) => return Err("unexpected PTY EOF".into()),
                             Ok(n) => n,
                         };
-                        let now = start.elapsed();
+                        let read_end = Instant::now();
+                        let now = read_end.duration_since(start);
                         let stats = self.rx.feed(&bytes[..count], |frame| {
                             if result.is_some() || !query.expects(frame.sequence) {
                                 return;
@@ -107,11 +122,19 @@ mod linux {
                             }
                             query.observe(now, frame.sequence, result.is_some());
                         });
+                        if result.is_some() {
+                            received = 1.0 + read_end.duration_since(self.epoch).as_secs_f64();
+                        }
                         self.discarded += stats.discarded;
                     }
                     Action::Done { next_sequence } => {
                         self.sequence = next_sequence;
-                        return result.ok_or("read completed without a response")?;
+                        let value = result.ok_or("read completed without a response")??;
+                        return Ok(Reply {
+                            value,
+                            sent,
+                            received,
+                        });
                     }
                     Action::Failed(err) => return Err(format!("read failed: {err:?}")),
                 }
@@ -119,19 +142,115 @@ mod linux {
         }
     }
 
+    fn read_clock(
+        link: &mut Link,
+        codec: &ClockMessages,
+        uptime: bool,
+    ) -> Result<Reply<Response>, String> {
+        link.exchange(
+            |seq| {
+                if uptime {
+                    codec.get_uptime(seq)
+                } else {
+                    codec.get_clock(seq)
+                }
+                .map_err(|e| format!("{e:?}"))
+            },
+            |frame| match codec.response(frame) {
+                Ok(value @ Response::Uptime(_)) if uptime => Ok(Some(value)),
+                Ok(value @ Response::Clock(_)) if !uptime => Ok(Some(value)),
+                Ok(_) | Err(ClockError::UnexpectedMessage) => Ok(None),
+                Err(e) => Err(format!("{e:?}")),
+            },
+        )
+    }
+
+    fn clock_trace(
+        link: &mut Link,
+        codec: &ClockMessages,
+        hz: f64,
+        count: usize,
+    ) -> Result<(), String> {
+        let uptime = read_clock(link, codec, true)?;
+        let Response::Uptime(ticks) = uptime.value else {
+            return Err("missing uptime".into());
+        };
+        let sent = uptime
+            .sent
+            .ok_or("untimed uptime cannot seed the clock model")?;
+        let mut clock = PrimaryClock::from_uptime(hz, ticks, sent).map_err(|e| format!("{e:?}"))?;
+        eprintln!("SEED {hz} {ticks} {sent:.17}");
+        let mut release = None;
+        for i in 0..count {
+            let warm = i < 8;
+            std::thread::sleep(if warm {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_micros(983_900)
+            });
+            let prev = (clock.last_clock(), clock.estimate());
+            let reply = read_clock(link, codec, false)?;
+            let Response::Clock(raw) = reply.value else {
+                return Err("missing clock".into());
+            };
+            let sample = reply.sent.map_or(Sample::Untimed, |sent| Sample::Timed {
+                sent,
+                received: reply.received,
+            });
+            let update = clock
+                .observe(raw, sample, warm)
+                .map_err(|e| format!("{e:?}"))?;
+            let state = clock.estimate();
+            let kind = match update {
+                Update::Untimed => {
+                    if clock.last_clock() <= prev.0 || state != prev.1 {
+                        return Err(
+                            "untimed clock should advance ticks but preserve estimates".into()
+                        );
+                    }
+                    "untimed"
+                }
+                Update::Outlier => "outlier",
+                Update::Updated(next) => {
+                    release = Some(next);
+                    "updated"
+                }
+            };
+            let low_sent = reply.sent.unwrap_or(0.0);
+            let warm = usize::from(warm);
+            let last = clock.last_clock();
+            eprint!(
+                "CLOCK {raw} {low_sent:.17} {:.17} {warm} {last} {kind} {:.17} {:.17} {:.17}",
+                reply.received, state.at, state.ticks, state.hz
+            );
+            if let Some(next) = release {
+                eprint!(" {:.17} {} {:.17}", next.at, next.ticks, next.hz);
+            }
+            eprintln!();
+        }
+        eprintln!("DONE {} {}", link.frame_retries, link.response_retries);
+        Ok(())
+    }
+
     pub fn run() -> Result<(), String> {
-        let count = std::env::args()
-            .nth(1)
-            .ok_or("missing sample count")?
-            .parse::<usize>()
-            .map_err(|e| e.to_string())?;
-        if !(1..=100_000).contains(&count) {
+        let mut argv = std::env::args().skip(1);
+        let arg = argv.next().ok_or("missing sample count")?;
+        let trace = arg == "--clock-trace";
+        let number = if trace {
+            argv.next().ok_or("missing trace size")?
+        } else {
+            arg
+        };
+        let count = number.parse::<usize>().map_err(|e| e.to_string())?;
+        let bounds = if trace { 8..=25 } else { 1..=100_000 };
+        if !bounds.contains(&count) || argv.next().is_some() {
             return Err("sample count out of bounds".into());
         }
         // Unbuffered reads ensure poll sees all unread input. The harness supplies
         // the disposable PTY descriptors and enforces a process-wide timeout.
         let mut link = Link {
             rx: Receiver::new(),
+            epoch: Instant::now(),
             reader: File::open("/proc/self/fd/0").map_err(|e| e.to_string())?,
             writer: File::options()
                 .write(true)
@@ -154,7 +273,7 @@ mod linux {
             if identify
                 .accept(Frame {
                     sequence: link.sequence,
-                    payload: &payload,
+                    payload: &payload.value,
                 })
                 .map_err(|e| format!("{e:?}"))?
             {
@@ -163,28 +282,21 @@ mod linux {
         }
         let dictionary = identify.dictionary().map_err(|e| format!("{e:?}"))?;
         let codec = ClockMessages::from_dictionary(&dictionary).map_err(|e| format!("{e:?}"))?;
+        if trace {
+            let hz = dictionary
+                .config
+                .get("CLOCK_FREQ")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or("CLOCK_FREQ is missing or not numeric")?;
+            return clock_trace(&mut link, &codec, hz, count);
+        }
         let init_ns = init.elapsed().as_nanos();
         let mut last_uptime = 0;
         let mut timings = Vec::with_capacity(count);
         for sample in 0..count {
             let uptime = sample % 8 == 0;
             let start = Instant::now();
-            let response = link.exchange(
-                |seq| {
-                    if uptime {
-                        codec.get_uptime(seq)
-                    } else {
-                        codec.get_clock(seq)
-                    }
-                    .map_err(|e| format!("{e:?}"))
-                },
-                |frame| match codec.response(frame) {
-                    Ok(value @ Response::Uptime(_)) if uptime => Ok(Some(value)),
-                    Ok(value @ Response::Clock(_)) if !uptime => Ok(Some(value)),
-                    Ok(_) | Err(ClockError::UnexpectedMessage) => Ok(None),
-                    Err(e) => Err(format!("{e:?}")),
-                },
-            )?;
+            let response = read_clock(&mut link, &codec, uptime)?.value;
             timings.push(start.elapsed().as_nanos());
             match response {
                 Response::Uptime(ticks) if ticks >= last_uptime => last_uptime = ticks,

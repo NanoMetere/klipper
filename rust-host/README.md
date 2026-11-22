@@ -88,8 +88,8 @@ host order over eight runs:
 
 | Host | Identify (median) | Clock/uptime RTT (median) | RTT (p95) |
 | --- | ---: | ---: | ---: |
-| Rust PTY example | 1.577 ms | 7.551 µs | 23.415 µs |
-| Stock Klippy serial reader | 19.624 ms | 71.778 µs | 111.598 µs |
+| Rust PTY example | 1.553 ms | 7.070 µs | 10.085 µs |
+| Stock Klippy serial reader | 17.311 ms | 50.196 µs | 94.924 µs |
 
 Each host completed 8,192 measured requests. This compares a minimal,
 single-in-flight Rust loop with stock's full transport path. It does not
@@ -131,6 +131,30 @@ model microbenchmark used pre-parsed sample inputs, seven measured alternating
 rounds and 450,000 samples per round: 12.17 ns/sample median in Rust vs
 896.20 ns/sample for stock Python with a no-I/O serial callback. This excludes
 I/O, clock-query scheduling, message parsing and physical printing.
+
+### Live disposable clock trace
+
+```sh
+cargo build --locked --release --example native_mcu
+python3 bench/native_mcu.py /path/to/pinned/klipper \
+  --binary target/release/examples/native_mcu --live-clock --json /tmp/clock-traces.json
+```
+
+The Linux PTY test seeds from a timed uptime reply, makes eight warmup
+reads 50 ms apart, then makes two more reads at approximately 0.9839 s
+intervals. For the zero-wire-delay, single-in-flight PTY case, it timestamps
+the fresh write and the read that supplies the response. These are PTY-only
+boundaries, not a physical wire-time model. It replays the exact captured
+boundaries and tick values through stock Klippy's Python model instead of
+comparing the clocks of separately timed runs.
+
+Test cases cover a clean link, a lost request (the transport-retried reply
+extends raw ticks without updating calibration), a lost response after
+ACK (the fresh-sequence application retry supplies a new send timestamp),
+and a disconnect with a query pending. The disconnected host exits; a
+new host process and a freshly started MCU establish a new uptime epoch.
+This verifies teardown and fresh startup, not automatic live recovery in a
+long-running printer process. It does not send motion or heater commands.
 
 ## Frame validation microbenchmark
 
