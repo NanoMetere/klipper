@@ -446,10 +446,18 @@ paths agree on host-request and watchdog-expiry reasons. A stop query
 preserves the terminal expiry reason. These tests do not attach an endstop,
 drive any pin, or validate physical multi-MCU synchronization.
 
+The offline multi-peer dispatcher also matches pinned C across 14,400
+reports with wrapped clocks and differing clock rates: 3,835 timeout
+extensions and 1,188 propagated terminal sends. The first terminal result
+stops extension and propagates once; unrelated OIDs cannot change state.
+The comparator links real stock `trdispatch.c` against an in-memory
+serial queue, not an actual bus.
+
 ```sh
 cargo build --locked --release --examples
 python3 bench/mcu_config.py /path/to/pinned/klipper
 python3 bench/trigger_sync.py /path/to/pinned/klipper
+python3 bench/trigger_dispatch.py /path/to/pinned/klipper
 python3 bench/trigger_sync.py /path/to/pinned/klipper --native \
   --binary target/release/examples/native_mcu
 ```

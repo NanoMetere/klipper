@@ -46,3 +46,7 @@ required-features = ["identify"]
 [[example]]
 name = "trigger_sync_replay"
 required-features = ["identify"]
+
+[[example]]
+name = "trigger_dispatch_replay"
+required-features = ["identify"]

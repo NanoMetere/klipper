@@ -53,6 +53,8 @@ def main():
         ("webhooks", [sys.executable, ROOT/"bench/webhooks.py", upstream, examples/"webhook_replay"]),
         ("trigger_timing", [sys.executable, ROOT/"bench/trigger_sync.py", upstream,
                             "--binary", examples/"trigger_sync_replay"]),
+        ("trigger_dispatch", [sys.executable, ROOT/"bench/trigger_dispatch.py", upstream,
+                              "--binary", examples/"trigger_dispatch_replay"]),
     ])
     if dictionary.is_file():
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
