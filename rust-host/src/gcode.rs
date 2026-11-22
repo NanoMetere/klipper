@@ -3,7 +3,10 @@
 //! Upstream copyright (C) 2016-2025 Kevin O'Connor <kevin@koconnor.net>.
 //! Not a command dispatcher or a hardware control interface.
 
-use crate::lookahead::{self, Limits, LookAhead, Move, Profile};
+use crate::{
+    bed_mesh,
+    lookahead::{self, Limits, LookAhead, Move, Profile},
+};
 use std::collections::BTreeMap;
 
 #[path = "gcode/arcs.rs"]
@@ -15,6 +18,7 @@ mod transform;
 pub use transform::Owner as TransformOwner;
 
 const MAX_LINE: usize = 4096;
+const MAX_PHYSICAL_POINTS: usize = 16384;
 const AXES: [u8; 4] = *b"XYZE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +35,7 @@ pub enum Error {
     TransformOwner,
     TransformLimit,
     ArcLimit,
+    Mesh(bed_mesh::Error),
     Motion(lookahead::Error),
 }
 
@@ -307,6 +312,7 @@ pub struct Preview {
     saved: BTreeMap<String, State>,
     transform: transform::Stack,
     arcs: Option<arcs::Mode>,
+    mesh: Option<(bed_mesh::Transform, [f64; 4])>,
     failed: bool,
     planner: LookAhead,
     limits: Limits,
@@ -338,6 +344,7 @@ impl Preview {
             saved: BTreeMap::new(),
             transform: transform::Stack::default(),
             arcs: None,
+            mesh: None,
             failed: false,
             planner,
             limits,
@@ -376,13 +383,41 @@ impl Preview {
         self.transform.remove(owner)
     }
 
-    /// Rebase the coordinates the parser sees from the commanded physical
-    /// position, as on a stock transform change. Leaves offsets and saved
-    /// state intact and emits no move.
-    pub fn reset_last_position(&mut self) -> Result<(), Error> {
+    /// Install a pre-calculated bed transform below all tool translations.
+    /// The physical toolhead position does not move.
+    pub fn install_bed_mesh(&mut self, mesh: bed_mesh::Transform) -> Result<(), Error> {
+        let intermediate = mesh.reported(self.toolhead).map_err(Error::Mesh)?;
+        let mut candidate = self.coords;
+        candidate.last = self.transform.reported(intermediate)?;
+        candidate.validate()?;
+        self.mesh = Some((mesh, intermediate));
+        self.coords = candidate;
+        Ok(())
+    }
+
+    /// Revert the bottom transform without moving the physical toolhead.
+    pub fn clear_bed_mesh(&mut self) -> Result<(), Error> {
         let mut candidate = self.coords;
         candidate.last = self.transform.reported(self.toolhead)?;
         candidate.validate()?;
+        self.mesh = None;
+        self.coords = candidate;
+        Ok(())
+    }
+
+    /// Rebase from the commanded physical position. Unapply the bed mesh
+    /// first, then outer tool offsets, without emitting any move.
+    pub fn reset_last_position(&mut self) -> Result<(), Error> {
+        let unmeshed = match &self.mesh {
+            Some((mesh, _)) => mesh.reported(self.toolhead).map_err(Error::Mesh)?,
+            None => self.toolhead,
+        };
+        let mut candidate = self.coords;
+        candidate.last = self.transform.reported(unmeshed)?;
+        candidate.validate()?;
+        if let Some((_, last)) = &mut self.mesh {
+            *last = unmeshed;
+        }
         self.coords = candidate;
         Ok(())
     }
@@ -405,6 +440,7 @@ impl Preview {
         if self.failed {
             return Err(Error::InvalidSession);
         }
+        let mut budget = MAX_PHYSICAL_POINTS;
         if let Some(mode) = &mut self.arcs {
             if let Some(ops) = mode.commands(line, &self.coords)? {
                 let mut output = Output::default();
@@ -416,7 +452,7 @@ impl Preview {
                             unreachable!()
                         };
                         next.validate()?;
-                        self.queue_move(position, speed, &mut check, &mut output)?;
+                        self.queue_move(position, speed, &mut check, &mut output, &mut budget)?;
                         self.coords = next;
                         Ok(())
                     })();
@@ -437,7 +473,7 @@ impl Preview {
         let mut out = Output::default();
         match effect {
             Effect::Linear { position, speed } => {
-                self.queue_move(position, speed, &mut check, &mut out)?
+                self.queue_move(position, speed, &mut check, &mut out, &mut budget)?
             }
             Effect::Barrier => out.moves = self.finish()?,
             Effect::Dwell(sec) => {
@@ -456,8 +492,37 @@ impl Preview {
         speed: f64,
         check: &mut impl FnMut([f64; 4], &mut Move) -> Result<(), Error>,
         out: &mut Output,
+        budget: &mut usize,
     ) -> Result<(), Error> {
         let position = self.transform.physical(position)?;
+        let Some((mesh, old)) = &self.mesh else {
+            return self.queue_physical(position, speed, check, out);
+        };
+        let points = mesh.split(*old, position).map_err(Error::Mesh)?;
+        *budget = budget
+            .checked_sub(points.len())
+            .ok_or(Error::Mesh(bed_mesh::Error::SplitBound))?;
+        for (i, p) in points.into_iter().enumerate() {
+            if let Err(e) = self.queue_physical(p, speed, check, out) {
+                if i != 0 {
+                    // Earlier physical segments may have changed planner state.
+                    // Use a new offline preview rather than replaying the line.
+                    self.failed = true;
+                }
+                return Err(e);
+            }
+        }
+        self.mesh.as_mut().unwrap().1 = position;
+        Ok(())
+    }
+
+    fn queue_physical(
+        &mut self,
+        position: [f64; 4],
+        speed: f64,
+        check: &mut impl FnMut([f64; 4], &mut Move) -> Result<(), Error>,
+        out: &mut Output,
+    ) -> Result<(), Error> {
         if let Some(mut move_) = Move::optional(self.limits, self.toolhead, position, speed)? {
             check(self.toolhead, &mut move_)?;
             let end = move_.end_position();

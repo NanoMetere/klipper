@@ -730,6 +730,14 @@ Against stock `ZMesh` and `MoveSplitter`, 3,528 point queries,
 moves matched exactly. The fixture varies grid density, all three
 interpolation modes, mesh offsets and fade state.
 
+The preview also composes the mesh as a lower transform beneath
+tool offsets. A synthetic 9×9 bicubic grid with 25–325 mm bounds and
+0.6–10 mm fade matched stock at 24 coordinate/flush snapshots and
+57 physical move profiles, including a helical-height transition,
+E interpolation, two nonzero tool translations and coordinate rebasing.
+See `bench/tool_transform.py`. Heights are generated, not measured
+printer data, and installing/clearing a preview mesh never moves hardware.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

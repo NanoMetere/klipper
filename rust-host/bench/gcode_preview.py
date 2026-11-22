@@ -148,7 +148,23 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
 
     def directive(line):
         op, *args = line.split()
-        if op == "!reset":
+        if op == "!mesh":
+            from extras.bed_mesh import BedMesh, MoveSplitter, ZMesh
+            params = dict(min_x=25., min_y=25., max_x=325., max_y=325., x_count=9,
+                          y_count=9, mesh_x_pps=2, mesh_y_pps=2, algo="bicubic", tension=.2)
+            zmesh = ZMesh(params, "synthetic")
+            zmesh.build_mesh([[((x*13+y*19+x*y*7)%23-11)*.019 for x in range(9)] for y in range(9)])
+            bed = object.__new__(BedMesh)
+            bed.z_mesh = zmesh
+            bed.toolhead = root_transform
+            bed.last_position = [0.]*4
+            bed.tool_offset, bed.fade_start, bed.fade_end, bed.fade_dist, bed.fade_target = 0., .6, 10., 9.4, 0.
+            bed.log_fade_complete = False
+            bed.splitter = MoveSplitter(SimpleNamespace(getfloat=lambda _, default, **kw: default), dispatch)
+            bed.splitter.initialize(zmesh, bed.fade_target)
+            coords.set_move_transform(bed)
+            coords.reset_last_position()
+        elif op == "!reset":
             coords.reset_last_position()
         elif op == "!wrap":
             owner, x, y, z, force = args

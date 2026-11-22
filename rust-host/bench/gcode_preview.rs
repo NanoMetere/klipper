@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use klipper_host_protocol::{
+    bed_mesh::{Algorithm, Mesh, Transform},
     gcode::{Output, Preview, TransformOwner},
     lookahead::Limits,
 };
@@ -42,6 +43,28 @@ fn log(p: &Preview, o: Output) {
 fn directive(preview: &mut Preview, line: &str) {
     let mut words = line.split_ascii_whitespace();
     let cmd = words.next().unwrap();
+    if cmd == "!mesh" {
+        let z: Vec<_> = (0..81)
+            .map(|i| {
+                let x = i % 9;
+                let y = i / 9;
+                f64::from((x * 13 + y * 19 + x * y * 7) % 23 - 11) * 0.019
+            })
+            .collect();
+        let mesh = Mesh::new(
+            [[25.0; 2], [325.0; 2]],
+            [9, 9],
+            &z,
+            Algorithm::Bicubic {
+                points_per_segment: [2, 2],
+                tension: 0.2,
+            },
+        )
+        .unwrap();
+        let mesh = Transform::new(mesh, Some((0.6, 10.0, 0.0)), 0.0, 0.025, 5.0).unwrap();
+        preview.install_bed_mesh(mesh).unwrap();
+        return;
+    }
     if cmd == "!reset" {
         preview.reset_last_position().unwrap();
         return;
