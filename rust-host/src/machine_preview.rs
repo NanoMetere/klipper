@@ -17,6 +17,8 @@ use crate::{
     trajectory::{self, Trajectory},
 };
 
+pub mod tool_profiles;
+
 const SECTIONS: [&str; 3] = ["stepper_x", "stepper_y", "stepper_z"];
 const MAX_EVENTS: usize = 65_535;
 const MAX_LINES: usize = 32768;
@@ -71,8 +73,12 @@ fn number(
 }
 
 fn gear_product(cfg: &Config, section: &'static str) -> Result<f64, Error> {
-    let Some(raw) = cfg.get(section, "gear_ratio") else {
-        return Ok(1.0);
+    gearing(cfg.get(section, "gear_ratio")).ok_or_else(|| config_error(section, "gear_ratio"))
+}
+
+fn gearing(raw: Option<&str>) -> Option<f64> {
+    let Some(raw) = raw else {
+        return Some(1.0);
     };
     fn valid(v: &str) -> Option<f64> {
         v.trim()
@@ -80,13 +86,11 @@ fn gear_product(cfg: &Config, section: &'static str) -> Result<f64, Error> {
             .ok()
             .filter(|v| v.is_finite() && *v > 0.0)
     }
-    raw.split(',')
-        .try_fold(1.0_f64, |product, part| {
-            let (a, b) = part.split_once(':')?;
-            let ratio = product * (valid(a)? / valid(b)?);
-            (ratio.is_finite() && ratio > 0.0).then_some(ratio)
-        })
-        .ok_or_else(|| config_error(section, "gear_ratio"))
+    raw.split(',').try_fold(1.0_f64, |product, part| {
+        let (a, b) = part.split_once(':')?;
+        let ratio = product * (valid(a)? / valid(b)?);
+        (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+    })
 }
 
 /// All values are for offline simulation; no physical thermistor is read.
@@ -308,6 +312,38 @@ impl Machine {
         let start = home
             .ready_position_for(self.homing_kinematics(), self.motor_step)
             .map_err(Error::VirtualHoming)?;
+        self.trace_tool_segments_at(start, pieces, lanes, at, clock, max_error, invert)
+    }
+
+    /// Non-device preview from an explicitly chosen virtual XYZ origin.
+    /// In contrast to trace_tool_gcode, this does not claim virtual homing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn trace_tool_gcode_at_virtual_origin(
+        &self,
+        start: [f64; 3],
+        script: &str,
+        initial: u8,
+        lanes: &[ToolLane<'_>],
+        at: f64,
+        clock: Clock,
+        max_error: u32,
+        invert: [bool; 3],
+    ) -> Result<MultiTrace, Error> {
+        let pieces = split_tool_gcode(script, initial).map_err(Error::ToolDispatch)?;
+        self.trace_tool_segments_at(start, &pieces, lanes, at, clock, max_error, invert)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn trace_tool_segments_at(
+        &self,
+        start: [f64; 3],
+        pieces: &[ToolSegment<'_>],
+        lanes: &[ToolLane<'_>],
+        at: f64,
+        clock: Clock,
+        max_error: u32,
+        invert: [bool; 3],
+    ) -> Result<MultiTrace, Error> {
         let mut bytes = 0usize;
         if !self.in_range(&start)
             || !(0.0..1e12).contains(&at)

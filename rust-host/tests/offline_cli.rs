@@ -94,3 +94,78 @@ fn virtual_sd_reports_the_stock_checkpoint_for_an_unterminated_last_line() {
         .iter()
         .all(|m| !m.as_array().unwrap().is_empty()));
 }
+
+#[test]
+fn explicit_sparse_tools_emit_separate_extrusion_lanes_from_config() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/preview");
+    let run = |temps: &str, initial: &str| {
+        Command::new(env!("CARGO_BIN_EXE_klipper-preview"))
+            .args(["--tool-temps", temps, "--initial-tool", initial])
+            .arg(&root)
+            .arg("sparse-tool.cfg")
+            .arg(root.join("sparse-tool.gcode"))
+            .args(["20000000", "1", "1", ".2", "printer.cfg", "rails.cfg"])
+            .output()
+            .unwrap()
+    };
+    let out = run("0:210,2:210,6:210", "0");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["tool_mode"], "lane_selection_without_docking");
+    let lanes = result["extruder_lanes"].as_array().unwrap();
+    let mut all = Vec::new();
+    for lane in lanes {
+        let mut positive = false;
+        let mut net = 0;
+        for command in lane["commands"].as_array().unwrap() {
+            if command["kind"] == "direction" {
+                positive = command["positive"].as_bool().unwrap();
+            } else {
+                let count = command["count"].as_i64().unwrap();
+                net += if positive { count } else { -count };
+            }
+        }
+        assert!((lane["step_distance_mm"].as_f64().unwrap() - 0.004).abs() < 1e-12);
+        all.push((
+            lane["tool"].as_u64().unwrap(),
+            lane["extruder"].as_str().unwrap(),
+            net,
+        ));
+    }
+    assert_eq!(
+        all,
+        [
+            (0, "extruder", 100),
+            (2, "extruder1", -155),
+            (6, "extruder2", 50)
+        ]
+    );
+    for (temps, initial, error) in [
+        ("0:210,2:20,6:210", "0", "Cold"),
+        (
+            "0:210,2:210,3:210",
+            "0",
+            "missing modeled temperature for T6",
+        ),
+        ("0:210,2:210,6:210", "6", ""),
+        ("0:210,2:210,6:210", "3", "ToolSegment"),
+        ("0:210,2:210,6:NaN", "0", "nonfinite"),
+    ] {
+        let ret = run(temps, initial);
+        if error.is_empty() {
+            assert!(ret.status.success());
+        } else {
+            assert_eq!(ret.status.code(), Some(2));
+            assert!(ret.stdout.is_empty());
+            assert!(
+                String::from_utf8_lossy(&ret.stderr).contains(error),
+                "{:?}",
+                ret
+            );
+        }
+    }
+}

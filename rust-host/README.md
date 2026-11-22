@@ -428,6 +428,23 @@ individual outputs contain 640, 160 net (320 forward,
 or Rust look-ahead. A missing `[extruder1]` is rejected at startup.
 The test initializes selection directly, without triggering docking.
 
+### Preview sparse tool motion from configuration
+
+For a file using the supported motion-only G-code subset, the offline
+CLI can now read independent extruder calibrations and an explicit
+Klipper Toolchanger tool-to-extruder map. Supply a modeled temperature
+for every lane; the command neither reads nor controls a heater. It
+emits separate JSON step records with the physical tool ID, configured
+extruder name and modeled step distance. The example has no real pins,
+does not dock tools, and does not apply tool nozzle offsets or per-tool
+shaper changes; configurations that require those features are rejected.
+
+```sh
+cargo run --locked --release --bin klipper-preview -- \
+  --tool-temps 0:210,2:210,6:210 examples/preview sparse-tool.cfg \
+  examples/preview/sparse-tool.gcode 20000000 1 1 .2 printer.cfg rails.cfg
+```
+
 ## Inert multiple-extruder coordinates
 
 Switching a virtual extruder now returns the pending profiles tagged for
