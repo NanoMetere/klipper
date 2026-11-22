@@ -379,6 +379,26 @@ tests additionally cover absent literals, empty wildcard matches, escaped
 paths and cycles. This is read-only parsing parity for the fixture, not
 validation that all configured hardware/modules are supported.
 
+## Offline tool selection lifecycle
+
+`toolchange::Changer` models a bounded choose/park/pickup sequence.
+It emits descriptive actions for coordinate save/restore, dock transform,
+tool changes, pickup detection, and missing-tool watch activation. It
+requires the configured axes to be marked homed and uses per-step tickets
+to reject late confirmations. After a failed pickup, it does not expose an
+active identity until explicit simulated detection succeeds. It does not
+execute docking G-code, Jinja, fan/temperature commands or a real plugin.
+
+On viesturz/klipper-toolchanger at
+`94756dfde9b729fd69f9b8780067821c5c99a528`, with mocked callbacks and the
+legacy compatible Klippy checkout, 64 selection/no-op cases and 505
+ordered observations matched the stock plugin selection method.
+
+```sh
+cargo build --locked --release --example toolchange_replay
+python3 bench/toolchange_order.py /path/to/legacy/klipper /path/to/toolchanger
+```
+
 ## Offline heater fault gate
 
 The stock heater progress/deficit check is modeled separately from PID and

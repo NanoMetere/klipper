@@ -25,7 +25,11 @@ def main():
     p.add_argument("--native-pty", action="store_true", help="run only against a newly created Linux MCU PTY")
     p.add_argument("--native-gpio", action="store_true", help="build a separate GPIO-free Linux motion fixture")
     p.add_argument("--macro-reference", action="store_true", help="also compare stock macro dispatch (requires Jinja2)")
+    p.add_argument("--toolchanger-reference", type=Path, help="optional pinned viesturz comparator")
+    p.add_argument("--legacy-klippy", type=Path, help="Klippy checkout matching the toolchanger smoke")
     a = p.parse_args()
+    if bool(a.toolchanger_reference) != bool(a.legacy_klippy):
+        p.error("--toolchanger-reference and --legacy-klippy must be supplied together")
     upstream = a.upstream.resolve()
     got = subprocess.check_output(["git", "-C", upstream, "rev-parse", "HEAD"], text=True).strip()
     if got != PIN:
@@ -65,6 +69,10 @@ def main():
         ("virtual_stepper", [sys.executable, ROOT/"bench/virtual_stepper.py",
                              "--binary", examples/"virtual_stepper_replay"]),
     ])
+    if a.toolchanger_reference:
+        phases.append(("toolchange_order", [sys.executable, ROOT/"bench/toolchange_order.py",
+                                           a.legacy_klippy.resolve(), a.toolchanger_reference.resolve(),
+                                           "--binary", examples/"toolchange_replay"]))
     if dictionary.is_file():
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
