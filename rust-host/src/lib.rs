@@ -14,6 +14,7 @@ pub mod clock_sync;
 pub mod planner;
 pub mod flight;
 pub mod lookahead;
+pub mod gcode;
 #[cfg(feature = "identify")]
 mod vlq;
 

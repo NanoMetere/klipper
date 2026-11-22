@@ -94,12 +94,17 @@ pub struct Move {
 impl Move {
     /// XYZ and one optional extrusion axis (E). This does not authorize E;
     /// machine-specific position, temperature and extrusion limits are separate.
-    pub fn new(
+    pub fn new(limits: Limits, start: [f64; 4], end: [f64; 4], speed: f64) -> Result<Self, Error> {
+        Self::optional(limits, start, end, speed)?.ok_or(Error::InvalidMove)
+    }
+
+    /// Identical validation, but returns None for a no-op.
+    pub fn optional(
         limits: Limits,
         start: [f64; 4],
         mut end: [f64; 4],
         speed: f64,
-    ) -> Result<Self, Error> {
+    ) -> Result<Option<Self>, Error> {
         let mut delta: [f64; 4] = std::array::from_fn(|i| end[i] - start[i]);
         if !positive(speed) || delta.iter().any(|v| !v.is_finite()) {
             return Err(Error::InvalidMove);
@@ -115,6 +120,9 @@ impl Move {
             accel = 99_999_999.9;
             velocity = speed;
         }
+        if distance == 0.0 {
+            return Ok(None);
+        }
         let direction = delta.map(|v| v * (1.0 / distance));
         let max_cruise = velocity.powi(2);
         let dv2 = 2.0 * distance * accel;
@@ -128,7 +136,7 @@ impl Move {
         {
             return Err(Error::InvalidMove);
         }
-        Ok(Self {
+        Ok(Some(Self {
             start,
             end,
             direction,
@@ -143,7 +151,7 @@ impl Move {
             max_start: 0.0,
             max_min_cruise: 0.0,
             dv2_min_cruise,
-        })
+        }))
     }
 
     /// The position after stock normalization of sub-nanometer XYZ changes.
@@ -283,6 +291,10 @@ impl LookAhead {
             budget: FLUSH_TIME,
             extruder_corner,
         })
+    }
+
+    pub(crate) fn prime(&mut self) {
+        self.budget = 1.0;
     }
 
     pub fn queued(&self) -> usize {
