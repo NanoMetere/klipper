@@ -162,8 +162,9 @@ long-running printer process. It does not send motion or heater commands.
 commands into protocol-sized payloads. It models the pinned C scheduler's
 release clock, deadline priority, background priority, bounded flight and
 receive-byte windows, and minimum UART / classic CAN wire-time estimates.
-It does not drive a device. The caller still needs to own ACK progression,
-retransmission, burst writes, failure rollback and clock-epoch validation.
+It does not drive a device. The separate flight ledger below handles ACK
+progression and cached retransmission; the caller still owns burst writes,
+session teardown, and clock-epoch validation.
 
 ```sh
 python3 bench/planner.py /path/to/pinned/klipper
@@ -177,6 +178,33 @@ PTY / UART / classic CAN timing models, multiple FIFO lanes, delayed release,
 background deadlines and backpressure. Empty waits are normalized to an
 idle result. These cases do not establish physical bus timing or print
 scheduler safety.
+
+## Established-session send ledger
+
+`flight::Flight` holds at most 12 outstanding blocks. Payload replies may retire
+blocks cumulatively, but only an empty ACK releases the separate byte-window
+charge for the last retired block. A repeated empty ACK can trigger fast
+retransmission. Retransmission emits one sync byte followed by the exact
+still-pending frames in original order. Received frames outside the active
+sequence window are rejected; the ledger is not a startup resynchronizer.
+
+A failed or short write permanently poisons the ledger, including a retry
+write. The caller must close the old transport and discard that session's
+planner and pending commands. It must not replay those commands in a new
+ledger. Startup sequence adoption, adaptive retry timing, burst I/O, and
+integration with the planner are not implemented here.
+
+```sh
+python3 bench/flight.py /path/to/pinned/klipper
+```
+
+The offline harness exercised 30,009 events against the pinned C receive and
+retransmit routines, including sequence wrap, partial cumulative ACKs, byte
+window pressure, rejected sequences and duplicate ACKs. The state and wire
+outputs matched, including 2,089 exact retransmissions to an isolated pipe.
+Rust tests separately cover send-completion notification cutoff, corruption,
+and fatal write failures. This is a protocol equivalence check, not a speed
+benchmark or a test on a printer.
 
 ## Frame validation microbenchmark
 

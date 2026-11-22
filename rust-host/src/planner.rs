@@ -3,10 +3,10 @@
 //! Upstream copyright (C) 2016-2025 Kevin O'Connor <kevin@koconnor.net>.
 //! Does not write to a device, manage ACKs, or own the transmission clock.
 
+use crate::flight::FRAME_WINDOW;
 use crate::{clock_sync::ReleaseEstimate, MAX_FRAME, MAX_PAYLOAD, MIN_FRAME};
 use std::collections::VecDeque;
 
-const FRAME_WINDOW: usize = 12;
 const CLOCK_LIMIT: u64 = i64::MAX as u64;
 const BACKGROUND_KEY: u64 = 0x7fff_ffff_0000_0000;
 const RELEASE_RANGE: u64 = 3 << 29;
