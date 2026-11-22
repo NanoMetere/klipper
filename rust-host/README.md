@@ -494,6 +494,26 @@ saturation, varying sample intervals and a stale-host gate. Rust unit
 tests independently check the invalid input and latch behavior. No
 heater or hardware was used.
 
+## Offline motion wire encoding
+
+`step_wire` uses the identified dictionary's actual `set_next_step_dir`
+and `queue_step` message IDs and produces payload/release metadata for
+already-validated per-stepper traces. It checks interval/count/add bounds,
+direction ordering, and the cumulative clock. This does not expose a
+motion transport or configure driver OIDs.
+
+```sh
+cargo build --locked --release --example step_wire_replay
+python3 bench/step_wire.py /path/to/pinned/klipper /path/to/klipper.dict \
+  target/release/examples/step_wire_replay
+```
+
+11,204 payloads and single-command test frames matched the pinned native
+Linux MCU dictionary and the stock Python encoder byte-for-byte, including
+sequence wraps, signed add values and multi-byte intervals. The independent
+offline planner comparison covers batching; this test does not send any
+byte to either a virtual or physical MCU.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

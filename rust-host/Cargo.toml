@@ -30,3 +30,7 @@ required-features = ["webhooks"]
 [[bin]]
 name = "klipper-preview"
 required-features = ["webhooks"]
+
+[[example]]
+name = "step_wire_replay"
+required-features = ["identify"]

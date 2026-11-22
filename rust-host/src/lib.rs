@@ -22,6 +22,8 @@ pub mod step_clock;
 pub mod config;
 pub mod machine_preview;
 pub mod thermal;
+#[cfg(feature = "identify")]
+pub mod step_wire;
 #[cfg(feature = "webhooks")]
 pub mod webhooks;
 #[cfg(feature = "identify")]
