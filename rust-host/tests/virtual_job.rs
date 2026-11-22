@@ -254,3 +254,55 @@ fn virtual_job_exposes_status_without_webhook_mutations() {
     );
     assert_eq!(seen[2]["error"]["error"], "WebRequestError");
 }
+
+#[test]
+fn wide_index_preserves_ties_and_discards_remaining_heads_on_fault() {
+    let fixture = fixture();
+    let codec = codec();
+    let indices = (0..12_u8).collect::<Vec<_>>();
+    let traces = (0..indices.len())
+        .map(|i| fixture.motors[i % 3].as_slice())
+        .collect::<Vec<_>>();
+    let mut want = Vec::new();
+    for (n, (&oid, &commands)) in indices.iter().zip(&traces).enumerate() {
+        want.extend(
+            codec
+                .payloads(oid, 0, commands)
+                .unwrap()
+                .into_iter()
+                .map(|p| (n, p)),
+        );
+    }
+    // Stable sort retains within-lane ordering at equal ticks.
+    want.sort_by_key(|(n, p)| (p.required_tick, *n));
+    let mut j = Job::for_lanes(&codec, &traces, &indices, 0, 500, 26).unwrap();
+    j.start(1).unwrap();
+    for cap in [1, 2, 5] {
+        let batch = j.poll(1, cap).unwrap();
+        assert_eq!(batch.len(), cap);
+        for (actual, (lane, payload)) in batch.into_iter().zip(want.drain(..cap)) {
+            assert_eq!(actual.lane, lane);
+            assert_eq!(actual.command, payload);
+            assert_eq!(actual.generation, 26);
+        }
+    }
+    let batch = j.poll(201, 12).unwrap();
+    for (actual, (lane, payload)) in batch.into_iter().zip(want.drain(..12)) {
+        assert_eq!(actual.lane, lane);
+        assert_eq!(actual.command, payload);
+    }
+    assert_eq!(j.snapshot().issued, 20);
+    assert_eq!(j.snapshot().total, 20);
+    // A trailing dwell remains after all queues drained.
+    j.fault().unwrap();
+    assert!(j.poll(1500, 256).unwrap().is_empty());
+    assert_eq!(j.snapshot().state, State::Faulted);
+
+    let mut j = Job::for_lanes(&codec, &traces, &indices, 0, 500, 27).unwrap();
+    j.start(0).unwrap();
+    assert_eq!(j.poll(0, 3).unwrap().len(), 3);
+    j.cancel().unwrap();
+    assert!(j.poll(1500, 256).unwrap().is_empty());
+    assert_eq!(j.snapshot().issued, 3);
+    assert_eq!(j.snapshot().state, State::Cancelled);
+}

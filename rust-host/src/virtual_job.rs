@@ -6,10 +6,14 @@ use crate::{
     step_clock::Command,
     step_wire::{self, Payload, StepMessages},
 };
-use std::collections::{BTreeSet, VecDeque};
+use std::{
+    cmp::Reverse,
+    collections::{binary_heap::PeekMut, BTreeSet, BinaryHeap, VecDeque},
+};
 
 const MAX_COMMANDS: usize = 196_000;
 const MAX_BATCH: usize = 256;
+const HEAP_MIN_LANES: usize = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -59,6 +63,7 @@ pub struct Job {
     issued: usize,
     total: usize,
     lanes: Vec<VecDeque<Payload>>,
+    heads: Option<BinaryHeap<Reverse<(u64, usize)>>>,
 }
 
 impl Job {
@@ -101,7 +106,7 @@ impl Job {
             return Err(Error::InvalidTrace);
         }
         let mut total = 0usize;
-        let mut lanes = Vec::with_capacity(lane_count);
+        let mut lanes = Vec::<VecDeque<Payload>>::with_capacity(lane_count);
         for (&lane, &oid) in traces.iter().zip(oids) {
             total += lane.len();
             if total > MAX_COMMANDS
@@ -115,6 +120,13 @@ impl Job {
             let payloads = codec.payloads(oid, initial, lane).map_err(Error::Wire)?;
             lanes.push(payloads.into());
         }
+        let heads = (lane_count >= HEAP_MIN_LANES).then(|| {
+            lanes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, lane)| lane.front().map(|p| Reverse((p.required_tick, i))))
+                .collect()
+        });
         Ok(Self {
             state: State::Ready,
             generation,
@@ -124,6 +136,7 @@ impl Job {
             issued: 0,
             total,
             lanes,
+            heads,
         })
     }
 
@@ -209,6 +222,19 @@ impl Job {
             .saturating_add(clock - self.clock)
             .min(self.end);
         self.clock = clock;
+        let out = if self.heads.is_some() {
+            self.poll_indexed(budget)
+        } else {
+            self.poll_scanned(budget)
+        };
+        if self.issued == self.total && self.simulation_tick == self.end {
+            self.state = State::Finished;
+        }
+        Ok(out)
+    }
+
+    #[inline(never)]
+    fn poll_scanned(&mut self, budget: usize) -> Vec<Issued> {
         let mut out = Vec::new();
         for _ in 0..budget {
             let Some(lane) = self
@@ -230,10 +256,36 @@ impl Job {
             });
             self.issued += 1;
         }
-        if self.issued == self.total && self.simulation_tick == self.end {
-            self.state = State::Finished;
+        out
+    }
+
+    #[inline(never)]
+    fn poll_indexed(&mut self, budget: usize) -> Vec<Issued> {
+        let heads = self.heads.as_mut().expect("indexed lanes");
+        let mut out = Vec::new();
+        for _ in 0..budget {
+            let Some(mut head) = heads.peek_mut() else {
+                break;
+            };
+            let Reverse((tick, lane)) = *head;
+            if tick > self.simulation_tick {
+                break;
+            }
+            let queue = &mut self.lanes[lane];
+            let command = queue.pop_front().expect("nonempty indexed lane");
+            if let Some(next) = queue.front() {
+                *head = Reverse((next.required_tick, lane));
+            } else {
+                PeekMut::pop(head);
+            }
+            out.push(Issued {
+                lane,
+                generation: self.generation,
+                command,
+            });
         }
-        Ok(out)
+        self.issued += out.len();
+        out
     }
 
     pub fn cancel(&mut self) -> Result<(), Error> {
@@ -254,6 +306,9 @@ impl Job {
 
     fn finish(&mut self, state: State) {
         self.lanes.clear();
+        if let Some(heads) = &mut self.heads {
+            heads.clear();
+        }
         self.state = state;
     }
 }

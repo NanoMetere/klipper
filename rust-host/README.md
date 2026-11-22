@@ -996,6 +996,21 @@ cargo build --locked --release --example thermal_command_replay
 python3 bench/thermal_commands.py /path/to/pinned/klipper
 ```
 
+Wide inert job schedules now index one pending head per lane. For
+fewer than nine lanes they retain the small scan. The heap preserves
+required-tick ordering, same-tick lane ties, and each lane's order.
+Across 25 paired runs per workload with 16 lanes and 73,156 records,
+median poll time dropped 29–40% versus the original Rust scan, with
+identical ordered payload digests. The 11-lane tests improved 12–35%;
+the 3/6-lane paths retained the small scan and varied within 6%.
+Fault and cancellation still clear all pending work, without I/O.
+
+```sh
+cargo build --locked --release --example virtual_job_timing
+taskset -c 2 python3 bench/virtual_job_timing.py /path/to/baseline/virtual_job_timing \
+  target/release/examples/virtual_job_timing --rounds 25
+```
+
 ## Offline motion wire encoding
 
 `step_wire` uses the identified dictionary's actual `set_next_step_dir`
