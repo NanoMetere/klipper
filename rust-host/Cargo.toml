@@ -6,8 +6,9 @@ license = "GPL-3.0-only"
 publish = false
 
 [features]
-default = ["identify"]
+default = ["identify", "webhooks"]
 identify = ["dep:flate2", "dep:serde", "dep:serde_json"]
+webhooks = ["dep:serde_json"]
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
@@ -21,3 +22,7 @@ required-features = ["identify"]
 [[example]]
 name = "native_mcu"
 required-features = ["identify"]
+
+[[example]]
+name = "webhook_replay"
+required-features = ["webhooks"]

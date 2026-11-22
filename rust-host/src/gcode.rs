@@ -472,6 +472,36 @@ mod tests {
     }
 
     #[test]
+    fn toolchanger_retract_restore_preserves_logical_extrusion() {
+        let limits = Limits::new(160.0, 2000.0, 5.0, 0.5).unwrap();
+        for move_ in [false, true] {
+            let mut p = Preview::new(limits, 128, None).unwrap();
+            for cmd in [
+                "G1 X10 E10",
+                "M220 S80",
+                "M221 S125",
+                "SAVE_GCODE_STATE NAME=tool_retract",
+                "M220 S100",
+                "M221 S100",
+                "M83",
+                "G1 X20 E-2",
+            ] {
+                p.line(cmd).unwrap();
+            }
+            let command = format!(
+                "RESTORE_GCODE_STATE NAME=tool_retract MOVE={}",
+                u8::from(move_)
+            );
+            p.line(&command).unwrap();
+            assert_eq!(p.coords().position()[0], if move_ { 10.0 } else { 20.0 });
+            assert_eq!(p.coords().position()[3], 8.0);
+            assert_eq!(p.coords().gcode_position()[3], 10.0);
+            p.line("G1 E11").unwrap();
+            assert_eq!(p.coords().position()[3], 9.25);
+        }
+    }
+
+    #[test]
     fn preview_flushes_at_dwell_and_suppresses_zero_moves() {
         let limits = Limits::new(200.0, 3000.0, 5.0, 0.5).unwrap();
         let mut preview = Preview::new(limits, 48, None).unwrap();

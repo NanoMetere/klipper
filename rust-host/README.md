@@ -393,6 +393,26 @@ Cartesian and 378 CoreXY direction/step commands (including cumulative
 ticks) matched exactly. Both planned the same 0.728039557 simulated seconds.
 These are deterministic traces in memory with no peripherals or hardware.
 
+## Offline read-only Klippy requests
+
+The `webhooks` feature implements bounded JSON/ETX stream reassembly and
+the read-only `info`, `gcode/help`, `objects/list`, `objects/query` and
+`objects/subscribe` request subset. The caller supplies an in-memory
+status snapshot, event timestamp, and update cadence. Subscriptions
+report changed fields. Malformed and oversized input is dropped without
+losing subsequent valid frames. No socket or command execution is
+opened; this is not yet a Moonraker endpoint.
+
+```sh
+cargo build --locked --release --example webhook_replay
+python3 bench/webhooks.py /path/to/pinned/klipper target/release/examples/webhook_replay
+```
+
+22 requests generated 17 responses identical to isolated stock
+Klippy handlers (with only offline endpoints exposed and portable
+`info` fields compared). Unit tests also exercise subscription changes
+and stream recovery. No production status providers are loaded.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
