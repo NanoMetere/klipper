@@ -42,7 +42,7 @@ def fixture():
             yield cmd + sep + sep.join(f"{a}{values[a]:.6f}" for a in axes)
 
 
-def stock(lines, emit):
+def stock(lines, emit, settings=None, emit_profiles=None):
     from extras.gcode_move import GCodeMove
     from gcode import GCodeDispatch
     from kinematics.extruder import PrinterExtruder
@@ -68,6 +68,16 @@ def stock(lines, emit):
     head = SimpleNamespace(max_velocity=160., max_accel=2500., square_corner_velocity=5.,
                            min_cruise_ratio=.5, kin=kin, extra_axes=[axis],
                            commanded_pos=[0.]*4, lookahead=q, print_time=0., need_check_pause=1.)
+    if settings:
+        cls, limits, vmax, amax, scv, cruise, zv, za, start = settings
+        kin.limits = limits
+        kin.max_z_velocity, kin.max_z_accel = zv, za
+        kin.check_move = lambda move: cls.check_move(kin, move)
+        kin._check_endstops = lambda move: cls._check_endstops(kin, move)
+        head.max_velocity, head.max_accel = vmax, amax
+        head.square_corner_velocity, head.min_cruise_ratio = scv, cruise
+        head.commanded_pos[:] = coords.last_position[:] = [*start, 0.]
+        head.extra_axes = []
     ToolHead._calc_junction_deviation(head)
     dispatch.toolhead = head
     moves = []
@@ -95,6 +105,8 @@ def stock(lines, emit):
     def log():
         nonlocal count, total
         count += len(moves)
+        if emit_profiles:
+            emit_profiles(tuple(moves), dwell or 0.)
         if emit:
             print("line", len(moves), -1. if dwell is None else dwell)
             print("state", *coords.last_position, *coords._get_gcode_position(), coords.speed)

@@ -154,6 +154,11 @@ impl Move {
         }))
     }
 
+    pub(crate) fn z_ratio(&self) -> Option<f64> {
+        let z = (self.end[2] - self.start[2]).abs();
+        (z != 0.0).then(|| self.distance / z)
+    }
+
     /// The position after stock normalization of sub-nanometer XYZ changes.
     pub fn end_position(&self) -> [f64; 4] {
         self.end

@@ -16,6 +16,7 @@ pub enum Error {
     DuplicateParameter,
     Nonfinite,
     InvalidSession,
+    MoveOutsidePreview,
     Motion(lookahead::Error),
 }
 
@@ -285,14 +286,26 @@ impl Preview {
         capacity: usize,
         extruder_corner: Option<f64>,
     ) -> Result<Self, Error> {
+        Self::new_at(limits, capacity, extruder_corner, [0.0; 4])
+    }
+
+    pub(crate) fn new_at(
+        limits: Limits,
+        capacity: usize,
+        extruder_corner: Option<f64>,
+        position: [f64; 4],
+    ) -> Result<Self, Error> {
         let mut planner = LookAhead::new(capacity, extruder_corner)?;
         planner.prime();
         Ok(Self {
-            coords: State::default(),
+            coords: State {
+                last: position,
+                ..State::default()
+            },
             failed: false,
             planner,
             limits,
-            toolhead: [0.0; 4],
+            toolhead: position,
         })
     }
 
@@ -301,6 +314,14 @@ impl Preview {
     }
 
     pub fn line(&mut self, line: &str) -> Result<Output, Error> {
+        self.line_with(line, |_, _| Ok(()))
+    }
+
+    pub(crate) fn line_with(
+        &mut self,
+        line: &str,
+        check: impl FnOnce([f64; 4], &mut Move) -> Result<(), Error>,
+    ) -> Result<Output, Error> {
         if self.failed {
             return Err(Error::InvalidSession);
         }
@@ -309,7 +330,10 @@ impl Preview {
         let mut out = Output::default();
         match effect {
             Effect::Linear { position, speed } => {
-                if let Some(move_) = Move::optional(self.limits, self.toolhead, position, speed)? {
+                if let Some(mut move_) =
+                    Move::optional(self.limits, self.toolhead, position, speed)?
+                {
+                    check(self.toolhead, &mut move_)?;
                     let end = move_.end_position();
                     let lazy = self.planner.push(move_)?;
                     self.toolhead = end;

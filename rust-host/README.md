@@ -369,6 +369,26 @@ tests additionally cover absent literals, empty wildcard matches, escaped
 paths and cycles. This is read-only parsing parity for the fixture, not
 validation that all configured hardware/modules are supported.
 
+## Config-to-step offline preview
+
+`machine_preview::Machine` combines supported printer and rail settings with
+G-code coordinates, travel checks, Z velocity/acceleration limits, XYZ
+trajectory, and clocked step traces. It accepts one motor per Cartesian or
+CoreXY rail and begins from a caller-supplied virtual position. This does not
+implement homing, bed transforms, extrusion, tool changes or I/O; the
+result is not a live controller.
+
+```sh
+python3 bench/machine_trace.py /path/to/pinned/klipper
+```
+
+The same config and G-code, including dwell, feed override, reversal,
+coordinate reset and Z movement, were processed through stock Python config,
+G-code and kinematics and pinned C trapq/itersolve/stepcompress. All 337
+Cartesian and 378 CoreXY direction/step commands (including cumulative
+ticks) matched exactly. Both planned the same 0.728039557 simulated seconds.
+These are deterministic traces in memory with no peripherals or hardware.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

@@ -20,6 +20,7 @@ pub mod step_times;
 pub mod step_compress;
 pub mod step_clock;
 pub mod config;
+pub mod machine_preview;
 #[cfg(feature = "identify")]
 mod vlq;
 
