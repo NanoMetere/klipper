@@ -112,6 +112,8 @@ def main():
     assert changed == ["klipper/extras/tool_probe.py","klipper/extras/tool_probe_endstop.py"]
     sys.path.insert(0, str(a.klippain/"tests"))
     from run_toolchanger_klippy_smoke import run_case
+    from sparse_toolchanger import run_sparse
+    from toolchanger_config_helpers import install_tree
     with tempfile.TemporaryDirectory(prefix="klippain-pr174-smoke-") as directory:
         root = Path(directory)
         checkout = root/"klipper"
@@ -133,6 +135,7 @@ def main():
             if a.bridge and mechanism == "stealthchanger" and not shared:
                 n = check_motion_bridge(checkout, a.dictionary, dest, a.bridge)
                 print(f"Modern plugin candidate: {n} equal motor commands with stock/Rust look-ahead")
+        run_sparse(checkout, a.dictionary, root/"stealthchanger", root/"sparse", install_tree, a.bridge)
         route(checkout)
 
 

@@ -418,6 +418,16 @@ cargo build --locked --release --example tool_dock_replay
 python3 bench/tool_dock.py /path/to/legacy/klipper /path/to/toolchanger
 ```
 
+The modern Klippy debug-output test also loads physical T0/T2/T6 as
+`extruder`/`extruder1`/`extruder2` with distinct MCU output files.
+A T0 → T2 → T6 → T2 run recovers T2's parked E and rebases logical E
+to zero. Hotend targets also route by physical tool number even while
+T0 is selected, without waiting for a physical temperature. The
+individual outputs contain 640, 160 net (320 forward,
+160 reverse), and 960 steps; all 36 motor records match with stock
+or Rust look-ahead. A missing `[extruder1]` is rejected at startup.
+The test initializes selection directly, without triggering docking.
+
 ## Inert multiple-extruder coordinates
 
 Switching a virtual extruder now returns the pending profiles tagged for
