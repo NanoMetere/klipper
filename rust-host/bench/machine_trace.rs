@@ -11,15 +11,26 @@ use std::{
     fs,
     io::{self, Read},
 };
+extern "C" {
+    fn machine_trace_cpu_ns() -> u64;
+}
+
+fn cpu_ns() -> u64 {
+    // This stateless C helper returns the POSIX process CPU clock in ns.
+    unsafe { machine_trace_cpu_ns() }
+}
+
 fn main() {
     let filename = std::env::args_os().nth(1).unwrap();
     let config_text = fs::read_to_string(filename).unwrap();
+    let started_config = cpu_ns();
     let cfg = config::parse(
         &BTreeMap::from([("machine.cfg".into(), config_text)]),
         "machine.cfg",
     )
     .unwrap();
     let machine = Machine::from_config(&cfg).unwrap();
+    let config_ns = cpu_ns() - started_config;
     let mut script = String::new();
     io::stdin().read_to_string(&mut script).unwrap();
     let e = Extruder::new(Settings {
@@ -42,6 +53,7 @@ fn main() {
         inverse_direction: true,
         pressure_advance: (value == "--pressure").then_some(&pressure),
     });
+    let started = cpu_ns();
     let trace = machine
         .trace_with_extruder(
             &script,
@@ -57,6 +69,7 @@ fn main() {
             extra,
         )
         .unwrap();
+    eprintln!("TIMED_NS {}", config_ns + (cpu_ns() - started));
     for motor in trace.motors.into_iter().chain(trace.extruder) {
         for cmd in motor {
             match cmd {

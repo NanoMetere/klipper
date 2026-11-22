@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "itersolve.h"
 #include "msgblock.h"
 #include "stepcompress.h"
@@ -18,11 +19,22 @@ void extruder_stepper_free(struct stepper_kinematics *sk);
 void extruder_set_pressure_advance(struct stepper_kinematics *sk, double print_time,
                                     double pressure_advance, double smooth_time);
 
+uint64_t machine_trace_cpu_ns(void)
+{
+    struct timespec c;
+    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &c))
+        abort();
+    return c.tv_sec * 1000000000ULL + c.tv_nsec;
+}
+
+
+#ifndef MACHINE_TRACE_CLOCK_ONLY
 int main(void)
 {
     struct trapq *q = trapq_alloc(), *eq = trapq_alloc();
     char op;
     int n_params = 0;
+    uint64_t processing = 0;
     double params[8][3];
     while (scanf(" %c", &op) == 1) {
         if (op == 'm' || op == 'e') {
@@ -30,7 +42,9 @@ int main(void)
             if (scanf("%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
                       &at, &a, &c, &d, &x, &y, &z, &rx, &ry, &rz, &sv, &cv, &accel) != 13)
                 return 2;
+            uint64_t started = machine_trace_cpu_ns();
             trapq_append(op == 'm' ? q : eq, at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel);
+            processing += machine_trace_cpu_ns() - started;
         } else if (op == 'g') {
             if (n_params >= 8 || scanf("%lf %lf %lf", &params[n_params][0],
                                         &params[n_params][1], &params[n_params][2]) != 3)
@@ -43,6 +57,7 @@ int main(void)
             if (scanf(" %c %lf %lf %lf %lf %lf %lf %u %u", &axis, &xpos, &ypos,
                       &zpos, &step, &last, &hz, &err, &invert) != 9)
                 return 2;
+            uint64_t started = machine_trace_cpu_ns();
             struct stepper_kinematics *sk = axis == 'e' ? extruder_stepper_alloc()
                 : axis == '+' || axis == '-' ? corexy_stepper_alloc(axis) : cartesian_stepper_alloc(axis);
             struct trapq *trajectory = axis == 'e' ? eq : q;
@@ -60,6 +75,7 @@ int main(void)
             trapq_check_sentinels(trajectory);
             if (itersolve_generate_steps(sk, sc, last) || stepcompress_flush(sc, UINT64_MAX))
                 return 3;
+            processing += machine_trace_cpu_ns() - started;
             struct queue_message *m;
             uint64_t tick = 0;
             list_for_each_entry(m, &messages, node) {
@@ -87,5 +103,7 @@ int main(void)
     }
     trapq_free(q);
     trapq_free(eq);
+    fprintf(stderr, "TIMED_NS %" PRIu64 "\n", processing);
     return 0;
 }
+#endif

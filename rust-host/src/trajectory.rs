@@ -171,13 +171,15 @@ impl Trajectory {
                 half_acceleration,
             };
             let end = seg.end();
-            if end <= at || end > TIME_LIMIT {
+            if end < at || end > TIME_LIMIT {
                 return Err(Error::Invalid);
             }
             position = seg.local(duration);
             if position.iter().any(|x| !x.is_finite()) {
                 return Err(Error::Invalid);
             }
+            // Like trapq, retain phases that advance locally but round to
+            // the same absolute time. The step solver clips to this span.
             next[n] = Some(seg);
             n += 1;
             at = end;
@@ -248,6 +250,18 @@ mod tests {
         }
         let last = q.position(at + 1.0).unwrap().unwrap();
         assert!((last[0] - 10.0).abs() < 1e-12 && (last[1] - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn keeps_sub_ulp_phases_at_their_absolute_timestamp() {
+        let mut q = Trajectory::new(4).unwrap();
+        let mut s = sample(8.);
+        s.phase_sec[1] = 2.960594732333751e-17;
+        q.append(s).unwrap();
+        let phases = q.segments();
+        assert_eq!(phases[2].at, phases[2].end());
+        assert_eq!(phases[2].at, phases[3].at);
+        assert_eq!(q.position(8.5).unwrap(), Some([0.5, 0., 0.]));
     }
 
     #[test]

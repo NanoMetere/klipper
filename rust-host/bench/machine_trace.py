@@ -5,9 +5,11 @@ import argparse
 import math
 import os
 from pathlib import Path
+import statistics
 import subprocess
 import sys
 import tempfile
+import time as perf
 
 from gcode_preview import stock
 from planner import PIN, ROOT
@@ -86,7 +88,9 @@ def traced(config_path, c, script, use_extruder, pressure):
     from types import SimpleNamespace
     from stepper import parse_step_distance
     reader = ConfigFileReader()
-    raw = reader.build_fileconfig_with_includes(reader.read_config_file(config_path), config_path)
+    config_text = reader.read_config_file(config_path)
+    started = perf.process_time_ns()
+    raw = reader.build_fileconfig_with_includes(config_text, config_path)
     printer = ConfigWrapper(None, raw, {}, "printer")
     cart = printer.get("kinematics") == "cartesian"
     start = (1., 1., .2)
@@ -129,6 +133,7 @@ def traced(config_path, c, script, use_extruder, pressure):
     stock(script.splitlines(), False, settings=settings, emit_profiles=output,
           simulated_extruder=extruder)
     elapsed = time - 2.
+    python_ns = perf.process_time_ns() - started
     for axis, distance, invert in zip(("x", "y", "z") if cart else ("+", "-", "z"),
                                      distances, (0, 1, 0), strict=True):
         rows.append(("s", axis, *start, distance, time + .01, 20e6, 20, invert))
@@ -136,14 +141,21 @@ def traced(config_path, c, script, use_extruder, pressure):
         if pressure:
             rows.extend([("g", 0., .05, .04), ("g", 2.46, .075, .04)])
         rows.append(("s", "e", 0., 0., 0., 0.004, time + .08, 20e6, 20, 1))
-    trace = subprocess.check_output([c], text=True, input="\n".join(" ".join(map(str, r)) for r in rows)+"\n")
-    return trace.splitlines(), elapsed
+    run = subprocess.run([c], text=True, capture_output=True, check=True,
+                         input="\n".join(" ".join(map(str, r)) for r in rows)+"\n")
+    native_ns = int(run.stderr.split()[1])
+    return run.stdout.splitlines(), elapsed, python_ns+native_ns
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("upstream", type=Path, help=f"checkout at {PIN}")
-    upstream = p.parse_args().upstream.resolve()
+    p.add_argument("--rounds", type=int, default=0,
+                   help="additional interleaved CPU timing rounds for the longer CoreXY fixture")
+    a = p.parse_args()
+    if not 0 <= a.rounds <= 1000:
+        p.error("--rounds must be between 0 and 1000")
+    upstream = a.upstream.resolve()
     sys.path.insert(0, str(upstream / "klippy"))
     h = upstream / "klippy/chelper"
     with tempfile.TemporaryDirectory() as dir_:
@@ -155,16 +167,21 @@ def main():
                         check=True)
         subprocess.run(["rustc", "--edition=2021", "-O", "--crate-type=rlib",
                         "--crate-name=klipper_host_protocol", ROOT / "src/lib.rs", "-o", lib], check=True)
+        clock = d / "clock.o"
+        subprocess.run([os.environ.get("CC", "cc"), "-O3", "-I", h,
+                        "-DMACHINE_TRACE_CLOCK_ONLY", "-c", ROOT / "bench/machine_trace.c",
+                        "-o", clock], check=True)
         subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/machine_trace.rs",
-                        "--extern", f"klipper_host_protocol={lib}", "-o", rust], check=True)
+                        "--extern", f"klipper_host_protocol={lib}", "-C", f"link-arg={clock}", "-o", rust], check=True)
         cfg = d / "machine.cfg"
         for kin in ("cartesian", "corexy"):
             cfg.write_text(CONFIG.format(kinematics=kin))
             for e_enabled, pressure in ((False, False), (True, False), (True, True)):
                 script = WITH_E if e_enabled else GCODE
                 args = [rust, cfg] + (["--pressure" if pressure else "--extruder"] if e_enabled else [])
-                want, expected_time = traced(cfg, c, script, e_enabled, pressure)
-                actual = subprocess.check_output(args, input=script, text=True).splitlines()
+                want, expected_time, _ = traced(cfg, c, script, e_enabled, pressure)
+                actual = subprocess.run(args, input=script, text=True,
+                                        capture_output=True, check=True).stdout.splitlines()
                 timeline = float(actual.pop().split()[1])
                 assert math.isclose(expected_time, timeline, abs_tol=1e-12, rel_tol=1e-12)
                 for i, (x, y) in enumerate(zip(want, actual, strict=True)):
@@ -172,6 +189,37 @@ def main():
                 motor_count = 4 if e_enabled else 3
                 print(f"{kin}, {motor_count} motors, pressure={pressure}: {len(want)-motor_count} exact commands; "
                       f"{timeline:.9f} simulated seconds")
+
+        cfg.write_text(CONFIG.format(kinematics="corexy"))
+        reset = "G90\nM82\nM221 S100\nG1 X1 Y1 Z.2 F2400\nG92 E0\n"
+        script = "\n".join([reset + WITH_E] * 12)
+        programs = {"stock": [], "rust": []}
+        for iteration in range(a.rounds + 1):
+            values = {}
+            for label in tuple(programs)[::(-1 if iteration % 2 else 1)]:
+                if label == "stock":
+                    trace, estimated, ns = traced(cfg, c, script, True, True)
+                else:
+                    run = subprocess.run([rust, cfg, "--pressure"], input=script,
+                                         text=True, capture_output=True)
+                    if run.returncode:
+                        raise RuntimeError(run.stderr)
+                    trace = run.stdout.splitlines()
+                    estimated = float(trace.pop().split()[1])
+                    ns = int(run.stderr.split()[1])
+                values[label] = (trace, estimated)
+                if iteration:  # First parity check warms the reference paths.
+                    programs[label].append(ns)
+            for i, (x, y) in enumerate(zip(values["stock"][0], values["rust"][0], strict=True)):
+                assert x == y, ("repeated CoreXY", iteration, i, x, y)
+            assert math.isclose(values["stock"][1], values["rust"][1], abs_tol=1e-12, rel_tol=1e-12)
+        count = len(values["rust"][0]) - 4
+        print(f"Repeated CoreXY: {count} exact pressure-advanced commands; "
+              f"{values['rust'][1]:.9f} simulated seconds")
+        if a.rounds:
+            for kind, series in programs.items():
+                print(f"{kind}: {statistics.median(series)/1e6:.3f} ms median CPU; "
+                      f"{[round(v/1e6, 3) for v in series]}")
 
 
 if __name__ == "__main__":

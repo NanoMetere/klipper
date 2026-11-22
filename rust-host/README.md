@@ -406,6 +406,26 @@ simulated seconds on that fixture. Stock's real extrusion geometry,
 nominal trapq, compression and step routines are used with a simulated
 temperature gate. This does not exercise pressure advance.
 
+The regression suite also repeats the CoreXY fixture 12 times in one
+timeline with pressure advance, extrusion/flow resets, and return moves.
+All 5,796 direction and step commands still match, including cumulative
+ticks; modeled motion time is unchanged at 11.342102983 seconds.
+The repeated path exercises nonzero trapezoid phases shorter than one
+representable tick of the host floating-point timeline.
+
+```sh
+taskset -c 2 python3 bench/machine_trace.py /path/to/pinned/klipper --rounds 21
+```
+
+On one AMD EPYC 9V74 core (Python 3.12.14, GCC 14.2, Rust 1.100.0),
+21 interleaved measurements after one warmup took a median 4.712 ms of
+combined stock Python and C process CPU time and 3.662 ms in Rust (22%
+less). The timed sections cover config parsing through motion planning,
+step generation and compression. They omit input/output, process startup,
+and the fixture's cross-process text adapter. The C section also includes
+internal message staging; Rust returns typed commands. This is one offline
+host-side scenario, not full Klippy integration or elapsed printing speed.
+
 These are deterministic traces in memory with no peripherals or hardware.
 
 ## Offline read-only Klippy requests
