@@ -191,8 +191,8 @@ sequence window are rejected; the ledger is not a startup resynchronizer.
 A failed or short write permanently poisons the ledger, including a retry
 write. The caller must close the old transport and discard that session's
 planner and pending commands. It must not replay those commands in a new
-ledger. Startup sequence adoption, adaptive retry timing, burst I/O, and
-integration with the planner are not implemented here.
+ledger. Startup sequence adoption, adaptive retry timing and burst I/O are not implemented by the ledger. The
+disposable PTY integration below composes it with the planner.
 
 ```sh
 python3 bench/flight.py /path/to/pinned/klipper
@@ -205,6 +205,40 @@ outputs matched, including 2,089 exact retransmissions to an isolated pipe.
 Rust tests separately cover send-completion notification cutoff, corruption,
 and fatal write failures. This is a protocol equivalence check, not a speed
 benchmark or a test on a printer.
+
+## Pipelined read-only PTY comparison
+
+```sh
+cargo build --locked --release --example native_mcu
+python3 bench/pipeline_pty.py /path/to/pinned/klipper target/release/examples/native_mcu
+```
+
+Both hosts first bootstrap on disposable native Linux MCU PTYs. The timed
+section submits a wave of 128 pre-encoded identify reads and receives the
+128 distinct dictionary offsets, 16 bytes per reply. Rust batches them using
+the planner and flight ledger; the stock baseline uses pre-encoded raw
+serialqueue sends and an asynchronous Python response callback. Both validate
+contents; Rust matches the exact bytes from bootstrap, and the harness also
+compares those bytes against stock. Connection setup and command encoding
+are excluded. Each wave waits for completion before the next one.
+
+Eight alternating rounds of 64 waves per host (65,536 responses each),
+pinned to two logical CPUs on AMD EPYC 9V74:
+
+| Host | Median per wave | p95 per wave |
+| --- | ---: | ---: |
+| Rust example | 127.026 µs | 222.685 µs |
+| Stock Klippy (Python + C) | 816.561 µs | 1699.083 µs |
+
+Rust reached nine simultaneous outstanding frames. Dropping one request
+frame caused one cached retransmission and recovered all expected replies.
+Dropping only a reply after the MCU received the request hit the wave
+deadline with exactly one missing reply and zero outstanding frames; the
+process discarded the session rather than blindly replaying commands.
+
+This measures a matched, pre-encoded read-only workload over PTY, not an
+individual request RTT, print time, CPU load, or full Klippy feature parity.
+The example uses a fixed retry timer and does not exercise physical I/O.
 
 ## Frame validation microbenchmark
 

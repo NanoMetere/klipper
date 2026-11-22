@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Test helper: read and write a disposable Linux MCU PTY inherited on stdin/stdout.
 #[cfg(target_os = "linux")]
+#[path = "native_mcu/pipeline.rs"]
+mod pipeline;
+
+#[cfg(target_os = "linux")]
 mod linux {
     use klipper_host_protocol::{
         clock::{ClockMessages, Error as ClockError, Response},
@@ -26,7 +30,7 @@ mod linux {
         fn poll(fds: *mut PollFd, nfds: std::ffi::c_ulong, timeout: i32) -> i32;
     }
 
-    fn wait_readable(fd: BorrowedFd<'_>, time: Duration) -> io::Result<bool> {
+    pub(super) fn wait_readable(fd: BorrowedFd<'_>, time: Duration) -> io::Result<bool> {
         const POLLIN: i16 = 0x001;
         let mut event = PollFd {
             fd: fd.as_raw_fd(),
@@ -49,12 +53,12 @@ mod linux {
         received: f64,
     }
 
-    struct Link {
-        rx: Receiver,
-        epoch: Instant,
-        reader: File,
-        writer: File,
-        sequence: u8,
+    pub(super) struct Link {
+        pub(super) rx: Receiver,
+        pub(super) epoch: Instant,
+        pub(super) reader: File,
+        pub(super) writer: File,
+        pub(super) sequence: u8,
         discarded: usize,
         frame_retries: usize,
         response_retries: usize,
@@ -236,13 +240,22 @@ mod linux {
         let mut argv = std::env::args().skip(1);
         let arg = argv.next().ok_or("missing sample count")?;
         let trace = arg == "--clock-trace";
-        let number = if trace {
+        let pipe = arg == "--pipeline";
+        let number = if trace || pipe {
             argv.next().ok_or("missing trace size")?
         } else {
             arg
         };
         let count = number.parse::<usize>().map_err(|e| e.to_string())?;
         let bounds = if trace { 8..=25 } else { 1..=100_000 };
+        let width = if pipe {
+            argv.next()
+                .unwrap_or_default()
+                .parse::<usize>()
+                .map_err(|e| e.to_string())?
+        } else {
+            0
+        };
         if !bounds.contains(&count) || argv.next().is_some() {
             return Err("sample count out of bounds".into());
         }
@@ -281,6 +294,20 @@ mod linux {
             }
         }
         let dictionary = identify.dictionary().map_err(|e| format!("{e:?}"))?;
+        if pipe {
+            let receive_window = dictionary
+                .config
+                .get("RECEIVE_WINDOW")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize;
+            return crate::pipeline::run(
+                link,
+                identify.compressed().ok_or("incomplete identify")?,
+                count,
+                width,
+                receive_window,
+            );
+        }
         let codec = ClockMessages::from_dictionary(&dictionary).map_err(|e| format!("{e:?}"))?;
         if trace {
             let hz = dictionary

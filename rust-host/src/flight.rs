@@ -2,7 +2,7 @@
 //! Established-session transmission ledger, adapted from klippy/chelper/serialqueue.c.
 //! Upstream copyright (C) 2016-2025 Kevin O'Connor <kevin@koconnor.net>.
 
-use crate::{decode_prefix, encode, MAX_FRAME, SEQ_MASK, SYNC};
+use crate::{decode_prefix, encode, Frame, MAX_FRAME, SEQ_MASK, SYNC};
 use std::{collections::VecDeque, io};
 
 pub(crate) const FRAME_WINDOW: usize = 12;
@@ -140,6 +140,18 @@ impl Flight {
             return Err(ReceiveError::InvalidFrame);
         };
         if n != bytes.len() {
+            return Err(ReceiveError::InvalidFrame);
+        }
+        self.observe_decoded(frame)
+    }
+
+    /// Consume a frame whose wire header, length and CRC were already verified
+    /// by a stream decoder. For unvalidated wire bytes call `observe` instead.
+    pub fn observe_decoded(&mut self, frame: Frame<'_>) -> Result<Progress, ReceiveError> {
+        if self.closed {
+            return Err(ReceiveError::Closed);
+        }
+        if frame.sequence > SEQ_MASK || frame.payload.len() > crate::MAX_PAYLOAD {
             return Err(ReceiveError::InvalidFrame);
         }
         let delta = frame.sequence.wrapping_sub(self.received as u8) & SEQ_MASK;
