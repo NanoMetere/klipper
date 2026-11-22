@@ -402,6 +402,21 @@ including timing boundaries and 32-bit clock wrap. The virtual stepper can
 drop all pending edges on a latched stop. No electrical or motor timing is
 measured by these tests.
 
+The opt-in native GPIO fixture archives pinned stock Linux firmware into a
+temporary tree, substitutes compile-time GPIO memory stubs, and adds a
+fixture-only identifier. The Rust test refuses the normal stock dictionary
+before sending any configuration or motion writes. With the fixture
+dictionary it enqueues real firmware commands on a fresh PTY and reads the
+stock C stepper counters. All 138 commands and final counts
+`[720, -120, 112]` were reproduced. This is real firmware scheduling with
+no physical pins, pulses, or motors.
+
+```sh
+cargo build --locked --release --example native_mcu
+python3 bench/native_gpio_motion.py /path/to/pinned/klipper
+# Or add --native-gpio to bench/check_parity.py --native-pty.
+```
+
 Integration tests verify that a simulated fault drops
 remaining work and that separate Unix stream pairs carry read-only JSON
 subscriptions without accepting G-code or letting one slow client exhaust

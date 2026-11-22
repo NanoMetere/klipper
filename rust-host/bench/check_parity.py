@@ -23,6 +23,7 @@ def main():
     p.add_argument("--upstream", type=Path, required=True, help=f"git checkout at {PIN}")
     p.add_argument("--dictionary", type=Path, help="JSON from matching Linux MCU build")
     p.add_argument("--native-pty", action="store_true", help="run only against a newly created Linux MCU PTY")
+    p.add_argument("--native-gpio", action="store_true", help="build a separate GPIO-free Linux motion fixture")
     p.add_argument("--macro-reference", action="store_true", help="also compare stock macro dispatch (requires Jinja2)")
     a = p.parse_args()
     upstream = a.upstream.resolve()
@@ -85,6 +86,11 @@ def main():
             ("native_pipeline", [sys.executable, ROOT/"bench/pipeline_pty.py", upstream,
                                  examples/"native_mcu", "--waves", "8", "--rounds", "2"]),
         ])
+    if a.native_gpio:
+        if not a.native_pty:
+            p.error("--native-gpio requires --native-pty")
+        phases.append(("native_gpio_motion", [sys.executable, ROOT/"bench/native_gpio_motion.py",
+                                              upstream, "--binary", examples/"native_mcu"]))
     failures = []
     for name, command in phases:
         start = time.monotonic()

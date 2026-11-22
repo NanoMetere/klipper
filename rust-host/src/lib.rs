@@ -11,6 +11,8 @@ pub mod clock;
 #[cfg(feature = "identify")]
 pub mod mcu_config;
 #[cfg(feature = "identify")]
+pub mod fixture_mcu;
+#[cfg(feature = "identify")]
 pub mod trigger_sync;
 #[cfg(feature = "identify")]
 pub mod trigger_dispatch;

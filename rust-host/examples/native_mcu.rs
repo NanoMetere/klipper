@@ -5,6 +5,10 @@
 mod pipeline;
 
 #[cfg(target_os = "linux")]
+#[path = "native_mcu/gpio_motion.rs"]
+mod gpio_motion;
+
+#[cfg(target_os = "linux")]
 mod linux {
     use klipper_host_protocol::{
         clock::{ClockMessages, Error as ClockError, Response},
@@ -52,8 +56,8 @@ mod linux {
         Ok(rc > 0)
     }
 
-    struct Reply<T> {
-        value: T,
+    pub(super) struct Reply<T> {
+        pub(super) value: T,
         sent: Option<f64>,
         received: f64,
     }
@@ -70,7 +74,7 @@ mod linux {
     }
 
     impl Link {
-        fn exchange<T>(
+        pub(super) fn exchange<T>(
             &mut self,
             request: impl Fn(u8) -> Result<Vec<u8>, String>,
             mut accept: impl FnMut(Frame<'_>) -> Result<Option<T>, String>,
@@ -151,7 +155,7 @@ mod linux {
         }
     }
 
-    fn read_clock(
+    pub(super) fn read_clock(
         link: &mut Link,
         codec: &ClockMessages,
         uptime: bool,
@@ -231,7 +235,7 @@ mod linux {
         Ok(value)
     }
 
-    fn fixture_ack(link: &mut Link, frame: &[u8]) -> Result<(), String> {
+    pub(super) fn fixture_ack(link: &mut Link, frame: &[u8]) -> Result<(), String> {
         fixture_write(link, frame, |f| {
             if f.payload.is_empty() {
                 Ok(Some(()))
@@ -241,7 +245,7 @@ mod linux {
         })
     }
 
-    fn read_config(link: &mut Link, codec: &Messages) -> Result<Report, String> {
+    pub(super) fn read_config(link: &mut Link, codec: &Messages) -> Result<Report, String> {
         link.exchange(
             |seq| codec.get_config(seq).map_err(|e| format!("{e:?}")),
             |frame| match codec.report(frame) {
@@ -441,7 +445,8 @@ mod linux {
         let trace = arg == "--clock-trace";
         let pipe = arg == "--pipeline";
         let trigger = arg == "--trigger-fixture";
-        let config_fixture = arg == "--config-fixture" || trigger;
+        let gpio_fixture = arg == "--gpio-motion";
+        let config_fixture = arg == "--config-fixture" || trigger || gpio_fixture;
         let number = if trace || pipe || config_fixture {
             argv.next().ok_or("missing trace size")?
         } else {
@@ -508,6 +513,9 @@ mod linux {
             }
         }
         let dictionary = identify.dictionary().map_err(|e| format!("{e:?}"))?;
+        if gpio_fixture {
+            return crate::gpio_motion::run(link, &dictionary);
+        }
         if config_fixture {
             let messages = Messages::from_dictionary(&dictionary).map_err(|e| format!("{e:?}"))?;
             configure_fixture(&mut link, &messages, count as u8)?;

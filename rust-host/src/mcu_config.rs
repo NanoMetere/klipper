@@ -158,7 +158,7 @@ impl Profile {
     }
 }
 
-fn crc32(bytes: &[u8]) -> u32 {
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
     const fn table() -> [u32; 256] {
         let mut out = [0; 256];
         let mut i = 0;
