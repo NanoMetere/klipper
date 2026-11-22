@@ -22,14 +22,15 @@ use std::{
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 const HELP: &str =
-    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
+    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
     ROOT contains config files; ENTRY and INCLUDE paths must be relative to it.\n\
     List every included file needed, including matches for wildcard includes.\n\
     XYZ is the explicit virtual starting position in millimeters.\n\
     Prints JSON to stdout, never connects to a printer. Opt in to limited offline macro expansion.\n\
     --virtual-sd previews complete LF-delimited lines and reports the byte checkpoint.\n\
     --tool-temps supplies one modeled temperature per tool ID (e.g. 0:210,2:215).\n\
-    --initial-tool defaults to 0. Bare T lines only switch offline lanes; no docking.";
+    --initial-tool defaults to 0. Bare T lines only switch offline lanes; no docking.\n\
+    --lane-workers sets 1–8 motion workers for long multi-tool previews (default 1).";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -162,6 +163,7 @@ fn run() -> Result<(), String> {
     let mut virtual_sd = false;
     let mut tool_temps = None;
     let mut initial_tool = None;
+    let mut workers = None;
     let mut args = args.as_slice();
     while let Some(flag) = args.first() {
         if flag == "--expand-macros" && !expand_macros {
@@ -181,12 +183,23 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "invalid initial tool ID")?,
             );
             args = &args[1..];
+        } else if flag == "--lane-workers" && workers.is_none() {
+            workers = Some(
+                args.get(1)
+                    .ok_or("missing worker count")?
+                    .parse::<usize>()
+                    .map_err(|_| "invalid worker count")?,
+            );
+            args = &args[1..];
         } else {
             break;
         }
         args = &args[1..];
     }
-    if args.len() < 7 || args.len() - 6 > 1024 || (initial_tool.is_some() && tool_temps.is_none()) {
+    if args.len() < 7
+        || args.len() - 6 > 1024
+        || ((initial_tool.is_some() || workers.is_some()) && tool_temps.is_none())
+    {
         return Err(HELP.into());
     }
     let root = Path::new(&args[0])
@@ -243,7 +256,9 @@ fn run() -> Result<(), String> {
     } else {
         script
     };
-    let machine = Machine::from_config(&parsed).map_err(|e| format!("machine: {e:?}"))?;
+    let machine = Machine::from_config(&parsed)
+        .and_then(|m| m.with_lane_workers(workers.unwrap_or(1)))
+        .map_err(|e| format!("machine: {e:?}"))?;
     let clock = Clock {
         last_encoded: 0,
         time_origin: 0.,

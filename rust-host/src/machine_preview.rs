@@ -22,6 +22,8 @@ pub mod tool_profiles;
 const SECTIONS: [&str; 3] = ["stepper_x", "stepper_y", "stepper_z"];
 const MAX_EVENTS: usize = 65_535;
 const MAX_LINES: usize = 32768;
+const MAX_LANE_WORKERS: usize = 8;
+const PARALLEL_SEGMENTS: usize = 512;
 
 #[derive(Debug)]
 pub enum Error {
@@ -33,6 +35,7 @@ pub enum Error {
     InitialPosition,
     VirtualHoming(homing::Error),
     MaximumLines,
+    LaneWorkers,
     Gcode {
         line: usize,
         error: gcode::Error,
@@ -55,6 +58,7 @@ pub struct Machine {
     z_accel: f64,
     arc_resolution: Option<f64>,
     fixed_shaper: Option<Shaper>,
+    lane_workers: usize,
 }
 
 fn config_error(section: &'static str, option: &'static str) -> Error {
@@ -217,6 +221,7 @@ impl Machine {
             arc_resolution,
             fixed_shaper: input_shaper_defs::from_config(config)
                 .map_err(|field| config_error("input_shaper", field))?,
+            lane_workers: 1,
         })
     }
 
@@ -233,6 +238,16 @@ impl Machine {
 
     /// Apply an explicitly supplied, fixed offline shaper. No accelerometer,
     /// config calibration, or dynamic SET_INPUT_SHAPER behavior is implied.
+    /// Limit CPU workers used for independent lanes of long offline tool traces.
+    /// The result and lane order are independent of the requested worker count.
+    pub fn with_lane_workers(mut self, count: usize) -> Result<Self, Error> {
+        if !(1..=MAX_LANE_WORKERS).contains(&count) {
+            return Err(Error::LaneWorkers);
+        }
+        self.lane_workers = count;
+        Ok(self)
+    }
+
     pub fn with_input_shaper(mut self, shaper: Shaper) -> Self {
         self.fixed_shaper = Some(shaper);
         self
@@ -677,53 +692,60 @@ impl Machine {
         switches: Vec<PlannedTool>,
         duration: f64,
     ) -> Result<MultiTrace, Error> {
-        let mut motors = std::array::from_fn(|_| Vec::new());
-        for (i, out) in motors.iter_mut().enumerate() {
-            let axis = self.motor_axis[i];
-            if let Some(shaper) = self
-                .fixed_shaper
-                .as_ref()
-                .filter(|s| s.is_enabled_for(axis))
-            {
-                let e = shaper
-                    .crossings(xyz, axis, self.motor_step[i], start)
-                    .map_err(Error::Solver)?;
-                *out = step_clock::encode_trace(clock, &e, max_error, invert[i])
-                    .map_err(Error::Clock)?;
-            } else {
-                *out = step_lane(
-                    xyz,
-                    axis,
-                    self.motor_step[i],
-                    start,
-                    clock,
-                    max_error,
-                    invert[i],
-                )?;
+        let n = lanes.len() + 3;
+        let workers = if xyz.segments().len() >= PARALLEL_SEGMENTS {
+            self.lane_workers.min(n)
+        } else {
+            1
+        };
+        let solve = |i: usize| -> Result<Vec<Command>, Error> {
+            if i < 3 {
+                let axis = self.motor_axis[i];
+                return if let Some(shaper) = self
+                    .fixed_shaper
+                    .as_ref()
+                    .filter(|s| s.is_enabled_for(axis))
+                {
+                    let events = shaper
+                        .crossings(xyz, axis, self.motor_step[i], start)
+                        .map_err(Error::Solver)?;
+                    step_clock::encode_trace(clock, &events, max_error, invert[i])
+                        .map_err(Error::Clock)
+                } else {
+                    step_lane(
+                        xyz,
+                        axis,
+                        self.motor_step[i],
+                        start,
+                        clock,
+                        max_error,
+                        invert[i],
+                    )
+                };
             }
-        }
-        let mut tools = Vec::with_capacity(lanes.len());
-        for (spec, queue) in lanes.iter().zip(all_e) {
+            let (spec, queue) = (&lanes[i - 3], &all_e[i - 3]);
             let tool = &spec.extruder;
-            let trace = if let Some(advance) = tool.pressure_advance {
-                let e = advance
-                    .crossings(&queue, tool.step_distance)
+            if let Some(advance) = tool.pressure_advance {
+                let events = advance
+                    .crossings(queue, tool.step_distance)
                     .map_err(Error::Solver)?;
-                step_clock::encode_trace(clock, &e, max_error, tool.inverse_direction)
-                    .map_err(Error::Clock)?
+                step_clock::encode_trace(clock, &events, max_error, tool.inverse_direction)
+                    .map_err(Error::Clock)
             } else {
                 step_lane(
-                    &queue,
+                    queue,
                     Axis::X,
                     tool.step_distance,
                     [spec.parked_e, 0., 0.],
                     clock,
                     max_error,
                     tool.inverse_direction,
-                )?
-            };
-            tools.push((spec.id, trace));
-        }
+                )
+            }
+        };
+        let mut solved = solve_lanes(n, workers, solve)?.into_iter();
+        let motors = std::array::from_fn(|_| solved.next().expect("three motion lanes"));
+        let tools = lanes.iter().map(|spec| spec.id).zip(solved).collect();
         Ok(MultiTrace {
             motors,
             tools,
@@ -870,6 +892,50 @@ impl Machine {
     }
 }
 
+// Plan shared geometry once. Each worker solves a fixed stripe of lanes and
+// publishes only to its own result, then the original index order is restored.
+fn solve_lanes(
+    count: usize,
+    workers: usize,
+    solve: impl Fn(usize) -> Result<Vec<Command>, Error> + Sync,
+) -> Result<Vec<Vec<Command>>, Error> {
+    if workers == 1 {
+        return (0..count).map(solve).collect();
+    }
+    let stripe = |start| {
+        (start..count)
+            .step_by(workers)
+            .map(|i| (i, solve(i)))
+            .collect::<Vec<_>>()
+    };
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut spawn_failed = false;
+        for id in 1..workers {
+            let stripe = &stripe;
+            match std::thread::Builder::new().spawn_scoped(scope, move || stripe(id)) {
+                Ok(worker) => handles.push(worker),
+                Err(_) => {
+                    spawn_failed = true;
+                    break;
+                }
+            }
+        }
+        let mut results = stripe(0);
+        for worker in handles {
+            match worker.join() {
+                Ok(result) => results.extend(result),
+                Err(_) => spawn_failed = true,
+            }
+        }
+        if spawn_failed {
+            return Err(Error::LaneWorkers);
+        }
+        results.sort_unstable_by_key(|(i, _)| *i);
+        results.into_iter().map(|(_, trace)| trace).collect()
+    })
+}
+
 fn step_lane(
     queue: &Trajectory,
     axis: Axis,
@@ -960,5 +1026,24 @@ mod tests {
                 Err(Error::Gcode { line: 1, .. })
             ));
         }
+    }
+
+    #[test]
+    fn scoped_lanes_restore_index_order_after_independent_execution() {
+        let result = solve_lanes(6, 4, |i| Ok(vec![Command::SetDirection(i % 2 == 0)])).unwrap();
+        assert_eq!(
+            result,
+            (0..6)
+                .map(|i| vec![Command::SetDirection(i % 2 == 0)])
+                .collect::<Vec<_>>()
+        );
+        let result = solve_lanes(6, 4, |i| {
+            if i == 2 {
+                Err(Error::Unsupported)
+            } else {
+                Ok(vec![])
+            }
+        });
+        assert!(matches!(result, Err(Error::Unsupported)));
     }
 }

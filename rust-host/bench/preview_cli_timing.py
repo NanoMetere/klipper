@@ -38,9 +38,12 @@ def main():
     p.add_argument("--rounds", type=int, default=30)
     p.add_argument("--moves", type=int, default=1500)
     p.add_argument("--tools", action="store_true")
+    p.add_argument("--candidate-workers", type=int, help="pass this worker count only to the candidate")
     a = p.parse_args()
     if not 1 <= a.rounds <= 200 or not 500 <= a.moves <= 3200:
         p.error("--rounds must be 1–200 and --moves must be 500–3,200")
+    if a.candidate_workers is not None and (not a.tools or not 1 <= a.candidate_workers <= 8):
+        p.error("--candidate-workers must be 1–8 and requires --tools")
     cfg = ROOT / "examples/preview"
     programs = {"baseline": a.baseline.resolve(), "candidate": a.candidate.resolve()}
     observations = {name: [] for name in programs}
@@ -56,7 +59,9 @@ def main():
             for label in tuple(programs)[::(1 if r % 2 == 0 else -1)]:
                 with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
                     started = time.perf_counter()
-                    with subprocess.Popen([programs[label], *args], stdout=out, stderr=err) as child:
+                    worker_flag = (["--lane-workers", str(a.candidate_workers)]
+                                   if label == "candidate" and a.candidate_workers else [])
+                    with subprocess.Popen([programs[label], *worker_flag, *args], stdout=out, stderr=err) as child:
                         _, status, usage = os.wait4(child.pid, 0)
                         child.returncode = os.waitstatus_to_exitcode(status)
                     wall = time.perf_counter() - started

@@ -513,6 +513,23 @@ python3 bench/native_gpio_motion.py /path/to/pinned/klipper --dual-rounds 30
 
 
 
+Long multi-tool previews can opt in to 1–8 lane workers with
+`--lane-workers`. Shared G-code geometry is planned once; step solving
+runs independently, and motion is written in the original lane order.
+Short paths and the default remain single-threaded. In two 40-pair
+runs on a four-logical-CPU affinity, the same 2,500-move sparse fixture
+took 29.213 → 16.201 ms and 32.366 → 20.667 ms median elapsed
+(36–45% less). With two workers it took 29.293 → 18.595 ms.
+All 21,683 records and complete JSON were byte-identical; the parity
+suite also compares 1, 2, 4 and 8 requested workers. The numbers are for
+the offline CLI, not the real printer or Klippy daemon.
+
+```sh
+taskset -c 2,3,4,5 python3 bench/preview_cli_timing.py \
+  target/release/klipper-preview target/release/klipper-preview \
+  --tools --candidate-workers 4 --rounds 40 --moves 2500
+```
+
 ## Inert multiple-extruder coordinates
 
 Switching a virtual extruder now returns the pending profiles tagged for
