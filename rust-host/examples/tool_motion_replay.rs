@@ -64,25 +64,30 @@ fn main() {
             pressure_advance: Some(&advance),
         },
     };
-    let pieces = [
-        ToolSegment {
-            tool: 0,
-            gcode: include_str!("preview/multitool-a.gcode"),
-        },
-        ToolSegment {
-            tool: 1,
-            gcode: include_str!("preview/multitool-b.gcode"),
-        },
-        ToolSegment {
-            tool: 0,
-            gcode: include_str!("preview/multitool-c.gcode"),
-        },
+    let sparse = std::env::args().nth(1).as_deref() == Some("--sparse");
+    let ids = if sparse { [0, 2, 6, 2] } else { [0, 1, 0, 1] };
+    let labels = [
+        include_str!("preview/multitool-a.gcode"),
+        include_str!("preview/multitool-b.gcode"),
+        include_str!("preview/multitool-c.gcode"),
+        include_str!("preview/multitool-d.gcode"),
     ];
+    let phases = if sparse { 4 } else { 3 };
+    let pieces = (0..phases)
+        .map(|i| ToolSegment {
+            tool: ids[i],
+            gcode: labels[i],
+        })
+        .collect::<Vec<_>>();
+    let mut lanes = vec![lane(0, 0.), lane(ids[1], 1.3)];
+    if sparse {
+        lanes.push(lane(6, 2.1));
+    }
     let trace = machine
         .trace_tool_segments(
             &home,
             &pieces,
-            &[lane(0, 0.), lane(1, 1.3)],
+            &lanes,
             2.,
             Clock {
                 last_encoded: 0,
@@ -93,16 +98,16 @@ fn main() {
             [false; 3],
         )
         .unwrap();
-    let text = format!(
-        "{}T1\n{}T0\n{}",
-        pieces[0].gcode, pieces[1].gcode, pieces[2].gcode
-    );
+    let mut text = pieces[0].gcode.to_owned();
+    for piece in &pieces[1..] {
+        text.push_str(&format!("T{}\n{}", piece.tool, piece.gcode));
+    }
     let textual = machine
         .trace_tool_gcode(
             &home,
             &text,
             0,
-            &[lane(0, 0.), lane(1, 1.3)],
+            &lanes,
             2.,
             Clock {
                 last_encoded: 0,

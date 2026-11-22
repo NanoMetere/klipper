@@ -446,7 +446,9 @@ with explicitly selected lanes, not automatic T-command docking, a full
 tool-change plugin runtime, or any physical setup. The preview accepts
 bare `T0`–`T255` selection lines as an alternative to explicit sections.
 They select only a declared simulation lane; they do not dock tools or
-run T-command macros. A missing lane is rejected even on a trailing T
+run T-command macros. The independent Rust trace also ran T0 → T2 → T6
+→ T2 with shaping, pressure advance, and a T2 retraction. All 342 step
+commands across six motor lanes matched stock Python+C, including clocks. A missing lane is rejected even on a trailing T
 line with no motion; `M104 T1` is not a selection line.
 
 ```sh

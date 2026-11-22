@@ -14,7 +14,7 @@ from gcode_preview import stock
 from planner import PIN, ROOT
 
 
-def reference(upstream, executable):
+def reference(upstream, executable, sparse):
     sys.path.insert(0, str(upstream / "klippy"))
     from kinematics.corexy import CoreXYKinematics
     from kinematics.extruder import PrinterExtruder
@@ -28,11 +28,11 @@ def reference(upstream, executable):
     e.max_extrude_ratio = .64/e.filament_area
     e.max_e_dist, e.max_e_velocity, e.max_e_accel = 15.,20.,300.
     e.trapq = None
-    e_rows = [[], []]
+    start = (0., 1.3, 2.1) if sparse else (0., 1.3)
+    e_rows = [[] for _ in start]
     xyz_rows = []
     clock = 2.
     active = 0
-    start = (0., 1.3)
     positions = list(start)
     e.trapq_append = lambda _, *fields: e_rows[active].append(
         ("e", *(int(v) if isinstance(v, bool) else v for v in fields)))
@@ -61,7 +61,8 @@ def reference(upstream, executable):
         active = ident
 
     source = []
-    for (ident, name) in [(0,"a"),(1,"b"),(0,"c")]:
+    order = [(0,"a"),(1,"b"),(2,"c"),(1,"d")] if sparse else [(0,"a"),(1,"b"),(0,"c")]
+    for ident, name in order:
         source.extend(["M400", f"!use {ident}",
                        *(ROOT/f"examples/preview/multitool-{name}.gcode").read_text().splitlines()])
     stock(source, False, settings=cfg, emit_profiles=out, simulated_extruder=e, extend_directive=switch)
@@ -77,7 +78,7 @@ def reference(upstream, executable):
     def encoded(rows):
         payload = chr(10).join(" ".join(map(str, row)) for row in rows)+chr(10)
         return subprocess.run([executable], input=payload, text=True, capture_output=True, check=True).stdout.splitlines()
-    return [*encoded(xyz_rows), *encoded(e_rows[0]), *encoded(e_rows[1])], clock-2.
+    return [*encoded(xyz_rows), *(line for rows in e_rows for line in encoded(rows))], clock-2.
 
 
 def main():
@@ -93,14 +94,18 @@ def main():
                         *(h/(name+".c") for name in ["itersolve","stepcompress","trapq","kin_cartesian",
                           "kin_corexy","kin_extruder","kin_shaper","pyhelper","msgblock"]),
                         "-lm","-o",c], check=True)
-        # Avoid leaking the comparator's timing lines into its output trace.
-        want, expected_time = reference(upstream,c)
-    got = subprocess.check_output([a.binary], text=True).splitlines()
-    duration = float(got.pop().split()[1])
-    assert math.isclose(expected_time,duration,abs_tol=1e-12,rel_tol=1e-12), (duration, expected_time)
-    for i, (x,y) in enumerate(zip(want,got,strict=True)):
-        assert x == y, (i,x,y)
-    print(f"{len(got)-5} exact step commands on XYZ, E0 and E1; {duration:.9f} simulated seconds")
+        for sparse in (False, True):
+            want, expected_time = reference(upstream, c, sparse)
+            got = subprocess.check_output([a.binary, *(["--sparse"] if sparse else [])], text=True).splitlines()
+            duration = float(got.pop().split()[1])
+            assert math.isclose(expected_time, duration, abs_tol=1e-12, rel_tol=1e-12), (duration, expected_time)
+            for i, (x, y) in enumerate(zip(want, got, strict=True)):
+                assert x == y, (sparse, i, x, y)
+            lane_count = 6 if sparse else 5
+            ids = "T0/T2/T6/T2" if sparse else "T0/T1/T0"
+            print(f"{ids}: {len(got)-lane_count} exact step commands on {lane_count} lanes; "
+                  f"{duration:.9f} simulated seconds")
+
 
 
 if __name__ == "__main__":
