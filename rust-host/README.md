@@ -784,6 +784,30 @@ fixture changes offsets while preserving toolhead position, restores
 logical coordinates, and returns selected axes. It does not run the
 Toolchanger plugin.
 
+## Modern Toolchanger probe candidate (pinned debug tests)
+
+The compatibility failure below is reproducible with the old plugin pin.
+The reviewed, unmerged
+[viesturz/klipper-toolchanger PR #174](https://github.com/viesturz/klipper-toolchanger/pull/174)
+candidate `0bded502b27dae5b9261789e03b0c8a0b84f48fb` also has an explicit
+reproducer. In a disposable checkout of the same stock Klippy pin,
+all three Klippain 300 mm, two-tool debug cases passed (StealthChanger,
+TapChanger, and StealthChanger with a shared LED chain). Inert probe
+sessions verified T0/T1 routing, distinct offsets, and refusal with no
+active probe. With the optional Rust look-ahead bridge and plugins loaded,
+stock and bridged debug motion produced 416 equal motor commands.
+
+```sh
+python3 bench/toolchanger_candidate.py --port /path/to/pinned/klipper \
+  --dictionary /path/to/matched/klipper.dict --klippain /path/to/klippain \
+  --candidate /path/to/candidate/toolchanger --led-effect /path/to/led-effect
+```
+
+The comparator expects the candidate and its base commit in the Git
+checkout. It uses no live printer, and does not install, endorse or merge
+the candidate. Add `--bridge /path/to/libklipper_host_protocol.so` to check
+debug motion after building with `--features python-bridge`.
+
 ## Real Toolchanger stock baseline (no Rust host)
 
 The Klippain smoke runner uses stock Klippy debug output, a matching Linux

@@ -27,7 +27,14 @@ def main():
     p.add_argument("--macro-reference", action="store_true", help="also compare stock macro dispatch (requires Jinja2)")
     p.add_argument("--toolchanger-reference", type=Path, help="optional pinned viesturz comparator")
     p.add_argument("--legacy-klippy", type=Path, help="Klippy checkout matching the toolchanger smoke")
+    p.add_argument("--modern-toolchanger", type=Path, help="reviewed PR #174 source checkout")
+    p.add_argument("--klippain", type=Path, help="pinned Klippain smoke source")
+    p.add_argument("--led-effect", type=Path, help="pinned LED Effect source")
+    p.add_argument("--modern-bridge", type=Path, help="optional compiled Rust debug bridge for PR #174")
     a = p.parse_args()
+    modern = [a.modern_toolchanger, a.klippain, a.led_effect]
+    if (any(modern) or a.modern_bridge) and not all(modern):
+        p.error("--modern-toolchanger, --klippain and --led-effect must be supplied together")
     if bool(a.toolchanger_reference) != bool(a.legacy_klippy):
         p.error("--toolchanger-reference and --legacy-klippy must be supplied together")
     upstream = a.upstream.resolve()
@@ -112,6 +119,14 @@ def main():
             p.error("--native-gpio requires --native-pty")
         phases.append(("native_gpio_motion", [sys.executable, ROOT/"bench/native_gpio_motion.py",
                                               upstream, "--binary", examples/"native_mcu"]))
+    if all(modern):
+        if not dictionary.is_file():
+            p.error("modern Toolchanger smoke requires a matched firmware dictionary")
+        flags = ["--bridge", a.modern_bridge.resolve()] if a.modern_bridge else []
+        phases.append(("modern_toolchanger", [sys.executable, ROOT/"bench/toolchanger_candidate.py",
+            "--port", upstream, "--dictionary", dictionary,
+            "--candidate", a.modern_toolchanger.resolve(),
+            "--klippain", a.klippain.resolve(), "--led-effect", a.led_effect.resolve(), *flags]))
     failures = []
     for name, command in phases:
         start = time.monotonic()
