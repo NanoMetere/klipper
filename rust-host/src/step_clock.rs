@@ -75,26 +75,41 @@ pub struct Step {
 struct Filter {
     pending: Option<Step>,
     last_seen: Option<u64>,
+    last_committed: Option<u64>,
 }
 
 impl Filter {
     fn append(&mut self, step: Step, hz: f64) -> Result<Option<Step>, Error> {
-        if self.last_seen.is_some_and(|seen| step.clock <= seen) {
+        if self.last_seen.is_some_and(|seen| step.clock < seen) {
             return Err(Error::Nonmonotonic);
         }
+        // A shaped crossing can reverse within the same quantized tick.
+        // Stock drops an uncommitted opposite pair, including zero delta.
         self.last_seen = Some(step.clock);
-        let previous = self.pending.take();
-        if previous.is_some_and(|p| {
+        if self.pending.is_some_and(|p| {
             p.positive != step.positive && ((step.clock - p.clock) as f64) < REVERSAL_WINDOW * hz
         }) {
+            self.pending = None;
             return Ok(None);
         }
+        // A canceled pair leaves its tick unoccupied. A third crossing can
+        // use it, but committed or same-direction duplicates are invalid.
+        if self.pending.is_some_and(|p| p.clock == step.clock)
+            || self.last_committed == Some(step.clock)
+        {
+            return Err(Error::Nonmonotonic);
+        }
+        let previous = self.commit();
         self.pending = Some(step);
         Ok(previous)
     }
 
     fn commit(&mut self) -> Option<Step> {
-        self.pending.take()
+        let out = self.pending.take();
+        if let Some(step) = out {
+            self.last_committed = Some(step.clock);
+        }
+        out
     }
 }
 
@@ -247,6 +262,42 @@ mod tests {
                 })
                 .sum::<usize>(),
             4
+        );
+    }
+
+    #[test]
+    fn rolls_back_same_tick_uncommitted_opposite_steps_only() {
+        let clock = Clock {
+            last_encoded: 0,
+            time_origin: 0.,
+            hz: 1_000_000.,
+        };
+        let m = step(1200, true);
+        let n = Event::Crossing {
+            direction_positive: false,
+            segment_time: 0.,
+            offset: 0.0012002,
+        };
+        let later = step(2500, true);
+        assert_eq!(
+            encode_trace(clock, &[m, n, later], 0, false),
+            encode_trace(clock, &[later], 0, false)
+        );
+        assert_eq!(
+            encode_trace(clock, &[m, n, m, later], 0, false),
+            encode_trace(clock, &[m, later], 0, false)
+        );
+        assert_eq!(
+            encode_trace(clock, &[m, Event::Commit, n], 0, false),
+            Err(Error::Nonmonotonic)
+        );
+        assert_eq!(
+            encode_trace(clock, &[m, m], 0, false),
+            Err(Error::Nonmonotonic)
+        );
+        assert_eq!(
+            encode_trace(clock, &[m, step(1199, false)], 0, false),
+            Err(Error::Nonmonotonic)
         );
     }
 

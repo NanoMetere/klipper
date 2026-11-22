@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Compare an A-B-A shaped dual-extruder path against stock Python plus C."""
 import argparse
+import json
 import math
 import os
 from pathlib import Path
@@ -12,14 +13,17 @@ from types import SimpleNamespace
 
 from gcode_preview import stock
 from planner import PIN, ROOT
+from preview_cli_timing import gcode as long_gcode
 
 
-def reference(upstream, executable, sparse):
+def reference(upstream, executable, sparse, long_script=None):
     sys.path.insert(0, str(upstream / "klippy"))
     from kinematics.corexy import CoreXYKinematics
     from kinematics.extruder import PrinterExtruder
     from extras import shaper_defs
-    cfg = CoreXYKinematics, [(0.,200.),(0.,180.),(0.,150.)], 180., 3100.,5.,.5,9.,160., (1.,1.,.2)
+    origin = (10.,10.,.3) if long_script else (1.,1.,.2)
+    cfg = CoreXYKinematics, [(0.,200.),(0.,180.),(0.,150.)], 180., 3100.,5.,.5,9.,160., origin
+    compression_error = 0 if long_script else 20
     e = object.__new__(PrinterExtruder)
     e.heater = SimpleNamespace(can_extrude=True)
     e.instant_corner_v = 1.0
@@ -28,7 +32,7 @@ def reference(upstream, executable, sparse):
     e.max_extrude_ratio = .64/e.filament_area
     e.max_e_dist, e.max_e_velocity, e.max_e_accel = 15.,20.,300.
     e.trapq = None
-    start = (0., 1.3, 2.1) if sparse else (0., 1.3)
+    start = (0., 0., 0.) if long_script else (0., 1.3, 2.1) if sparse else (0., 1.3)
     e_rows = [[] for _ in start]
     xyz_rows = []
     clock = 2.
@@ -61,19 +65,28 @@ def reference(upstream, executable, sparse):
         active = ident
 
     source = []
-    order = [(0,"a"),(1,"b"),(2,"c"),(1,"d")] if sparse else [(0,"a"),(1,"b"),(0,"c")]
-    for ident, name in order:
-        source.extend(["M400", f"!use {ident}",
-                       *(ROOT/f"examples/preview/multitool-{name}.gcode").read_text().splitlines()])
+    if long_script:
+        ids = {"T0": 0, "T2": 1, "T6": 2}
+        for line in long_script:
+            if line in ids:
+                source.extend(["M400", f"!use {ids[line]}"])
+            else:
+                source.append(line)
+    else:
+        order = [(0,"a"),(1,"b"),(2,"c"),(1,"d")] if sparse else [(0,"a"),(1,"b"),(0,"c")]
+        for ident, name in order:
+            source.extend(["M400", f"!use {ident}",
+                           *(ROOT/f"examples/preview/multitool-{name}.gcode").read_text().splitlines()])
     stock(source, False, settings=cfg, emit_profiles=out, simulated_extruder=e, extend_directive=switch)
     focus = [shaper_defs.get_mzv_shaper(56.6, .1), shaper_defs.get_ei_shaper(48.4, .1)]
     for axis, (amplitudes, ticks) in zip("xy", focus, strict=True):
         xyz_rows.append(("h", axis, len(ticks),
                          *(v for pair in zip(ticks, amplitudes, strict=True) for v in pair)))
     for axis, step in zip(("+","-","z"), (.0125,.0125,.0025), strict=True):
-        xyz_rows.append(("s", axis, 1.,1.,.2, step, clock+.51,20e6,20,0))
-    for rows, start_e in zip(e_rows, start, strict=True):
-        rows.extend([("g",0.0,.04,.04), ("s","e",start_e,0.,0.,.004,clock+.08,20e6,20,0)])
+        xyz_rows.append(("s", axis, *origin, step, clock+.51,20e6,compression_error,0))
+    for i, (rows, start_e) in enumerate(zip(e_rows, start, strict=True)):
+        rows.extend([("g",0.0,.04,.04),
+                     ("s","e",start_e,0.,0.,.004,clock+.08,20e6,compression_error,int(bool(long_script) and i == 1))])
 
     def encoded(rows):
         payload = chr(10).join(" ".join(map(str, row)) for row in rows)+chr(10)
@@ -81,10 +94,34 @@ def reference(upstream, executable, sparse):
     return [*encoded(xyz_rows), *(line for rows in e_rows for line in encoded(rows))], clock-2.
 
 
+def compare_cli(upstream, executable, cli, directory):
+    lines = list(long_gcode(2500, True))
+    gcode = Path(directory) / "long-sparse.gcode"
+    gcode.write_text("\n".join(lines) + "\n")
+    raw = subprocess.check_output([cli, "--tool-temps", "0:210,2:210,6:210",
+                                   ROOT/"examples/preview", "sparse-tool.cfg",
+                                   gcode, "20000000", "10", "10", ".3", "rails.cfg", "printer.cfg"])
+    trace = json.loads(raw)
+    want, duration = reference(upstream, executable, True, lines)
+    assert math.isclose(duration, trace["planned_duration_seconds"], rel_tol=1e-12, abs_tol=1e-12)
+    received = []
+    for lane in [*trace["motors"], *(t["commands"] for t in trace["extruder_lanes"])]:
+        for cmd in lane:
+            if cmd["kind"] == "direction":
+                received.append(f'd {int(cmd["positive"])}')
+            else:
+                received.append(f's {cmd["interval"]} {cmd["count"]} {cmd["add"]} {cmd["last_clock"]}')
+        received.append("end")
+    for i, (x,y) in enumerate(zip(want,received,strict=True)):
+        assert x == y, (i,x,y)
+    print(f"Long sparse CLI: {len(received)-6} exact motor records across six lanes")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("upstream", type=Path, help=f"checkout at {PIN}")
     p.add_argument("--binary", type=Path, default=ROOT/"target/release/examples/tool_motion_replay")
+    p.add_argument("--cli-binary", type=Path, help="also verify the 2,500-move sparse CLI regression")
     a = p.parse_args()
     upstream = a.upstream.resolve()
     h = upstream/"klippy/chelper"
@@ -105,6 +142,8 @@ def main():
             ids = "T0/T2/T6/T2" if sparse else "T0/T1/T0"
             print(f"{ids}: {len(got)-lane_count} exact step commands on {lane_count} lanes; "
                   f"{duration:.9f} simulated seconds")
+        if a.cli_binary:
+            compare_cli(upstream, c, a.cli_binary.resolve(), d)
 
 
 

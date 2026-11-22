@@ -18,6 +18,17 @@ def corpus():
             yield ("c",)
         yield ("a", direction, 0, tick/1e6)
     yield ("f",)
+    # Both edges quantize to the same tick and stock drops the
+    # uncommitted opposite pair without suppressing a later unique step.
+    for base in (0, 2**32 - 100, 2**36):
+        yield ("r", base, 0, 20e6, 0, 0)
+        at = base / 20e6
+        yield ("a", 1, at, .0003)
+        yield ("a", 0, at, .000300013)
+        if base:
+            yield ("a", 1, at, .000300019)
+        yield ("a", 1, at, .0013)
+        yield ("f",)
     r = random.Random(72514)
     for i in range(640):
         base = r.choice([0, 2**31 - 5, 2**32 - 70, 2**36])

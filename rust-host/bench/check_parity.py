@@ -61,7 +61,7 @@ def main():
     if a.macro_reference:
         phases.append(("gcode_macros", [sys.executable, ROOT/"bench/gcode_macros.py", upstream]))
     phases.extend([
-        ("build_fixture_binaries", ["cargo", "build", "--locked", "--release", "--examples"]),
+        ("build_fixture_binaries", ["cargo", "build", "--locked", "--release", "--examples", "--bins"]),
         ("webhooks", [sys.executable, ROOT/"bench/webhooks.py", upstream, examples/"webhook_replay"]),
         ("trigger_timing", [sys.executable, ROOT/"bench/trigger_sync.py", upstream,
                             "--binary", examples/"trigger_sync_replay"]),
@@ -74,7 +74,7 @@ def main():
         ("multi_extruder", [sys.executable, ROOT/"bench/multi_extruder.py", upstream,
                               "--binary", examples/"multi_extruder_replay"]),
         ("tool_motion", [sys.executable, ROOT/"bench/tool_motion.py", upstream,
-                           "--binary", examples/"tool_motion_replay"]),
+                           "--binary", examples/"tool_motion_replay", "--cli-binary", target/"release/klipper-preview"]),
         ("fan", [sys.executable, ROOT/"bench/fan.py", upstream,
                   "--binary", examples/"fan_replay"]),
         ("thermal_commands", [sys.executable, ROOT/"bench/thermal_commands.py", upstream,

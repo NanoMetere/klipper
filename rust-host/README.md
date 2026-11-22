@@ -786,6 +786,16 @@ before the cache, and 4.750 ms after; on a second core the medians were
 3–4% over the immediately preceding Rust kernel, not by 3–4% of actual
 print time.
 
+The reversal filter rolls back a same-tick, uncommitted opposite pair
+as stock C does. A third raw crossing may reuse an empty tick, but the
+model still rejects backwards clocks and committed or same-direction
+duplicates. In a 2,500-move sparse shaped/pressure-advance fixture,
+the CLI matches all 21,683 stock Python+C motor records across six
+lanes, including clocks. In a separately matched serializer A/B, both
+binaries used this same motion kernel, output 1,611,322 identical bytes,
+and elapsed time was 67.097 → 29.173 ms over 40 rotating-order rounds
+(56% lower versus the prior Rust JSON implementation).
+
 ## Config-to-step offline preview
 
 `machine_preview::Machine` combines supported printer and rail settings with
