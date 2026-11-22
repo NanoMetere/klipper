@@ -51,6 +51,15 @@ pub struct Issued {
     pub command: Payload,
 }
 
+/// One simulated motion track. A firmware OID is unique within a peer,
+/// not across the whole host plan. Issued.lane is the index in this list.
+#[derive(Clone, Copy)]
+pub struct RoutedLane<'a> {
+    pub peer: u8,
+    pub oid: u8,
+    pub commands: &'a [Command],
+}
+
 /// Holds a finite preflighted script. Issued outputs are inert records for
 /// a fixture only. Pause freezes virtual time at the last clock observation.
 /// Cancel/fault discards unissued commands; it is not a hardware estop.
@@ -96,18 +105,65 @@ impl Job {
         end: u64,
         generation: u64,
     ) -> Result<Self, Error> {
-        let lane_count = traces.len();
-        if !(1..=16).contains(&lane_count)
-            || oids.len() != lane_count
-            || oids.iter().copied().collect::<BTreeSet<_>>().len() != lane_count
-            || end < initial
-            || generation == 0
-        {
+        if oids.len() != traces.len() {
+            return Err(Error::InvalidTrace);
+        }
+        Self::build(
+            codec,
+            traces.len(),
+            traces.iter().zip(oids).map(|(&commands, &oid)| RoutedLane {
+                peer: 0,
+                oid,
+                commands,
+            }),
+            initial,
+            end,
+            generation,
+        )
+    }
+
+    /// Encode messages in peer-local OID namespaces, preserving global lane
+    /// order at equal deadlines. Each peer must use the supplied wire codec.
+    pub fn for_routed(
+        codec: &StepMessages,
+        lanes: &[RoutedLane<'_>],
+        initial: u64,
+        end: u64,
+        generation: u64,
+    ) -> Result<Self, Error> {
+        Self::build(
+            codec,
+            lanes.len(),
+            lanes.iter().copied(),
+            initial,
+            end,
+            generation,
+        )
+    }
+
+    fn build<'a>(
+        codec: &StepMessages,
+        lane_count: usize,
+        tracks: impl Iterator<Item = RoutedLane<'a>>,
+        initial: u64,
+        end: u64,
+        generation: u64,
+    ) -> Result<Self, Error> {
+        if !(1..=16).contains(&lane_count) || end < initial || generation == 0 {
             return Err(Error::InvalidTrace);
         }
         let mut total = 0usize;
+        let mut bindings = BTreeSet::new();
         let mut lanes = Vec::<VecDeque<Payload>>::with_capacity(lane_count);
-        for (&lane, &oid) in traces.iter().zip(oids) {
+        for RoutedLane {
+            peer,
+            oid,
+            commands: lane,
+        } in tracks
+        {
+            if peer >= 16 || !bindings.insert((peer, oid)) {
+                return Err(Error::InvalidTrace);
+            }
             total += lane.len();
             if total > MAX_COMMANDS
                 || lane.iter().any(|cmd| match cmd {

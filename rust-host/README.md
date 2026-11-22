@@ -491,6 +491,15 @@ The attested GPIO-free MCU fixture runs that trace in 29 frames,
 matches 213 commands and checks five counters at 17 points. Wrong
 pickup evidence yields no trace; a step encoding error keeps the
 previous modeled tool. No real motor, probe, or dock is exercised.
+A second fixture splits the tool job across two independently started
+PTYs with different virtual clock origins and board-local OIDs (both
+can use OID 0). It validates 140 carriage/outgoing commands and 28
+incoming extruder commands with the same five final counters at 17
+shared checkpoints. If either dictionary is unmarked, neither receives
+configuration. A dropped secondary motion ACK stops all later messages
+and prevents advancing either virtual clock; this is not a physical
+cross-board emergency stop or real CAN timing validation.
+
 
 ## Inert multiple-extruder coordinates
 

@@ -9,13 +9,17 @@ mod pipeline;
 mod gpio_motion;
 
 #[cfg(target_os = "linux")]
+#[path = "native_mcu/gpio_dual.rs"]
+mod gpio_dual;
+
+#[cfg(target_os = "linux")]
 mod linux {
     use klipper_host_protocol::{
         clock::{ClockMessages, Error as ClockError, Response},
         clock_sync::{PrimaryClock, Sample, Update},
         encode,
         fixture_mcu::ShutdownWatch,
-        identify::Identify,
+        identify::{Dictionary, Identify},
         mcu_config::{Error as ConfigError, Messages, Profile, Report, Session, Start},
         read_query::{Action, ReadQuery},
         stream::Receiver,
@@ -158,6 +162,53 @@ mod linux {
                 }
             }
         }
+    }
+
+    pub(super) fn identify_fixture(link: &mut Link) -> Result<Dictionary, String> {
+        let mut identify = Identify::default();
+        loop {
+            let payload = link.exchange(
+                |seq| identify.request(seq).map_err(|e| format!("{e:?}")),
+                |frame| Ok((frame.payload[0] == 0).then(|| frame.payload.to_vec())),
+            )?;
+            if identify
+                .accept(Frame {
+                    sequence: link.sequence,
+                    payload: &payload.value,
+                })
+                .map_err(|e| format!("{e:?}"))?
+            {
+                return identify.dictionary().map_err(|e| format!("{e:?}"));
+            }
+        }
+    }
+
+    fn inherited_pty(read: u32, write: u32) -> Result<(Link, std::path::PathBuf), String> {
+        let r = format!("/proc/self/fd/{read}");
+        let w = format!("/proc/self/fd/{write}");
+        let target = std::fs::read_link(&r).map_err(|e| e.to_string())?;
+        if target != std::fs::read_link(&w).map_err(|e| e.to_string())?
+            || !target.starts_with("/dev/pts")
+        {
+            return Err("fixture requires a disposable PTY descriptor".into());
+        }
+        Ok((
+            Link {
+                rx: Receiver::new(),
+                epoch: Instant::now(),
+                reader: File::open(r).map_err(|e| e.to_string())?,
+                writer: File::options()
+                    .write(true)
+                    .open(w)
+                    .map_err(|e| e.to_string())?,
+                sequence: 0,
+                shutdown_watch: None,
+                discarded: 0,
+                frame_retries: 0,
+                response_retries: 0,
+            },
+            target,
+        ))
     }
 
     pub(super) fn read_clock(
@@ -450,6 +501,23 @@ mod linux {
     pub fn run() -> Result<(), String> {
         let mut argv = std::env::args().skip(1);
         let arg = argv.next().ok_or("missing sample count")?;
+        if arg == "--gpio-dual" {
+            let fd = argv
+                .next()
+                .ok_or("secondary simulator descriptor required")?
+                .parse::<u32>()
+                .map_err(|e| e.to_string())?;
+            if !(3..=1024).contains(&fd) || argv.next().is_some() {
+                return Err("invalid secondary simulator descriptor".into());
+            }
+            let (primary, a) = inherited_pty(0, 1)?;
+            let (secondary, b) = inherited_pty(fd, fd)?;
+            if a == b {
+                return Err("the two fixture PTYs must be independent".into());
+            }
+            return crate::gpio_dual::run([primary, secondary]);
+        }
+
         let trace = arg == "--clock-trace";
         let pipe = arg == "--pipeline";
         let trigger = arg == "--trigger-fixture";

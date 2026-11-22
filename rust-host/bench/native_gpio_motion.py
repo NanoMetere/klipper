@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 
 from mcu_config import drop_write_ack, fresh
+from native_gpio_dual import check_dual
 from planner import PIN, ROOT
 
 
@@ -115,6 +116,7 @@ def main():
                                  lambda p: len(p) > 20 and any(p.startswith(t) for t in candidates))
         assert "motion frame" in details and "GPIO_FIXTURE" not in details, details
         print("Dropped a batched motion ACK: no extra host frame or virtual clock advance")
+        check_dual(upstream, mcu, binary)
     print("Plain Linux MCU refused before configuration/motion")
 
 

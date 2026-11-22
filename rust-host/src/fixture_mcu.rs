@@ -70,9 +70,9 @@ impl Codec {
         })
     }
 
-    /// Three to six fixture objects using only the inert sim0..sim11 pins.
+    /// One to six fixture objects using only the inert sim0..sim11 pins.
     pub fn setup(&self, count: u8, pulse_ticks: u32) -> Result<(u32, Vec<Vec<u8>>), Error> {
-        if !(3..=MAX_FIXTURE_OID + 1).contains(&count) || !(1..=10_000).contains(&pulse_ticks) {
+        if !(1..=MAX_FIXTURE_OID + 1).contains(&count) || !(1..=10_000).contains(&pulse_ticks) {
             return Err(Error::Invalid);
         }
         let count = u32::from(count);

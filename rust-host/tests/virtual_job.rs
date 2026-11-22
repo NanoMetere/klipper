@@ -306,3 +306,42 @@ fn wide_index_preserves_ties_and_discards_remaining_heads_on_fault() {
     assert_eq!(j.snapshot().issued, 3);
     assert_eq!(j.snapshot().state, State::Cancelled);
 }
+
+#[test]
+fn encodes_stateful_lanes_in_peer_local_oid_namespaces() {
+    use klipper_host_protocol::{step_wire::Message, virtual_job::RoutedLane};
+    let fixture = fixture();
+    let codec = codec();
+    let track = |peer| RoutedLane {
+        peer,
+        oid: 7,
+        commands: &fixture.motors[usize::from(peer)],
+    };
+    let mut ready = Job::for_routed(&codec, &[track(0), track(1)], 0, 500, 1).unwrap();
+    ready.start(0).unwrap();
+    let sent = ready.poll(0, 10).unwrap();
+    assert_eq!(
+        sent.iter().map(|item| item.lane).collect::<Vec<_>>(),
+        [0, 0, 1, 1]
+    );
+    let first = codec.decode(&sent[0].command.bytes).unwrap();
+    let opposite = codec.decode(&sent[2].command.bytes).unwrap();
+    assert_eq!(
+        first,
+        Message::NextDirection {
+            oid: 7,
+            positive: true
+        }
+    );
+    assert_eq!(
+        opposite,
+        Message::NextDirection {
+            oid: 7,
+            positive: false
+        }
+    );
+    assert!(matches!(
+        Job::for_routed(&codec, &[track(0), track(0)], 0, 500, 2),
+        Err(Error::InvalidTrace)
+    ));
+}
