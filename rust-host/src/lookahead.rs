@@ -306,6 +306,14 @@ impl LookAhead {
         self.budget = 1.0;
     }
 
+    pub(crate) fn set_extruder_corner(&mut self, corner: f64) -> Result<(), Error> {
+        if !self.moves.is_empty() || !corner.is_finite() || corner < 0.0 {
+            return Err(Error::InvalidLimits);
+        }
+        self.extruder_corner = Some(corner);
+        Ok(())
+    }
+
     pub fn queued(&self) -> usize {
         self.moves.len()
     }

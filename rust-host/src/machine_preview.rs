@@ -13,6 +13,7 @@ use crate::{
     pressure_advance::Advance,
     step_clock::{self, Clock, Command},
     step_times::{self, Axis, Event, Solver},
+    toolchange::ExtruderPositions,
     trajectory::{self, Trajectory},
 };
 
@@ -35,6 +36,7 @@ pub enum Error {
         error: gcode::Error,
     },
     Extrusion(extrusion::Error),
+    ToolSegment,
     Trajectory(trajectory::Error),
     Solver(step_times::Error),
     Clock(step_clock::Error),
@@ -93,6 +95,25 @@ pub struct SimulatedExtruder<'a> {
     pub step_distance: f64,
     pub inverse_direction: bool,
     pub pressure_advance: Option<&'a Advance>,
+}
+
+/// A bounded fixture's per-tool motion calibration and starting local E.
+pub struct ToolLane<'a> {
+    pub id: u8,
+    pub parked_e: f64,
+    pub extruder: SimulatedExtruder<'a>,
+}
+
+/// Explicit tool phases, never an implicit T-command or docking macro.
+pub struct ToolSegment<'a> {
+    pub tool: u8,
+    pub gcode: &'a str,
+}
+
+pub struct MultiTrace {
+    pub motors: [Vec<Command>; 3],
+    pub tools: Vec<(u8, Vec<Command>)>,
+    pub duration: f64,
 }
 
 impl Machine {
@@ -248,6 +269,199 @@ impl Machine {
         invert: [bool; 3],
     ) -> Result<Trace, Error> {
         self.trace_with_extruder(script, start, at, clock, max_error, invert, None)
+    }
+
+    /// Run bounded, explicitly selected tool phases from verified virtual home.
+    /// XYZ time is shared. E positions, pressure advance, and step traces
+    /// remain independent for each tool. This does not simulate tool pickup.
+    #[allow(clippy::too_many_arguments)]
+    pub fn trace_tool_segments(
+        &self,
+        home: &VirtualHoming,
+        pieces: &[ToolSegment<'_>],
+        lanes: &[ToolLane<'_>],
+        at: f64,
+        clock: Clock,
+        max_error: u32,
+        invert: [bool; 3],
+    ) -> Result<MultiTrace, Error> {
+        let start = home
+            .ready_position_for(self.homing_kinematics(), self.motor_step)
+            .map_err(Error::VirtualHoming)?;
+        let mut bytes = 0usize;
+        if !self.in_range(&start)
+            || !(0.0..1e12).contains(&at)
+            || at == 0.0
+            || !(1..=8).contains(&lanes.len())
+            || !(1..=128).contains(&pieces.len())
+            || pieces.iter().any(|p| {
+                bytes = bytes.saturating_add(p.gcode.len());
+                bytes > 8 * 1024 * 1024
+            })
+        {
+            return Err(Error::ToolSegment);
+        }
+        let lookup = |id| {
+            lanes
+                .iter()
+                .position(|t| t.id == id)
+                .ok_or(Error::ToolSegment)
+        };
+        let mut active = lookup(pieces[0].tool)?;
+        let first = &lanes[active];
+        let slots = lanes.iter().map(|t| (t.id, t.parked_e)).collect::<Vec<_>>();
+        let mut positions =
+            ExtruderPositions::new(&slots, first.id).map_err(|_| Error::ToolSegment)?;
+        let mut preview = Preview::new_at(
+            self.limits,
+            4096,
+            Some(first.extruder.geometry.corner_velocity()),
+            [start[0], start[1], start[2], first.parked_e],
+        )
+        .map_err(|error| Error::Gcode { line: 0, error })?;
+        preview
+            .activate_extruder_position(first.parked_e)
+            .map_err(|error| Error::Gcode { line: 0, error })?;
+        if let Some(resolution) = self.arc_resolution {
+            preview
+                .enable_arcs(resolution)
+                .map_err(|error| Error::Gcode { line: 0, error })?;
+        }
+        let mut xyz = Trajectory::new(16_384).map_err(Error::Trajectory)?;
+        let mut all_e = (0..lanes.len())
+            .map(|_| Trajectory::new(16_384))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Error::Trajectory)?;
+        let mut time = at;
+        let mut line_no = 0;
+        let mut append = |idx: usize, out: Output| {
+            for profile in out.moves {
+                extrusion::append_nominal(&mut all_e[idx], time, &profile)
+                    .map_err(Error::Trajectory)?;
+                append_move(&mut xyz, &mut time, &profile).map_err(Error::Trajectory)?;
+            }
+            time += out.dwell_seconds.unwrap_or(0.0);
+            if !time.is_finite() || time >= 1e12 {
+                return Err(Error::Trajectory(trajectory::Error::Invalid));
+            }
+            Ok(())
+        };
+        for section in pieces {
+            let id = lookup(section.tool)?;
+            if let Some((_, flushed)) = positions
+                .switch(section.tool, &mut preview)
+                .map_err(|_| Error::ToolSegment)?
+            {
+                append(active, flushed)?;
+                active = id;
+                preview
+                    .set_extruder_corner(lanes[active].extruder.geometry.corner_velocity())
+                    .map_err(|error| Error::Gcode {
+                        line: line_no,
+                        error,
+                    })?;
+            }
+            let tool = &lanes[active].extruder;
+            for line in section.gcode.lines() {
+                line_no += 1;
+                if line_no > MAX_LINES {
+                    return Err(Error::MaximumLines);
+                }
+                let mut ext_error = None;
+                let out = preview
+                    .line_with(line, |previous, next| {
+                        let end = next.end_position();
+                        if !self.in_range(&end[..3]) {
+                            return Err(gcode::Error::MoveOutsidePreview);
+                        }
+                        if let Some(z) = next.z_ratio() {
+                            next.limit(z * self.z_velocity, z * self.z_accel)?;
+                        }
+                        if end[3] != previous[3] {
+                            tool.geometry
+                                .check_move(next, previous, tool.temperature)
+                                .map_err(|error| {
+                                    ext_error = Some(error);
+                                    gcode::Error::MoveOutsidePreview
+                                })?;
+                        }
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        ext_error.map_or(
+                            Error::Gcode {
+                                line: line_no,
+                                error,
+                            },
+                            Error::Extrusion,
+                        )
+                    })?;
+                append(active, out)?;
+            }
+        }
+        let moves = preview.finish().map_err(|error| Error::Gcode {
+            line: line_no + 1,
+            error,
+        })?;
+        append(
+            active,
+            Output {
+                moves,
+                dwell_seconds: None,
+            },
+        )?;
+        let mut motors = std::array::from_fn(|_| Vec::new());
+        for (i, out) in motors.iter_mut().enumerate() {
+            let axis = self.motor_axis[i];
+            if let Some(shaper) = self
+                .fixed_shaper
+                .as_ref()
+                .filter(|s| s.is_enabled_for(axis))
+            {
+                let e = shaper
+                    .crossings(&xyz, axis, self.motor_step[i], start)
+                    .map_err(Error::Solver)?;
+                *out = step_clock::encode_trace(clock, &e, max_error, invert[i])
+                    .map_err(Error::Clock)?;
+            } else {
+                *out = step_lane(
+                    &xyz,
+                    axis,
+                    self.motor_step[i],
+                    start,
+                    clock,
+                    max_error,
+                    invert[i],
+                )?;
+            }
+        }
+        let mut tools = Vec::with_capacity(lanes.len());
+        for (spec, queue) in lanes.iter().zip(all_e) {
+            let tool = &spec.extruder;
+            let trace = if let Some(advance) = tool.pressure_advance {
+                let e = advance
+                    .crossings(&queue, tool.step_distance)
+                    .map_err(Error::Solver)?;
+                step_clock::encode_trace(clock, &e, max_error, tool.inverse_direction)
+                    .map_err(Error::Clock)?
+            } else {
+                step_lane(
+                    &queue,
+                    Axis::X,
+                    tool.step_distance,
+                    [spec.parked_e, 0., 0.],
+                    clock,
+                    max_error,
+                    tool.inverse_direction,
+                )?
+            };
+            tools.push((spec.id, trace));
+        }
+        Ok(MultiTrace {
+            motors,
+            tools,
+            duration: time - at,
+        })
     }
 
     /// Offline trace with an explicitly modeled single extruder.

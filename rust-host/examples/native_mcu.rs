@@ -453,7 +453,8 @@ mod linux {
         let trace = arg == "--clock-trace";
         let pipe = arg == "--pipeline";
         let trigger = arg == "--trigger-fixture";
-        let gpio_batched = arg == "--gpio-batched";
+        let gpio_multitool = arg == "--gpio-multitool";
+        let gpio_batched = arg == "--gpio-batched" || gpio_multitool;
         let gpio_extrusion = arg == "--gpio-extrusion" || gpio_batched;
         let gpio_fixture = arg == "--gpio-motion" || gpio_extrusion;
         let config_fixture = arg == "--config-fixture" || trigger || gpio_fixture;
@@ -525,7 +526,13 @@ mod linux {
         }
         let dictionary = identify.dictionary().map_err(|e| format!("{e:?}"))?;
         if gpio_fixture {
-            return crate::gpio_motion::run(link, &dictionary, gpio_extrusion, gpio_batched);
+            return crate::gpio_motion::run(
+                link,
+                &dictionary,
+                gpio_extrusion,
+                gpio_batched,
+                gpio_multitool,
+            );
         }
         if config_fixture {
             let messages = Messages::from_dictionary(&dictionary).map_err(|e| format!("{e:?}"))?;

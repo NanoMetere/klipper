@@ -452,6 +452,12 @@ impl Preview {
         })
     }
 
+    pub(crate) fn set_extruder_corner(&mut self, corner: f64) -> Result<(), Error> {
+        self.planner
+            .set_extruder_corner(corner)
+            .map_err(Error::Motion)
+    }
+
     /// Enable the optional stock G2/G3 plane extension for this offline preview.
     pub fn enable_arcs(&mut self, resolution_mm: f64) -> Result<(), Error> {
         self.arcs = Some(arcs::Mode::new(resolution_mm)?);

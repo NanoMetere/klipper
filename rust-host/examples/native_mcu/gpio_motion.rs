@@ -10,12 +10,13 @@ use klipper_host_protocol::{
     gcode_macros::Registry,
     homing::Counter,
     identify::Dictionary,
-    machine_preview::{Machine, SimulatedExtruder},
+    machine_preview::{Machine, SimulatedExtruder, ToolLane, ToolSegment},
     mcu_config::Messages,
     pressure_advance::Advance,
     simulated_printer::{Input, Simulation},
+    step_clock::{Clock, Command},
     step_wire::StepMessages,
-    virtual_job::State,
+    virtual_job::{Issued, Job, Snapshot, State},
     virtual_stepper::Stepper,
     MAX_PAYLOAD,
 };
@@ -25,11 +26,40 @@ fn err(e: impl std::fmt::Debug) -> String {
     format!("{e:?}")
 }
 
+enum Run {
+    Single(Box<Simulation>),
+    Multiple(Job),
+}
+
+impl Run {
+    fn snapshot(&self) -> Snapshot {
+        match self {
+            Self::Single(sim) => sim.snapshot(),
+            Self::Multiple(job) => job.snapshot(),
+        }
+    }
+
+    fn start(&mut self) -> Result<(), String> {
+        match self {
+            Self::Single(sim) => sim.start(0).map_err(err),
+            Self::Multiple(job) => job.start(0).map_err(err),
+        }
+    }
+
+    fn advance(&mut self, end: u64) -> Result<Vec<Issued>, String> {
+        match self {
+            Self::Single(sim) => sim.advance(end, 256).map_err(err),
+            Self::Multiple(job) => job.poll(end, 256).map_err(err),
+        }
+    }
+}
+
 pub(super) fn run(
     mut link: Link,
     dictionary: &Dictionary,
     extrusion: bool,
     batch: bool,
+    multitool: bool,
 ) -> Result<(), String> {
     // Fail before any configuration or motion command to an unmarked peer.
     let motion = Codec::from_dictionary(dictionary).map_err(err)?;
@@ -95,32 +125,95 @@ pub(super) fn run(
     })
     .map_err(err)?;
     let advance = Advance::new(0.04, &[(0.0, 0.04)]).map_err(err)?;
-    let count = if extrusion { 4 } else { 3 };
-    let oids = [0, 1, 2, 3];
-    let mut simulation = Simulation::prepare(
-        &machine,
-        &home,
-        Input {
-            name: "macros.gcode",
-            script: if extrusion {
-                include_str!("../preview/path_extrusion.gcode")
-            } else {
-                include_str!("../preview/path_macro_tail.gcode")
+    let count = if multitool {
+        5
+    } else if extrusion {
+        4
+    } else {
+        3
+    };
+    let oids = [0, 1, 2, 3, 4];
+    let make_ex = || SimulatedExtruder {
+        geometry: &geometry,
+        temperature: 210.,
+        step_distance: 0.004,
+        inverse_direction: false,
+        pressure_advance: Some(&advance),
+    };
+    let mut simulation = if multitool {
+        let pieces = [
+            ToolSegment {
+                tool: 0,
+                gcode: include_str!("../preview/multitool-a.gcode"),
             },
-            macros: Some(&macros),
-            discovered: &wire,
-            oids: &oids[..count],
-            extruder: extrusion.then_some(SimulatedExtruder {
-                geometry: &geometry,
-                temperature: 210.,
-                step_distance: 0.004,
-                inverse_direction: false,
-                pressure_advance: Some(&advance),
-            }),
+            ToolSegment {
+                tool: 1,
+                gcode: include_str!("../preview/multitool-b.gcode"),
+            },
+            ToolSegment {
+                tool: 0,
+                gcode: include_str!("../preview/multitool-c.gcode"),
+            },
+        ];
+        let lanes = [
+            ToolLane {
+                id: 0,
+                parked_e: 0.,
+                extruder: make_ex(),
+            },
+            ToolLane {
+                id: 1,
+                parked_e: 1.3,
+                extruder: make_ex(),
+            },
+        ];
+        let clock = Clock {
+            last_encoded: 0,
+            time_origin: 0.,
             hz,
-        },
-    )
-    .map_err(err)?;
+        };
+        let trace = machine
+            .trace_tool_segments(&home, &pieces, &lanes, 2.0, clock, 20, [false; 3])
+            .map_err(err)?;
+        let traces: Vec<_> = trace
+            .motors
+            .iter()
+            .chain(trace.tools.iter().map(|(_, t)| t))
+            .map(Vec::as_slice)
+            .collect();
+        let trailing = traces
+            .iter()
+            .flat_map(|lane| lane.iter())
+            .filter_map(|c| match c {
+                Command::Steps(b) => Some(b.last_clock),
+                _ => None,
+            })
+            .max()
+            .unwrap_or_default();
+        let end = (((2.0 + trace.duration) * hz).ceil() as u64).max(trailing) + 1;
+        Run::Multiple(Job::for_lanes(&wire, &traces, &oids[..count], 0, end, 1).map_err(err)?)
+    } else {
+        Run::Single(Box::new(
+            Simulation::prepare(
+                &machine,
+                &home,
+                Input {
+                    name: "macros.gcode",
+                    script: if extrusion {
+                        include_str!("../preview/path_extrusion.gcode")
+                    } else {
+                        include_str!("../preview/path_macro_tail.gcode")
+                    },
+                    macros: Some(&macros),
+                    discovered: &wire,
+                    oids: &oids[..count],
+                    extruder: extrusion.then(make_ex),
+                    hz,
+                },
+            )
+            .map_err(err)?,
+        ))
+    };
     let planned = simulation.snapshot();
     let (crc, items) = motion
         .setup(count as u8, (hz * 0.000_002).ceil() as u32)
@@ -148,7 +241,7 @@ pub(super) fn run(
         let reset = motion.reset_clock(link.sequence, oid, start).map_err(err)?;
         fixture_ack(&mut link, &reset)?;
     }
-    simulation.start(0).map_err(err)?;
+    simulation.start()?;
     let mut virtual_motors = oids.map(|oid| Stepper::new(oid, 0, 0));
     let mut frame_count = 0usize;
     let mut payload = Vec::with_capacity(MAX_PAYLOAD);
@@ -160,7 +253,7 @@ pub(super) fn run(
         Ok(())
     };
     while simulation.snapshot().state != State::Finished {
-        for item in simulation.advance(planned.planned_end, 256).map_err(err)? {
+        for item in simulation.advance(planned.planned_end)? {
             virtual_motors[item.lane]
                 .accept_payload(&wire, &item.command.bytes)
                 .map_err(err)?;
@@ -184,7 +277,7 @@ pub(super) fn run(
     }
     let enqueue_ns = enqueue.elapsed().as_nanos();
 
-    let mut positions = [0; 4];
+    let mut positions = [0; 5];
     let lead = (hz * 2.0) as u64;
     if planned.planned_end < lead {
         return Err("fixture planned end is before motion lead".into());

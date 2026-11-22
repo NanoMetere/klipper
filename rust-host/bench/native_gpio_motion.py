@@ -69,7 +69,7 @@ def main():
     assert control.returncode and "NotFixture" in control.stderr, control.stderr
     with tempfile.TemporaryDirectory(prefix="klipper-gpio-stub-") as folder:
         mcu = build(upstream, Path(folder))
-        modes = ["--gpio-motion", "--gpio-extrusion", "--gpio-batched"]
+        modes = ["--gpio-motion", "--gpio-extrusion", "--gpio-batched", "--gpio-multitool"]
         series = {mode: [] for mode in modes}
         summaries = {}
         for round_number in range(a.rounds):
@@ -81,14 +81,16 @@ def main():
                 assert len(lines) == 2, lines
                 tag, crc, payloads, *positions = lines[0].split()
                 enqueue_tag, frames, elapsed = lines[1].split()
-                expected = [720, -120, 112] if mode == modes[0] else [720, -120, 112, 100]
+                expected = ([720, -120, 112] if mode == modes[0]
+                            else [3920, -80, 40, 150, 175] if mode == modes[3]
+                            else [720, -120, 112, 100])
                 assert tag == "GPIO_FIXTURE" and int(crc) != 0
                 assert int(payloads) > 0 and [int(p) for p in positions] == expected, outcome.stderr
                 assert enqueue_tag == "ENQUEUE" and 0 < int(frames) <= int(payloads) and int(elapsed) > 0
                 summary = (int(payloads), int(frames), expected, int(crc))
                 assert summaries.setdefault(mode, summary) == summary
                 series[mode].append(int(elapsed))
-        plain, packed = (summaries[mode] for mode in modes[1:])
+        plain, packed = (summaries[mode] for mode in modes[1:3])
         assert plain[0] == packed[0] and packed[1] < plain[1] and packed[2:] == plain[2:], summaries
         for mode, times in series.items():
             payloads, frames, expected, _ = summaries[mode]

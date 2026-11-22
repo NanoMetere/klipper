@@ -476,3 +476,93 @@ mod socket_tests {
         fs::remove_dir(dir).unwrap();
     }
 }
+
+#[test]
+fn verified_two_tool_segments_yield_independent_inert_motor_lanes() {
+    use klipper_host_protocol::{
+        extrusion::{Extruder, Settings},
+        machine_preview::{Error, SimulatedExtruder, ToolLane, ToolSegment},
+        pressure_advance::Advance,
+        step_clock::Clock,
+        virtual_stepper::Stepper,
+    };
+    let machine = Machine::from_config(&source()).unwrap();
+    let initial = [1., 1., 0.2];
+    let mut home = machine.virtual_homing(initial).unwrap();
+    let count = Some(Counter {
+        start: 14,
+        trigger: 11,
+        halt: 11,
+    });
+    for (i, x) in initial.into_iter().enumerate() {
+        let arm = home.arm(i as u8, x, true).unwrap();
+        let readings = if i < 2 {
+            [count, count, None]
+        } else {
+            [None, None, count]
+        };
+        home.complete(arm, readings, true).unwrap();
+    }
+    let e = Extruder::new(Settings {
+        nozzle: 0.4,
+        filament: 1.75,
+        max_area: 0.64,
+        retraction_distance: 15.,
+        retraction_velocity: 20.,
+        retraction_accel: 300.,
+        corner_velocity: 1.,
+        min_simulated_temperature: 170.,
+    })
+    .unwrap();
+    let pressure = Advance::new(0.04, &[(0., 0.05)]).unwrap();
+    let mk = |id, parked_e, temperature| ToolLane {
+        id,
+        parked_e,
+        extruder: SimulatedExtruder {
+            geometry: &e,
+            temperature,
+            step_distance: 0.004,
+            inverse_direction: false,
+            pressure_advance: Some(&pressure),
+        },
+    };
+    let pieces = [
+        ToolSegment {
+            tool: 0,
+            gcode: "G90\nM82\nG1 X8 Y10 Z.3 E.4 F1800\n",
+        },
+        ToolSegment {
+            tool: 1,
+            gcode: "G1 X20 Y20 E.7 F1800\nG4 P80\n",
+        },
+        ToolSegment {
+            tool: 0,
+            gcode: "G1 X25 Y26 E.2 F1800\nM400\n",
+        },
+    ];
+    let clock = Clock {
+        last_encoded: 0,
+        time_origin: 0.,
+        hz: 20e6,
+    };
+    let cold = [mk(0, 0., 210.), mk(1, 1.3, 30.)];
+    assert!(matches!(
+        machine.trace_tool_segments(&home, &pieces, &cold, 2., clock, 20, [false; 3]),
+        Err(Error::Extrusion(_))
+    ));
+    let lanes = [mk(0, 0., 210.), mk(1, 1.3, 210.)];
+    let result = machine
+        .trace_tool_segments(&home, &pieces, &lanes, 2., clock, 20, [false; 3])
+        .unwrap();
+    assert!(result.motors.iter().all(|lane| !lane.is_empty()));
+    let wire = codec();
+    let mut final_positions = Vec::new();
+    for (id, lane) in &result.tools {
+        let mut motor = Stepper::new(*id, 0, 0);
+        for record in wire.payloads(*id, 0, lane).unwrap() {
+            motor.accept_payload(&wire, &record.bytes).unwrap();
+        }
+        final_positions.push(motor.advance(u32::MAX.into()).unwrap().position_steps);
+    }
+    assert_eq!(final_positions, [150, 175]);
+}

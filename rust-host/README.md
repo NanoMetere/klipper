@@ -426,12 +426,20 @@ coordinate, and resets logical E and flow exactly as stock GCodeMove
 does on activation. The switch itself emits no extrusion. Comparing with
 the actual stock activation handler on an inert toolhead matched 21,120
 coordinate snapshots with flow changes, state restore and retractions.
-This tracks independent coordinates, not a complete multi-tool firmware
-motion pipeline.
+Explicit tool-labeled sections can also share one XYZ timeline while
+feeding independent pressure-advance E0/E1 queues. On a shaped A-B-A
+path, 234 decoded step commands and their clocks match pinned stock
+Python+C (1.270130318 simulated seconds). The GPIO-free C firmware mode
+checks all five motors at 17 checkpoints, reaching
+`[3920, -80, 40, 150, 175]` on the fixed path. This validates moving
+with explicitly selected lanes, not automatic T-command docking, a full
+tool-change plugin runtime, or any physical setup.
 
 ```sh
 cargo build --locked --release --example multi_extruder_replay
 python3 bench/multi_extruder.py /path/to/pinned/klipper
+cargo build --locked --release --example tool_motion_replay
+python3 bench/tool_motion.py /path/to/pinned/klipper
 ```
 
 ## Inert fan and tool fan handoff

@@ -73,6 +73,8 @@ def main():
                          "--binary", examples/"print_stats_replay"]),
         ("multi_extruder", [sys.executable, ROOT/"bench/multi_extruder.py", upstream,
                               "--binary", examples/"multi_extruder_replay"]),
+        ("tool_motion", [sys.executable, ROOT/"bench/tool_motion.py", upstream,
+                           "--binary", examples/"tool_motion_replay"]),
         ("fan", [sys.executable, ROOT/"bench/fan.py", upstream,
                   "--binary", examples/"fan_replay"]),
         ("verify_heater", [sys.executable, ROOT/"bench/verify_heater.py", upstream,

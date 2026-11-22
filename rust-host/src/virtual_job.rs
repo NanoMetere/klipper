@@ -73,9 +73,27 @@ impl Job {
         end: u64,
         generation: u64,
     ) -> Result<Self, Error> {
-        let lane_iter = trace.motors.iter().chain(trace.extruder.iter());
-        let lane_count = lane_iter.clone().count();
-        if oids.len() != lane_count
+        let lanes = trace
+            .motors
+            .iter()
+            .chain(trace.extruder.iter())
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        Self::for_lanes(codec, &lanes, oids, initial, end, generation)
+    }
+
+    /// Bind independent inert motor traces to a shared virtual schedule.
+    pub fn for_lanes(
+        codec: &StepMessages,
+        traces: &[&[Command]],
+        oids: &[u8],
+        initial: u64,
+        end: u64,
+        generation: u64,
+    ) -> Result<Self, Error> {
+        let lane_count = traces.len();
+        if !(1..=16).contains(&lane_count)
+            || oids.len() != lane_count
             || oids.iter().copied().collect::<BTreeSet<_>>().len() != lane_count
             || end < initial
             || generation == 0
@@ -84,7 +102,7 @@ impl Job {
         }
         let mut total = 0usize;
         let mut lanes = Vec::with_capacity(lane_count);
-        for (lane, &oid) in lane_iter.zip(oids) {
+        for (&lane, &oid) in traces.iter().zip(oids) {
             total += lane.len();
             if total > MAX_COMMANDS
                 || lane.iter().any(|cmd| match cmd {

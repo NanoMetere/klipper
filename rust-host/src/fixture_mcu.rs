@@ -10,6 +10,7 @@ const SETUP: &str =
 const RESET: &str = "reset_step_clock oid=%c clock=%u";
 const GET: &str = "stepper_get_position oid=%c";
 const POSITION: &str = "stepper_position oid=%c pos=%i";
+const MAX_FIXTURE_OID: u8 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -69,9 +70,9 @@ impl Codec {
         })
     }
 
-    /// Three or four fixture objects using only the inert sim0..sim7 pins.
+    /// Three to five fixture objects using only the inert sim0..sim9 pins.
     pub fn setup(&self, count: u8, pulse_ticks: u32) -> Result<(u32, Vec<Vec<u8>>), Error> {
-        if !(3..=4).contains(&count) || !(1..=10_000).contains(&pulse_ticks) {
+        if !(3..=5).contains(&count) || !(1..=10_000).contains(&pulse_ticks) {
             return Err(Error::Invalid);
         }
         let count = u32::from(count);
@@ -88,7 +89,7 @@ impl Codec {
     }
 
     pub fn reset_clock(&self, seq: u8, oid: u8, clock: u32) -> Result<Vec<u8>, Error> {
-        if oid > 3 {
+        if oid > MAX_FIXTURE_OID {
             return Err(Error::Invalid);
         }
         encode(seq, &values(self.reset, &[u32::from(oid), clock])).map_err(Error::Frame)
@@ -99,7 +100,7 @@ impl Codec {
     }
 
     pub fn get_position(&self, seq: u8, oid: u8) -> Result<Vec<u8>, Error> {
-        if oid > 3 {
+        if oid > MAX_FIXTURE_OID {
             return Err(Error::Invalid);
         }
         encode(seq, &values(self.get, &[u32::from(oid)])).map_err(Error::Frame)
@@ -117,7 +118,7 @@ impl Codec {
         let position = vlq::read(&mut raw)
             .and_then(|v| i32::try_from(v).ok())
             .ok_or(Error::Invalid)?;
-        if !raw.is_empty() || oid > 3 {
+        if !raw.is_empty() || oid > MAX_FIXTURE_OID {
             return Err(Error::Invalid);
         }
         Ok((oid, position))
