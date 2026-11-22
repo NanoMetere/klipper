@@ -3,6 +3,10 @@
 //! selection order. Upstream copyright (C) 2023 Viesturs Zarins.
 //! Actions are purely descriptive and never run G-code, macros, or hardware.
 
+#[path = "toolchange/catalog.rs"]
+mod catalog;
+pub use catalog::{Catalog, Tool};
+
 const MAX_TOOLS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

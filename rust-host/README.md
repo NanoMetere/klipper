@@ -393,10 +393,17 @@ On viesturz/klipper-toolchanger at
 `94756dfde9b729fd69f9b8780067821c5c99a528`, with mocked callbacks and the
 legacy compatible Klippy checkout, 64 selection/no-op cases and 505
 ordered observations matched the stock plugin selection method.
+The root tool catalog separately matches 836 numbered records across
+220 configs against the pinned plugin's actual `Tool` initialization
+reads, including global and per-tool XYZ offsets, restore axes and
+detection presence. Unassigned slots are left out of this numbered
+view. The catalog never resolves or opens the detection pins.
 
 ```sh
 cargo build --locked --release --example toolchange_replay
 python3 bench/toolchange_order.py /path/to/legacy/klipper /path/to/toolchanger
+cargo build --locked --release --example tool_catalog_replay
+python3 bench/tool_catalog.py /path/to/legacy/klipper /path/to/toolchanger
 ```
 
 ## Offline heater fault gate
