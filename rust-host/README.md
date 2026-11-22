@@ -350,6 +350,25 @@ messages, the second fixture matched all 6,593 direction commands and
 half-tick rounding, and rollbacks at the reversal boundary. Nothing
 was sent to a device.
 
+## Offline configuration resolution
+
+`config::parse` reads only a caller-supplied map of relative file names and
+UTF-8 text. It applies nested includes, sorted nonrecursive glob matches,
+later value overrides, multiline values, and default options. It rejects
+root escapes and active include cycles. This layer does not read the
+filesystem, load plugins, execute macros, or apply/write SAVE_CONFIG data.
+
+```sh
+python3 bench/config.py /path/to/pinned/klipper
+```
+
+The pinned `ConfigFileReader` comparison covered 228 upstream sample
+configs and one nested synthetic config: 2,696 section entries in their
+original order and 16,075 effective options matched byte-for-byte. Unit
+tests additionally cover absent literals, empty wildcard matches, escaped
+paths and cycles. This is read-only parsing parity for the fixture, not
+validation that all configured hardware/modules are supported.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

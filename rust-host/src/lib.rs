@@ -19,6 +19,7 @@ pub mod trajectory;
 pub mod step_times;
 pub mod step_compress;
 pub mod step_clock;
+pub mod config;
 #[cfg(feature = "identify")]
 mod vlq;
 
