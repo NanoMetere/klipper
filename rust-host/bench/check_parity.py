@@ -64,6 +64,8 @@ def main():
                         "--binary", examples/"virtual_sd_replay"]),
         ("print_stats", [sys.executable, ROOT/"bench/print_stats.py", upstream,
                          "--binary", examples/"print_stats_replay"]),
+        ("fan", [sys.executable, ROOT/"bench/fan.py", upstream,
+                  "--binary", examples/"fan_replay"]),
         ("verify_heater", [sys.executable, ROOT/"bench/verify_heater.py", upstream,
                           "--binary", examples/"verify_heater_replay"]),
         ("virtual_stepper", [sys.executable, ROOT/"bench/virtual_stepper.py",
@@ -79,6 +81,9 @@ def main():
         phases.append(("tool_dock", [sys.executable, ROOT/"bench/tool_dock.py",
                                      a.legacy_klippy.resolve(), a.toolchanger_reference.resolve(),
                                      "--binary", examples/"tool_dock_replay"]))
+        phases.append(("fan_transfer", [sys.executable, ROOT/"bench/fan_transfer.py",
+                                         a.legacy_klippy.resolve(), a.toolchanger_reference.resolve(),
+                                         "--binary", examples/"fan_transfer_replay"]))
     if dictionary.is_file():
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))

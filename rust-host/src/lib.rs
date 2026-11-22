@@ -31,6 +31,7 @@ pub mod step_clock;
 pub mod config;
 pub mod machine_preview;
 pub mod thermal;
+pub mod fan;
 pub mod verify_heater;
 pub mod toolchange;
 pub mod extrusion;

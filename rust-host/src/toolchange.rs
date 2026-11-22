@@ -12,6 +12,9 @@ pub use coordinates::Dock;
 #[path = "toolchange/program.rs"]
 mod program;
 pub use program::{ChangeRequest, Failure, Scripts};
+#[path = "toolchange/fan_transfer.rs"]
+mod fan_transfer;
+pub use fan_transfer::{FanError, FanIntent, FanTransfer};
 
 const MAX_TOOLS: usize = 64;
 

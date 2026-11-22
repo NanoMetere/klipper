@@ -418,6 +418,24 @@ cargo build --locked --release --example tool_dock_replay
 python3 bench/tool_dock.py /path/to/legacy/klipper /path/to/toolchanger
 ```
 
+## Inert fan and tool fan handoff
+
+The fan queue coalesces requests, applies minimum scheduling intervals and
+kick-start hysteresis, and emits normalized PWM/digital intents without
+accessing a fan or any pin. Real stock `Fan` and `GCodeRequestQueue`
+callbacks matched 22,800 snapshots and 11,307 inert output events.
+
+The tool fan handoff carries the observed effective fan speed across
+unmount/mount and never guesses if the outgoing measurement is missing.
+Against the optional legacy plugin reference it matched 11,700 snapshots
+and 8,664 intents. The legacy `multi_fan` command adapter is not invoked.
+
+```sh
+cargo build --locked --release --examples
+python3 bench/fan.py /path/to/pinned/klipper
+python3 bench/fan_transfer.py /path/to/legacy/klipper /path/to/toolchanger
+```
+
 ## Offline heater fault gate
 
 The stock heater progress/deficit check is modeled separately from PID and
