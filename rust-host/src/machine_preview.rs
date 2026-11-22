@@ -115,9 +115,17 @@ pub struct ToolSegment<'a> {
     pub gcode: &'a str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlannedTool {
+    pub id: u8,
+    /// Absolute planned trajectory time, not physical actuation or pickup.
+    pub at: f64,
+}
+
 pub struct MultiTrace {
     pub motors: [Vec<Command>; 3],
     pub tools: Vec<(u8, Vec<Command>)>,
+    pub switches: Vec<PlannedTool>,
     pub duration: f64,
 }
 
@@ -389,6 +397,7 @@ impl Machine {
             .collect::<Result<Vec<_>, _>>()
             .map_err(Error::Trajectory)?;
         let mut time = at;
+        let mut switches = Vec::new();
         let mut line_no = 0;
         let mut append = |idx: usize, out: Output| {
             for profile in out.moves {
@@ -400,7 +409,7 @@ impl Machine {
             if !time.is_finite() || time >= 1e12 {
                 return Err(Error::Trajectory(trajectory::Error::Invalid));
             }
-            Ok(())
+            Ok(time)
         };
         for section in pieces {
             let id = lookup(section.tool)?;
@@ -408,7 +417,11 @@ impl Machine {
                 .switch(section.tool, &mut preview)
                 .map_err(|_| Error::ToolSegment)?
             {
-                append(active, flushed)?;
+                let at = append(active, flushed)?;
+                switches.push(PlannedTool {
+                    id: section.tool,
+                    at,
+                });
                 active = id;
                 preview
                     .set_extruder_corner(lanes[active].extruder.geometry.corner_velocity())
@@ -516,6 +529,7 @@ impl Machine {
         Ok(MultiTrace {
             motors,
             tools,
+            switches,
             duration: time - at,
         })
     }

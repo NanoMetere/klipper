@@ -460,6 +460,16 @@ taskset -c 3 python3 bench/preview_cli_timing.py \
   --rounds 40 --moves 2500
 ```
 
+The integrated offline SD/job model can also run these named tool lanes
+after verified virtual homing. Its read-only `virtual_tool_lanes` object
+reports the *planned* active tool as the virtual cursor advances; pausing
+freezes changes, and cancellation discards them. Per-tool E observations
+rebase print statistics on switches, so a different parked E position
+does not become apparent extrusion. Integration tests run
+T0 → T2 → T6 → T2, preserve all six virtual motor lanes, and verify
+the pause, resume, final filament total and read-only status. The status
+does not attest to actual hardware state or physical docking.
+
 ## Inert multiple-extruder coordinates
 
 Switching a virtual extruder now returns the pending profiles tagged for

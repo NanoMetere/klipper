@@ -579,3 +579,164 @@ fn verified_two_tool_segments_yield_independent_inert_motor_lanes() {
     }
     assert_eq!(final_positions, [150, 175]);
 }
+
+#[test]
+fn sparse_job_switch_status_follows_paused_virtual_clock_and_rebases_filament() {
+    use klipper_host_protocol::{
+        machine_preview::tool_profiles, print_stats::Extrusion, simulated_printer::MultiInput,
+        step_clock::Clock,
+    };
+    let cfg = config::parse(
+        &BTreeMap::from([
+            (
+                "sparse.cfg".into(),
+                include_str!("../examples/preview/sparse-tool.cfg").into(),
+            ),
+            (
+                "printer.cfg".into(),
+                include_str!("../examples/preview/printer.cfg").into(),
+            ),
+            (
+                "rails.cfg".into(),
+                include_str!("../examples/preview/rails.cfg").into(),
+            ),
+        ]),
+        "sparse.cfg",
+    )
+    .unwrap();
+    let machine = Machine::from_config(&cfg).unwrap();
+    let origin = [1., 1., 0.2];
+    let mut home = machine.virtual_homing(origin).unwrap();
+    let codec = codec();
+    let profiles = tool_profiles::read(&cfg).unwrap();
+    let lanes = profiles
+        .iter()
+        .zip([0., 1.3, 2.1])
+        .map(|(p, e)| p.lane(210., e).unwrap())
+        .collect::<Vec<_>>();
+    let script = include_str!("../examples/preview/sparse-tool.gcode");
+    let hz = 20e6;
+    let input = || MultiInput {
+        name: "virtual-sparse.gcode",
+        script,
+        macros: None,
+        discovered: &codec,
+        oids: &[12, 14, 16, 23, 55, 102],
+        lanes: &lanes,
+        initial_tool: 0,
+        hz,
+    };
+    assert!(matches!(
+        Simulation::prepare_tools(&machine, &home, input()),
+        Err(simulated_printer::Error::Machine(_))
+    ));
+    for (axis, coordinate) in origin.into_iter().enumerate() {
+        let token = home.arm(axis as u8, coordinate, true).unwrap();
+        let counter = Some(Counter {
+            start: 10,
+            trigger: 9,
+            halt: 9,
+        });
+        home.complete(
+            token,
+            if axis < 2 {
+                [counter, counter, None]
+            } else {
+                [None, None, counter]
+            },
+            true,
+        )
+        .unwrap();
+    }
+    let trace = machine
+        .trace_tool_gcode(
+            &home,
+            script,
+            0,
+            &lanes,
+            2.,
+            Clock {
+                last_encoded: 0,
+                time_origin: 0.,
+                hz,
+            },
+            20,
+            [false; 3],
+        )
+        .unwrap();
+    assert_eq!(
+        trace.switches.iter().map(|t| t.id).collect::<Vec<_>>(),
+        [2, 6, 2]
+    );
+    let times = trace
+        .switches
+        .iter()
+        .map(|t| (t.at * hz).ceil() as u64)
+        .collect::<Vec<_>>();
+    let mut sim = Simulation::prepare_tools(&machine, &home, input()).unwrap();
+    assert_eq!(sim.planned_tool(), Some(0));
+    assert_eq!(sim.preflight_boundary(), (script.len(), script.len()));
+    sim.start(0).unwrap();
+    let mut lanes_seen = BTreeSet::new();
+    let mut due = |clock: u64, sim: &mut Simulation| {
+        lanes_seen.extend(sim.advance(clock, 256).unwrap().into_iter().map(|p| p.lane));
+    };
+    let reading = |position| Extrusion {
+        position,
+        factor: 1.,
+    };
+    due(times[0] - 1, &mut sim);
+    sim.tool_extrusion_observation(0, reading(0.4)).unwrap();
+    assert!(sim.tool_extrusion_observation(2, reading(1.3)).is_err());
+    assert!(sim.extrusion_observation(reading(10.)).is_err());
+    sim.pause().unwrap();
+    assert!(sim.advance(times[0] + 10000, 256).unwrap().is_empty());
+    assert_eq!(sim.planned_tool(), Some(0));
+    sim.resume(times[0] + 10000).unwrap();
+    due(times[0] + 10001, &mut sim);
+    assert_eq!(sim.planned_tool(), Some(2));
+    sim.tool_extrusion_observation(2, reading(2.0)).unwrap();
+    due(times[1] + 10001, &mut sim);
+    assert_eq!(sim.planned_tool(), Some(6));
+    sim.tool_extrusion_observation(6, reading(2.3)).unwrap();
+    due(times[2] + 10001, &mut sim);
+    assert_eq!(sim.planned_tool(), Some(2));
+    sim.tool_extrusion_observation(2, reading(1.92)).unwrap();
+    let end = sim.snapshot().planned_end;
+    for _ in 0..5 {
+        due(end + 10001, &mut sim);
+    }
+    assert_eq!(sim.snapshot().state, State::Finished);
+    assert_eq!(lanes_seen, BTreeSet::from([0, 1, 2, 3, 4, 5]));
+
+    let mut document = Snapshot::default();
+    sim.publish(&mut document).unwrap();
+    let mut replies = Vec::new();
+    let mut client = Session::default();
+    client.feed(
+        b"{\"id\":1,\"method\":\"objects/query\",\"params\":{\"objects\":{\"virtual_tool_lanes\":null,\"print_stats\":[\"filament_used\"]}}}\x03",
+        &document, 1., |frame| collect(frame, &mut replies)
+    );
+    let status = &replies[0]["result"]["status"];
+    assert_eq!(
+        status["virtual_tool_lanes"],
+        json!({
+            "mode":"planned_virtual","pending_tool_changes":0,"planned_active_tool":2,"tool_ids":[0,2,6]
+        })
+    );
+    assert!((status["print_stats"]["filament_used"].as_f64().unwrap() - 1.22).abs() < 1e-10);
+    let mut cancelled = Simulation::prepare_tools(&machine, &home, input()).unwrap();
+    cancelled.start(0).unwrap();
+    cancelled.cancel().unwrap();
+    assert!(cancelled.advance(end, 256).unwrap().is_empty());
+    assert_eq!(cancelled.planned_tool(), Some(0));
+    cancelled.publish(&mut document).unwrap();
+    client.feed(
+        b"{\"id\":2,\"method\":\"objects/query\",\"params\":{\"objects\":{\"virtual_tool_lanes\":null}}}\x03",
+        &document, 2., |frame| collect(frame, &mut replies)
+    );
+    assert_eq!(
+        replies[1]["result"]["status"]["virtual_tool_lanes"]["pending_tool_changes"],
+        0
+    );
+}

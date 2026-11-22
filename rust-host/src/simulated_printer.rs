@@ -5,7 +5,7 @@
 use crate::{
     gcode_macros::Registry,
     homing::VirtualHoming,
-    machine_preview::{self, Machine, SimulatedExtruder},
+    machine_preview::{self, Machine, SimulatedExtruder, ToolLane},
     print_stats::{self, Extrusion, Stats},
     step_clock::{Clock, Command},
     step_wire::StepMessages,
@@ -13,6 +13,7 @@ use crate::{
     virtual_job::{self, Issued, Job, State},
     virtual_sd,
 };
+use std::{borrow::Cow, collections::VecDeque};
 
 const NO_EXTRUDER: Extrusion = Extrusion {
     position: 0.0,
@@ -41,6 +42,7 @@ pub struct Simulation {
     last_clock: u64,
     reading: Extrusion,
     extruder_lane: bool,
+    tools: Option<ToolState>,
 }
 
 /// Inputs bound to the explicitly virtual run; no external paths are opened.
@@ -54,32 +56,80 @@ pub struct Input<'a> {
     pub hz: f64,
 }
 
+/// Static lanes and a motion-only script for the fully inert multi-tool job.
+/// The tool choices are planned selectors, not physical dock or probe events.
+pub struct MultiInput<'a> {
+    pub name: &'a str,
+    pub script: &'a str,
+    pub macros: Option<&'a Registry>,
+    pub discovered: &'a StepMessages,
+    pub oids: &'a [u8],
+    pub lanes: &'a [ToolLane<'a>],
+    pub initial_tool: u8,
+    pub hz: f64,
+}
+
+struct ToolState {
+    readings: Vec<(u8, Extrusion)>,
+    changes: VecDeque<(u64, u8)>,
+    planned_active: u8,
+}
+
+fn preflight<'a>(
+    script: &'a str,
+    macros: Option<&Registry>,
+    hz: f64,
+) -> Result<(Cow<'a, str>, usize), Error> {
+    if script.len() > MAX_SCRIPT_BYTES {
+        return Err(Error::InputLimit);
+    }
+    if !(1.0..=1e9).contains(&hz) {
+        return Err(Error::Clock);
+    }
+    let mut sd = virtual_sd::Job::select(script.as_bytes());
+    sd.resume().map_err(Error::Source)?;
+    while let Some(line) = sd.issue().map_err(Error::Source)? {
+        sd.commit(line.token, None).map_err(Error::Source)?;
+    }
+    let position = sd.snapshot().position;
+    let source = &script[..position];
+    let script = if let Some(registry) = macros {
+        Cow::Owned(registry.expand(source).map_err(Error::Macro)?)
+    } else {
+        Cow::Borrowed(source)
+    };
+    Ok((script, position))
+}
+
+fn tick(at: f64, hz: f64) -> Result<u64, Error> {
+    let ticks = (at * hz).ceil();
+    if !(0.0..u64::MAX as f64).contains(&ticks) {
+        return Err(Error::Clock);
+    }
+    Ok(ticks as u64)
+}
+
+fn job_end(time: f64, hz: f64, traces: &[&[Command]]) -> Result<u64, Error> {
+    let ticks = tick(START_TIME + time, hz)?;
+    let last = traces
+        .iter()
+        .flat_map(|lane| lane.iter())
+        .filter_map(|cmd| match cmd {
+            Command::Steps(block) => Some(block.last_clock),
+            _ => None,
+        })
+        .max()
+        .unwrap_or_default();
+    ticks.max(last).checked_add(1).ok_or(Error::Clock)
+}
+
 impl Simulation {
     pub fn prepare(
         machine: &Machine,
         home: &VirtualHoming,
         input: Input<'_>,
     ) -> Result<Self, Error> {
-        if input.script.len() > MAX_SCRIPT_BYTES {
-            return Err(Error::InputLimit);
-        }
-        if !(1.0..=1e9).contains(&input.hz) {
-            return Err(Error::Clock);
-        }
-        let mut sd = virtual_sd::Job::select(input.script.as_bytes());
-        sd.resume().map_err(Error::Source)?;
-        while let Some(line) = sd.issue().map_err(Error::Source)? {
-            sd.commit(line.token, None).map_err(Error::Source)?;
-        }
-        let position = sd.snapshot().position;
-        let source = &input.script[..position];
-        let expanded;
-        let script = if let Some(macros) = input.macros {
-            expanded = macros.expand(source).map_err(Error::Macro)?;
-            expanded.as_str()
-        } else {
-            source
-        };
+        let (script, position) = preflight(input.script, input.macros, input.hz)?;
         let clock = Clock {
             last_encoded: 0,
             time_origin: 0.0,
@@ -87,7 +137,7 @@ impl Simulation {
         };
         let trace = machine
             .trace_homed_with_extruder(
-                script,
+                &script,
                 home,
                 START_TIME,
                 clock,
@@ -96,27 +146,15 @@ impl Simulation {
                 input.extruder,
             )
             .map_err(Error::Machine)?;
-        let ticks = ((START_TIME + trace.duration) * clock.hz).ceil();
-        if !(0.0..u64::MAX as f64).contains(&ticks) {
-            return Err(Error::Clock);
-        }
-        let end_motion = trace
+        let lanes = trace
             .motors
             .iter()
             .chain(trace.extruder.iter())
-            .flat_map(|lane| lane.iter())
-            .filter_map(|cmd| match cmd {
-                Command::Steps(b) => Some(b.last_clock),
-                _ => None,
-            })
-            .max()
-            .unwrap_or_default();
-        let end = (ticks as u64)
-            .max(end_motion)
-            .checked_add(1)
-            .ok_or(Error::Clock)?;
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        let end = job_end(trace.duration, clock.hz, &lanes)?;
         let job =
-            Job::for_trace(input.discovered, &trace, input.oids, 0, end, 1).map_err(Error::Job)?;
+            Job::for_lanes(input.discovered, &lanes, input.oids, 0, end, 1).map_err(Error::Job)?;
         let mut stats = Stats::default();
         stats.select(input.name).map_err(Error::Status)?;
         Ok(Self {
@@ -128,7 +166,87 @@ impl Simulation {
             last_clock: 0,
             reading: NO_EXTRUDER,
             extruder_lane: trace.extruder.is_some(),
+            tools: None,
         })
+    }
+
+    pub fn prepare_tools(
+        machine: &Machine,
+        home: &VirtualHoming,
+        input: MultiInput<'_>,
+    ) -> Result<Self, Error> {
+        let (script, position) = preflight(input.script, input.macros, input.hz)?;
+        let clock = Clock {
+            last_encoded: 0,
+            time_origin: 0.0,
+            hz: input.hz,
+        };
+        let trace = machine
+            .trace_tool_gcode(
+                home,
+                &script,
+                input.initial_tool,
+                input.lanes,
+                START_TIME,
+                clock,
+                20,
+                [false; 3],
+            )
+            .map_err(Error::Machine)?;
+        let mut stats = Stats::default();
+        stats.select(input.name).map_err(Error::Status)?;
+        let lanes = trace
+            .motors
+            .iter()
+            .chain(trace.tools.iter().map(|(_, rows)| rows))
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        let end = job_end(trace.duration, clock.hz, &lanes)?;
+        let job =
+            Job::for_lanes(input.discovered, &lanes, input.oids, 0, end, 1).map_err(Error::Job)?;
+        let changes = trace
+            .switches
+            .iter()
+            .map(|change| Ok((tick(change.at, clock.hz)?, change.id)))
+            .collect::<Result<VecDeque<_>, Error>>()?;
+        let readings = input
+            .lanes
+            .iter()
+            .map(|lane| {
+                (
+                    lane.id,
+                    Extrusion {
+                        position: lane.parked_e,
+                        factor: 1.0,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let reading = readings
+            .iter()
+            .find(|(id, _)| *id == input.initial_tool)
+            .map(|(_, reading)| *reading)
+            .ok_or(Error::Machine(machine_preview::Error::ToolSegment))?;
+        Ok(Self {
+            job,
+            stats,
+            validated_bytes: position,
+            source_bytes: input.script.len(),
+            hz: clock.hz,
+            last_clock: 0,
+            reading,
+            // The single-extruder method is intentionally unavailable here.
+            extruder_lane: false,
+            tools: Some(ToolState {
+                readings,
+                changes,
+                planned_active: input.initial_tool,
+            }),
+        })
+    }
+
+    pub fn planned_tool(&self) -> Option<u8> {
+        self.tools.as_ref().map(|s| s.planned_active)
     }
 
     pub fn snapshot(&self) -> virtual_job::Snapshot {
@@ -153,6 +271,27 @@ impl Simulation {
         let at = self.seconds(clock)?;
         let was = self.job.snapshot().state;
         let issued = self.job.poll(clock, budget).map_err(Error::Job)?;
+        if let Some(tools) = &mut self.tools {
+            let simulated_tick = self.job.snapshot().simulated_tick;
+            while tools
+                .changes
+                .front()
+                .is_some_and(|(when, _)| *when <= simulated_tick)
+            {
+                let (_, id) = tools.changes.pop_front().expect("scheduled transition");
+                let reading = tools
+                    .readings
+                    .iter()
+                    .find(|(key, _)| *key == id)
+                    .map(|(_, observed)| *observed)
+                    .expect("tool references preflighted");
+                self.stats
+                    .switch_extruder(at, reading)
+                    .map_err(Error::Status)?;
+                tools.planned_active = id;
+                self.reading = reading;
+            }
+        }
         if was == State::Running && self.job.snapshot().state == State::Finished {
             self.stats
                 .note_finish(at, print_stats::State::Complete, "")
@@ -197,9 +336,40 @@ impl Simulation {
         Ok(())
     }
 
+    /// Record an observation only for the modeled active lane. Other tools'
+    /// parked E and flow cannot be charged to this lane's filament total.
+    pub fn tool_extrusion_observation(
+        &mut self,
+        tool: u8,
+        reading: Extrusion,
+    ) -> Result<(), Error> {
+        let at = self.seconds(self.last_clock)?;
+        let fault = || Error::Status(print_stats::Error::Extrusion);
+        let tools = self
+            .tools
+            .as_mut()
+            .filter(|s| s.planned_active == tool)
+            .ok_or_else(fault)?;
+        let position = tools
+            .readings
+            .iter_mut()
+            .find(|(id, _)| *id == tool)
+            .ok_or_else(fault)?;
+        if !reading.position.is_finite() || !reading.factor.is_finite() || reading.factor <= 0.0 {
+            return Err(fault());
+        }
+        self.stats.observe(at, reading).map_err(Error::Status)?;
+        position.1 = reading;
+        self.reading = reading;
+        Ok(())
+    }
+
     pub fn cancel(&mut self) -> Result<(), Error> {
         let at = self.seconds(self.last_clock)?;
         self.job.cancel().map_err(Error::Job)?;
+        if let Some(tools) = &mut self.tools {
+            tools.changes.clear();
+        }
         self.stats
             .note_finish(at, print_stats::State::Cancelled, "")
             .map_err(Error::Status)
@@ -236,6 +406,9 @@ impl Simulation {
             return Err(Error::Status(print_stats::Error::Metadata));
         }
         self.job.fault().map_err(Error::Job)?;
+        if let Some(tools) = &mut self.tools {
+            tools.changes.clear();
+        }
         self.stats
             .note_finish(at, print_stats::State::Error, message)
             .map_err(Error::Status)
@@ -255,9 +428,22 @@ impl Simulation {
             .stats
             .observe(time, self.reading)
             .map_err(Error::Status)?;
-        Ok(stats.publish(source)
+        let base = stats.publish(source)
             && self.job.publish_status(source)
-            && source.set_object("virtual_input".into(), sd.as_object().unwrap().clone()))
+            && source.set_object("virtual_input".into(), sd.as_object().unwrap().clone());
+        let tools = self.tools.as_ref().is_none_or(|state| {
+            let object = serde_json::json!({
+                "mode": "planned_virtual",
+                "planned_active_tool": state.planned_active,
+                "pending_tool_changes": state.changes.len(),
+                "tool_ids": state.readings.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            });
+            source.set_object(
+                "virtual_tool_lanes".into(),
+                object.as_object().unwrap().clone(),
+            )
+        });
+        Ok(base && tools)
     }
 
     fn seconds(&self, clock: u64) -> Result<f64, Error> {
