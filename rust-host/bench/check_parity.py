@@ -66,6 +66,8 @@ def main():
         phases.append(("mcu_config_payloads", [sys.executable, ROOT/"bench/mcu_config.py", upstream,
                                                "--payload-binary", examples/"mcu_config_replay",
                                                "--dictionary", dictionary]))
+        phases.append(("integrated_simulated_job", [sys.executable, ROOT/"bench/simulated_job.py",
+                                                    examples/"simulated_job", dictionary]))
     else:
         print("SKIP step_wire (no matching Linux firmware dictionary supplied)", flush=True)
     if a.native_pty:

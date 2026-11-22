@@ -54,3 +54,7 @@ required-features = ["identify"]
 [[example]]
 name = "print_stats_replay"
 required-features = ["webhooks"]
+
+[[example]]
+name = "simulated_job"
+required-features = ["identify"]

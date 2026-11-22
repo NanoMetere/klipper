@@ -379,6 +379,31 @@ tests additionally cover absent literals, empty wildcard matches, escaped
 paths and cycles. This is read-only parsing parity for the fixture, not
 validation that all configured hardware/modules are supported.
 
+## Integrated software-only run
+
+`simulated_printer::Simulation` brings together virtual homing evidence,
+stock-compatible SD line boundaries, optional limited macros, the offline
+step pipeline and a virtual job. It presents read-only progress and print
+statistics while moving through standby, printing, paused, complete or
+faulted states. The reported input byte boundary is preflight metadata,
+not a live virtual SD read position. This particular runner is XYZ-only
+and accepts no physical device or control-client paths.
+
+```sh
+cargo run --locked --release --example simulated_job -- /path/to/klipper.dict
+```
+
+The pinned 50 MHz Linux MCU dictionary produced 138 inert wire commands
+across three lanes. Integration tests verify that a simulated fault drops
+remaining work and that separate Unix stream pairs carry read-only JSON
+subscriptions without accepting G-code or letting one slow client exhaust
+the reply queue. The named Unix listener is optional and its bind/cleanup
+test requires a host that allows local socket binding:
+
+```sh
+cargo test --locked --test simulated_printer listener_binds -- --ignored
+```
+
 ## Offline print statistics
 
 `print_stats::Stats` mirrors stock duration and filament accounting using

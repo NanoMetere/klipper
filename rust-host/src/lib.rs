@@ -46,8 +46,12 @@ pub mod print_stats;
 pub mod step_wire;
 #[cfg(feature = "identify")]
 pub mod virtual_job;
+#[cfg(feature = "identify")]
+pub mod simulated_printer;
 #[cfg(feature = "webhooks")]
 pub mod webhooks;
+#[cfg(all(unix, feature = "webhooks"))]
+pub mod status_socket;
 #[cfg(feature = "identify")]
 mod vlq;
 
