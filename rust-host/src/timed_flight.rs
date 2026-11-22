@@ -39,6 +39,12 @@ impl TimedFlight {
         })
     }
 
+    pub fn after_payload(sequence: u64, wire: Wire) -> Result<Self, Error> {
+        let mut value = Self::established(sequence, wire)?;
+        value.flight = Flight::after_payload(sequence);
+        Ok(value)
+    }
+
     pub fn pending_frames(&self) -> usize {
         self.flight.pending_frames()
     }
@@ -133,6 +139,18 @@ fn validate(time: f64) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bootstrap_payload_does_not_pretend_its_empty_ack_arrived() {
+        let mut f = TimedFlight::after_payload(22, Wire::Pty).unwrap();
+        f.send(&[1, 2], 0, 1.0, |frame| Ok(frame.len())).unwrap();
+        let trailing = Frame {
+            sequence: 6,
+            payload: &[],
+        };
+        assert!(!f.observe(trailing, 1.001).unwrap().fast_retry);
+        assert!(f.observe(trailing, 1.002).unwrap().fast_retry);
+    }
 
     #[test]
     fn repeats_cached_frames_after_cumulative_ack_and_fast_retry() {

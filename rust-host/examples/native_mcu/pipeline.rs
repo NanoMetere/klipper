@@ -31,7 +31,7 @@ pub(super) fn run(
     {
         return Err("invalid pipeline width or count".into());
     }
-    let mut flight = TimedFlight::established(16 + u64::from(link.sequence), Wire::Pty)
+    let mut flight = TimedFlight::after_payload(16 + u64::from(link.sequence), Wire::Pty)
         .map_err(|e| format!("{e:?}"))?;
     let mut planner = Planner::new(1, width).map_err(|e| format!("{e:?}"))?;
     let (mut peak, mut retries, mut largest_frame_count) = (0, 0, 0);

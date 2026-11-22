@@ -629,6 +629,23 @@ only its node is retried, with byte-identical data after the sync marker.
 A second drives a healthy node through sequence wraps while a silent
 node times out, then verifies that the healthy node can still send.
 
+## Reproduce the correctness matrix
+
+With a disposable stock checkout at the documented Klipper pin, Python
+3.12 with the normal Klippy dependencies, Rust and a Linux C toolchain:
+
+```sh
+python3 bench/check_parity.py --upstream /path/to/pinned/klipper
+# With a native Linux MCU build in that checkout (read-only PTY tests):
+python3 bench/check_parity.py --upstream /path/to/pinned/klipper --native-pty
+```
+
+The runner checks the pin and reports each independent test matrix;
+it does not install anything or start a real printer service. The full
+local run passed 25/25 phases, including debug/release/no-default unit
+tests and disposable native MCU PTY fault cases. The Toolchanger legacy
+probe baseline remains a separate multi-checkout test.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

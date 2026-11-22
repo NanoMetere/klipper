@@ -73,6 +73,15 @@ impl Flight {
         }
     }
 
+    /// Transfer from an identify payload without assuming its following
+    /// empty ACK has already been drained. The first empty ACK at this
+    /// sequence confirms that boundary instead of requesting a retry.
+    pub fn after_payload(sequence: u64) -> Self {
+        let mut ledger = Self::established(sequence);
+        ledger.empty_ack = sequence.saturating_sub(1);
+        ledger
+    }
+
     pub fn pending_frames(&self) -> usize {
         self.pending.len()
     }

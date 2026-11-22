@@ -149,6 +149,8 @@ def main():
                     assert math.isclose(x, y, rel_tol=2e-12, abs_tol=2e-12), (row, expected, actual)
                     max_abs = max(max_abs, abs(x-y))
         print(f"{counts}; maximum profile field absolute difference {max_abs:g}")
+        if args.rounds == 0:
+            return
         timings = {k: [] for k in programs}
         reference = None
         for i in range(args.rounds):

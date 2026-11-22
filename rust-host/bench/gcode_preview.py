@@ -226,6 +226,8 @@ def main():
                 max_abs = max(max_abs, abs(a-b))
         print(f"{counts}; maximum absolute difference {max_abs:g}")
 
+        if args.rounds == 0:
+            return
         results = {kind: [] for kind in commands}
         total = None
         for i in range(args.rounds):
