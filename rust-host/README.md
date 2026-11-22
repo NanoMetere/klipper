@@ -1021,6 +1021,19 @@ taskset -c 2 python3 bench/virtual_job_timing.py /path/to/baseline/virtual_job_t
   target/release/examples/virtual_job_timing --rounds 25
 ```
 
+Step payloads now keep their bytes in an inline 18-byte buffer, sized
+for the worst-case Klipper VLQ fields. Output bytes, required ticks
+and emission ordering are unchanged; command preparation no longer
+allocates a separate byte vector per record. With 16 lanes and 73,156
+commands, construction (validation, encoding and queue creation) was
+23–38% faster in the three 25-round paired workloads. This measures
+inert Rust job preparation, not an MCU transfer.
+
+```sh
+taskset -c 3 python3 bench/virtual_job_timing.py /path/to/baseline/virtual_job_timing \
+  target/release/examples/virtual_job_timing --prepare --rounds 25
+```
+
 ## Offline motion wire encoding
 
 `step_wire` uses the identified dictionary's actual `set_next_step_dir`

@@ -11,7 +11,8 @@ use std::time::Instant;
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    assert_eq!(args.len(), 3);
+    let prepare = args.get(3).is_some_and(|v| v == "--prepare");
+    assert!(args.len() == if prepare { 4 } else { 3 });
     let parse = |i: usize| args[i].parse::<usize>().unwrap();
     let (n, rounds, variation) = (parse(0), parse(1), parse(2));
     assert!((1..=16).contains(&n) && (1..=100).contains(&rounds) && variation < 3);
@@ -51,7 +52,9 @@ fn main() {
     let borrowed = all.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let oids = (0..n as u8).map(|lane| lane + 7).collect::<Vec<_>>();
     for _ in 0..=rounds {
+        let start = Instant::now();
         let mut job = Job::for_lanes(&codec, &borrowed, &oids, 0, end, 1).unwrap();
+        let prepare_ns = start.elapsed().as_nanos();
         job.start(0).unwrap();
         let mut tick = 0;
         let mut elapsed = 0_u128;
@@ -81,6 +84,7 @@ fn main() {
                 .min(end);
         }
         assert_eq!(count, job.snapshot().total);
-        println!("{elapsed} {count} {hash}");
+        let ns = if prepare { prepare_ns } else { elapsed };
+        println!("{ns} {count} {hash}");
     }
 }

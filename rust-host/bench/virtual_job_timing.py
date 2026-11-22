@@ -12,6 +12,7 @@ def main():
     p.add_argument("baseline", type=Path)
     p.add_argument("candidate", type=Path)
     p.add_argument("--rounds", type=int, default=15)
+    p.add_argument("--prepare", action="store_true", help="time job construction instead of polling")
     a = p.parse_args()
     if not 1 <= a.rounds <= 30:
         p.error("--rounds must be 1–30")
@@ -22,7 +23,8 @@ def main():
             expected = None
             for i in range(a.rounds + 1):
                 for label in tuple(programs)[::(1 if i % 2 == 0 else -1)]:
-                    raw = subprocess.check_output([programs[label], str(n), "1", str(variant)], text=True)
+                    raw = subprocess.check_output([programs[label], str(n), "1", str(variant),
+                                                   *(["--prepare"] if a.prepare else [])], text=True)
                     ns, count, digest = map(int, raw.splitlines()[-1].split())
                     expected = expected or (count, digest)
                     assert (count, digest) == expected, (i, n, variant, label, expected, count, digest)

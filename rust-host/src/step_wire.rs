@@ -3,6 +3,7 @@
 //! Encoded payloads do not configure an MCU or drive a device.
 
 use crate::{identify::Dictionary, step_clock::Command, vlq};
+use std::{fmt, ops::Deref};
 
 pub const SET_DIR: &str = "set_next_step_dir oid=%c dir=%c";
 pub const QUEUE: &str = "queue_step oid=%c interval=%u count=%hu add=%hi";
@@ -35,9 +36,68 @@ pub struct StepMessages {
     queue: i32,
 }
 
+// One signed message ID (5 bytes), u8 OID (2), interval (5),
+// u16 count (3) and i16 add (3). Direction messages are smaller.
+const PACKED_MAX: usize = 18;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PayloadBytes {
+    data: [u8; PACKED_MAX],
+    len: u8,
+}
+
+impl PayloadBytes {
+    const fn empty() -> Self {
+        Self {
+            data: [0; PACKED_MAX],
+            len: 0,
+        }
+    }
+
+    fn append(&mut self, value: i32) {
+        vlq::emit(i64::from(value), |b| {
+            self.data[usize::from(self.len)] = b;
+            self.len += 1;
+        });
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.data[..usize::from(self.len)]
+    }
+}
+
+impl Deref for PayloadBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[u8]> for PayloadBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl fmt::Debug for PayloadBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_slice().fmt(f)
+    }
+}
+
+impl IntoIterator for PayloadBytes {
+    type Item = u8;
+    type IntoIter = std::iter::Take<std::array::IntoIter<u8, PACKED_MAX>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.into_iter().take(usize::from(self.len))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Payload {
-    pub bytes: Vec<u8>,
+    pub bytes: PayloadBytes,
     pub required_tick: u64,
     pub earliest_tick: u64,
 }
@@ -108,7 +168,7 @@ impl StepMessages {
         let mut direction = None;
         let mut output = Vec::with_capacity(trace.len());
         for cmd in trace {
-            let mut bytes = Vec::with_capacity(18);
+            let mut bytes = PayloadBytes::empty();
             let mut earliest = 0;
             let required = last;
             match *cmd {
@@ -118,7 +178,7 @@ impl StepMessages {
                     }
                     direction = Some(positive);
                     for v in [self.set_dir, i32::from(oid), i32::from(positive)] {
-                        vlq::encode(&mut bytes, v);
+                        bytes.append(v);
                     }
                 }
                 Command::Steps(b) => {
@@ -146,7 +206,7 @@ impl StepMessages {
                         i32::from(b.count),
                         i32::from(b.add),
                     ] {
-                        vlq::encode(&mut bytes, v);
+                        bytes.append(v);
                     }
                 }
             }
@@ -164,6 +224,59 @@ impl StepMessages {
 mod tests {
     use super::*;
     use crate::step_compress::Block;
+
+    #[test]
+    fn inline_payload_roundtrips_signed_field_extremes() {
+        let codec = StepMessages {
+            set_dir: i32::MAX,
+            queue: i32::MIN,
+        };
+        let width = 0x1000_0000;
+        let records = codec
+            .payloads(
+                u8::MAX,
+                0,
+                &[
+                    Command::SetDirection(true),
+                    Command::Steps(Block {
+                        interval: width,
+                        count: 1,
+                        add: i16::MIN,
+                        last_clock: u64::from(width),
+                    }),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            codec.decode(records[0].bytes.as_ref()),
+            Ok(Message::NextDirection {
+                oid: u8::MAX,
+                positive: true
+            })
+        );
+        assert_eq!(
+            codec.decode(&records[1].bytes),
+            Ok(Message::Block {
+                oid: u8::MAX,
+                interval: width,
+                count: 1,
+                add: i16::MIN
+            })
+        );
+        let field = records[1].bytes;
+        assert_eq!(
+            field.iter().copied().collect::<Vec<_>>(),
+            field.into_iter().collect::<Vec<_>>()
+        );
+        assert!(field.len() <= PACKED_MAX);
+    }
+
+    fn test_bytes(raw: &[u8]) -> PayloadBytes {
+        let mut bytes = PayloadBytes::empty();
+        bytes.data[..raw.len()].copy_from_slice(raw);
+        bytes.len = raw.len() as u8;
+        bytes
+    }
 
     #[test]
     fn decodes_exactly_one_opaque_dictionary_command() {
@@ -238,7 +351,7 @@ mod tests {
         assert_eq!(
             result[0],
             Payload {
-                bytes: vec![1, 8, 0],
+                bytes: test_bytes(&[1, 8, 0]),
                 earliest_tick: 0,
                 required_tick: 100
             }
@@ -246,7 +359,7 @@ mod tests {
         assert_eq!(
             result[1],
             Payload {
-                bytes: vec![2, 8, 0x80, 100, 3, 118],
+                bytes: test_bytes(&[2, 8, 0x80, 100, 3, 118]),
                 earliest_tick: 100,
                 required_tick: 100
             }
@@ -254,7 +367,7 @@ mod tests {
         assert_eq!(
             result[2],
             Payload {
-                bytes: vec![1, 8, 1],
+                bytes: test_bytes(&[1, 8, 1]),
                 earliest_tick: 0,
                 required_tick: 370
             }

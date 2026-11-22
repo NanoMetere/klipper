@@ -2,14 +2,14 @@
 //! Internal integer encoding for Klipper message fields.
 
 pub(crate) fn encode(out: &mut Vec<u8>, value: i32) {
-    encode_wide(out, i64::from(value));
+    emit(i64::from(value), |b| out.push(b));
 }
 
 pub(crate) fn encode_unsigned(out: &mut Vec<u8>, value: u32) {
-    encode_wide(out, i64::from(value));
+    emit(i64::from(value), |b| out.push(b));
 }
 
-fn encode_wide(out: &mut Vec<u8>, value: i64) {
+pub(crate) fn emit(value: i64, mut byte: impl FnMut(u8)) {
     for (low, high, shift) in [
         (-0x0400_0000, 0x0c00_0000, 28),
         (-0x8_0000, 0x18_0000, 21),
@@ -17,10 +17,10 @@ fn encode_wide(out: &mut Vec<u8>, value: i64) {
         (-0x20, 0x60, 7),
     ] {
         if value < low || value >= high {
-            out.push(((value >> shift) as u8 & 0x7f) | 0x80);
+            byte(((value >> shift) as u8 & 0x7f) | 0x80);
         }
     }
-    out.push(value as u8 & 0x7f);
+    byte(value as u8 & 0x7f);
 }
 
 // An unsigned 32-bit field can be encoded either as a positive value by
