@@ -466,7 +466,10 @@ python3 bench/native_gpio_motion.py /path/to/pinned/klipper
 Integration tests verify that a simulated fault drops
 remaining work and that separate Unix stream pairs carry read-only JSON
 subscriptions without accepting G-code or letting one slow client exhaust
-the reply queue. The named Unix listener is optional and its bind/cleanup
+the reply queue. Two-client checks cover disjoint fields, absent-field nulls,
+coalesced requests, replacing subscriptions, unchanged updates and peer
+disconnect. These are direct read-only Klippy protocol checks, not Moonraker
+startup or write-command compatibility. The named Unix listener is optional and its bind/cleanup
 test requires a host that allows local socket binding:
 
 ```sh

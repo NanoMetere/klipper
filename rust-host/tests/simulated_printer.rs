@@ -357,6 +357,109 @@ mod socket_tests {
     }
 
     #[test]
+    fn independent_subscribers_can_replace_requests_without_crossing_streams() {
+        use std::io::Read;
+        let (server_a, mut a) = UnixStream::pair().unwrap();
+        let (server_b, mut b) = UnixStream::pair().unwrap();
+        let mut a_session = StatusConnection::from_stream(server_a).unwrap();
+        let mut b_session = StatusConnection::from_stream(server_b).unwrap();
+        let mut a_reader = BufReader::new(a.try_clone().unwrap());
+        let mut b_reader = BufReader::new(b.try_clone().unwrap());
+        for client in [&a, &b] {
+            client
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+        }
+        let mut source = Snapshot::default();
+        let publish = |source: &mut Snapshot, x, y| {
+            source.set_object(
+                "print_stats".into(),
+                json!({"x":x,"y":y}).as_object().unwrap().clone(),
+            );
+        };
+        let encode = |v: Value| {
+            let mut bytes = serde_json::to_vec(&v).unwrap();
+            bytes.push(ETX);
+            bytes
+        };
+        let read = |stream: &mut BufReader<UnixStream>| {
+            let mut raw = Vec::new();
+            stream.read_until(ETX, &mut raw).unwrap();
+            assert_eq!(raw.pop(), Some(ETX));
+            serde_json::from_slice::<Value>(&raw).unwrap()
+        };
+        let quiet = |stream: &mut BufReader<UnixStream>| {
+            let mut byte = [0];
+            stream.get_ref().set_nonblocking(true).unwrap();
+            assert_eq!(
+                stream.read(&mut byte).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            stream.get_ref().set_nonblocking(false).unwrap();
+        };
+        let subscribe = |id, name, fields: &[&str]| {
+            encode(json!({
+                "id":id,"method":"objects/subscribe","params":{
+                    "objects":{"print_stats":fields},"response_template":{"method":name}
+                }
+            }))
+        };
+        publish(&mut source, 1, 2);
+        let mut coalesced = encode(json!({"id":1,"method":"objects/list"}));
+        coalesced.extend(subscribe(2, "client_a", &["x", "missing"]));
+        a.write_all(&coalesced).unwrap();
+        b.write_all(&subscribe(3, "client_b", &["y"])).unwrap();
+        assert_eq!(a_session.poll(&source, 0.).unwrap().requests, 2);
+        b_session.poll(&source, 0.).unwrap();
+        assert_eq!(
+            read(&mut a_reader)["result"]["objects"],
+            json!(["print_stats"])
+        );
+        assert_eq!(
+            read(&mut a_reader)["result"]["status"]["print_stats"],
+            json!({"x":1,"missing":null})
+        );
+        assert_eq!(
+            read(&mut b_reader)["result"]["status"]["print_stats"],
+            json!({"y":2})
+        );
+        publish(&mut source, 3, 2);
+        a_session.poll(&source, 1.).unwrap();
+        b_session.poll(&source, 1.).unwrap();
+        assert_eq!(
+            read(&mut a_reader)["params"]["status"]["print_stats"],
+            json!({"x":3})
+        );
+        quiet(&mut b_reader);
+        a.write_all(&subscribe(4, "client_a_replaced", &["y"]))
+            .unwrap();
+        a_session.poll(&source, 2.).unwrap();
+        assert_eq!(
+            read(&mut a_reader)["result"]["status"]["print_stats"],
+            json!({"y":2})
+        );
+        publish(&mut source, 4, 2);
+        a_session.poll(&source, 3.).unwrap();
+        b_session.poll(&source, 3.).unwrap();
+        quiet(&mut a_reader);
+        quiet(&mut b_reader);
+        publish(&mut source, 4, 6);
+        a_session.poll(&source, 4.).unwrap();
+        b_session.poll(&source, 4.).unwrap();
+        assert_eq!(read(&mut a_reader)["method"], "client_a_replaced");
+        assert_eq!(read(&mut b_reader)["method"], "client_b");
+        drop(a_reader);
+        drop(a);
+        assert!(a_session.poll(&source, 5.).is_err());
+        publish(&mut source, 4, 7);
+        b_session.poll(&source, 5.).unwrap();
+        assert_eq!(
+            read(&mut b_reader)["params"]["status"]["print_stats"],
+            json!({"y":7})
+        );
+    }
+
+    #[test]
     #[ignore = "requires an environment that permits binding named local Unix sockets"]
     fn listener_binds_only_a_new_path_and_unlinks_its_own_socket() {
         let stamp = SystemTime::now()
