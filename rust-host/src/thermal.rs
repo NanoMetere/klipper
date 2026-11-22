@@ -4,6 +4,7 @@
 //! No sensor, PWM or transport integration. Not suitable for driving a heater.
 pub mod commands;
 mod commands_parse;
+pub mod script;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {

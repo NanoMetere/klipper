@@ -4,6 +4,10 @@ This is an experimental host-side port, not a replacement for Klippy yet. Existi
 Python host code, MCU firmware, and printer configuration are unchanged. Do not
 use this crate to control a printer.
 
+See [validation status and benchmark summary](PORT_STATUS.md) for
+what works, what was measured, and what is still missing.
+
+
 Phase 1 implements the Klipper transport envelope in Rust without third-party
 dependencies: length, destination and sequence, payload, CRC, and sync marker.
 It supports ACK frames, partial input, and decoding one frame from a concatenated
@@ -15,7 +19,9 @@ cargo test
 
 The bootstrap stage now decodes the compressed MCU dictionary and uses its
 message IDs for offline clock and uptime exchanges. Serial/CAN transport, scheduling,
-G-code, and the Klippy socket API for Moonraker are separate later milestones.
+G-code, and the Klippy socket API started as separate milestones. The
+sections below document tested offline/PTY subsets; a live host remains
+out of scope for the current preview.
 Toolchanger and other plugin compatibility is not claimed by this initial port.
 
 The protocol implementation is based on Klipper's GPLv3 host code. See the
@@ -1124,6 +1130,12 @@ can be installed. It does not interpret Klippain's T-number remapping
 or automatically schedule arbitrary job files; bare T selections stay
 distinct from heater indices. Parsed text and typed commands both
 match the 1,848 stock heater handler outcomes in the reference fixture.
+A bounded borrowed-text splitter can now identify such heater
+boundaries in a mixed file while leaving all nonheater G-code and its
+line numbers intact. It does not time, validate, or release motion
+chunks. A future integrated executor must enforce each barrier before
+submitting work from the next motion chunk.
+
 
 
 ## Offline motion wire encoding

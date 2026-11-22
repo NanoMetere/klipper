@@ -9,9 +9,6 @@ pub fn parse_gcode(line: &str) -> Result<Option<Command<'_>>, Error> {
     if text.is_empty() {
         return Ok(None);
     }
-    if text.len() > 8192 {
-        return Err(Error::Syntax);
-    }
     let data = text.as_bytes();
     if data[0].eq_ignore_ascii_case(&b'm') {
         let end = 1 + data[1..].iter().take_while(|v| v.is_ascii_digit()).count();
@@ -22,6 +19,9 @@ pub fn parse_gcode(line: &str) -> Result<Option<Command<'_>>, Error> {
             "190" => 190,
             _ => return Ok(None),
         };
+        if text.len() > 8192 {
+            return Err(Error::Syntax);
+        }
         if data.get(end) == Some(&b'.') {
             // A renamed Klippy macro implementation is not this command.
             return Ok(None);
@@ -75,6 +75,9 @@ pub fn parse_gcode(line: &str) -> Result<Option<Command<'_>>, Error> {
     let set = name.eq_ignore_ascii_case("SET_HEATER_TEMPERATURE");
     if !set && !name.eq_ignore_ascii_case("TEMPERATURE_WAIT") {
         return Ok(None);
+    }
+    if text.len() > 8192 {
+        return Err(Error::Syntax);
     }
     let mut source = None;
     let mut target = None;
