@@ -95,6 +95,7 @@ fn gearing(raw: Option<&str>) -> Option<f64> {
 }
 
 /// All values are for offline simulation; no physical thermistor is read.
+#[derive(Clone, Copy)]
 pub struct SimulatedExtruder<'a> {
     pub geometry: &'a Extruder,
     pub temperature: f64,
@@ -104,6 +105,7 @@ pub struct SimulatedExtruder<'a> {
 }
 
 /// A bounded fixture's per-tool motion calibration and starting local E.
+#[derive(Clone, Copy)]
 pub struct ToolLane<'a> {
     pub id: u8,
     pub parked_e: f64,
@@ -112,6 +114,7 @@ pub struct ToolLane<'a> {
 
 /// Two synthetic lanes and a scripted, proof-gated exchange. The observed
 /// ID and virtual homing evidence are simulation-only inputs.
+#[derive(Clone, Copy)]
 pub struct DockInput<'a> {
     pub catalog: &'a toolchange::Catalog,
     pub outgoing: ToolLane<'a>,
@@ -380,6 +383,79 @@ impl Machine {
         result.map_err(|e| extruder_error.map_or(Error::Dock(e), Error::Extrusion))
     }
 
+    /// Produce an inert motion trace only after the exchange is fully
+    /// validated and the observed pickup satisfies the configured policy.
+    /// Failure during step encoding leaves the prior changer state intact.
+    #[allow(clippy::too_many_arguments)]
+    pub fn trace_dock(
+        &self,
+        home: &VirtualHoming,
+        changer: &mut toolchange::Changer,
+        input: DockInput<'_>,
+        at: f64,
+        clock: Clock,
+        max_error: u32,
+        invert: [bool; 3],
+    ) -> Result<MultiTrace, Error> {
+        if !(0.0..1e12).contains(&at) || at == 0.0 {
+            return Err(Error::InitialPosition);
+        }
+        let start = home
+            .ready_position_for(self.homing_kinematics(), self.motor_step)
+            .map_err(Error::VirtualHoming)?;
+        let lanes = [input.outgoing, input.incoming];
+        let mut trial = changer.clone();
+        let draft = match self.preview_dock(home, &mut trial, input) {
+            Ok(draft) => draft,
+            Err(error) => {
+                if trial.state() == toolchange::State::Faulted {
+                    *changer = trial;
+                }
+                return Err(error);
+            }
+        };
+        let mut xyz = Trajectory::new(16_384).map_err(Error::Trajectory)?;
+        let mut all_e = vec![
+            Trajectory::new(16_384).map_err(Error::Trajectory)?,
+            Trajectory::new(16_384).map_err(Error::Trajectory)?,
+        ];
+        let mut time = at;
+        let mut switches = Vec::new();
+        for group in draft.groups {
+            let lane = usize::from(group.tool == input.incoming.id);
+            if lane == 1 {
+                switches.push(PlannedTool {
+                    id: group.tool,
+                    at: time,
+                });
+            }
+            for output in group.phases {
+                for profile in output.moves {
+                    extrusion::append_nominal(&mut all_e[lane], time, &profile)
+                        .map_err(Error::Trajectory)?;
+                    append_move(&mut xyz, &mut time, &profile).map_err(Error::Trajectory)?;
+                }
+                time += output.dwell_seconds.unwrap_or(0.);
+                if !time.is_finite() || time >= 1e12 {
+                    return Err(Error::Trajectory(trajectory::Error::Invalid));
+                }
+            }
+        }
+        let trace = self.lane_traces(
+            &xyz,
+            all_e,
+            &lanes,
+            start,
+            clock,
+            max_error,
+            invert,
+            switches,
+            time - at,
+        )?;
+        *changer = trial;
+        Ok(trace)
+    }
+
     /// Preview bare T selections as topology changes with no physical
     /// docking or plugin calls. Every selected tool, including a trailing
     /// motionless T command, must be present in the declared lane list.
@@ -575,6 +651,32 @@ impl Machine {
                 dwell_seconds: None,
             },
         )?;
+        self.lane_traces(
+            &xyz,
+            all_e,
+            lanes,
+            start,
+            clock,
+            max_error,
+            invert,
+            switches,
+            time - at,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lane_traces(
+        &self,
+        xyz: &Trajectory,
+        all_e: Vec<Trajectory>,
+        lanes: &[ToolLane<'_>],
+        start: [f64; 3],
+        clock: Clock,
+        max_error: u32,
+        invert: [bool; 3],
+        switches: Vec<PlannedTool>,
+        duration: f64,
+    ) -> Result<MultiTrace, Error> {
         let mut motors = std::array::from_fn(|_| Vec::new());
         for (i, out) in motors.iter_mut().enumerate() {
             let axis = self.motor_axis[i];
@@ -584,13 +686,13 @@ impl Machine {
                 .filter(|s| s.is_enabled_for(axis))
             {
                 let e = shaper
-                    .crossings(&xyz, axis, self.motor_step[i], start)
+                    .crossings(xyz, axis, self.motor_step[i], start)
                     .map_err(Error::Solver)?;
                 *out = step_clock::encode_trace(clock, &e, max_error, invert[i])
                     .map_err(Error::Clock)?;
             } else {
                 *out = step_lane(
-                    &xyz,
+                    xyz,
                     axis,
                     self.motor_step[i],
                     start,
@@ -626,7 +728,7 @@ impl Machine {
             motors,
             tools,
             switches,
-            duration: time - at,
+            duration,
         })
     }
 

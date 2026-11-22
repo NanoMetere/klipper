@@ -484,7 +484,13 @@ The machine-bound variant also checks virtual homing, XYZ travel, Z
 velocity/acceleration and the correct lane's modeled extrusion limits
 during every staged move, including automatic restore. Tests reject a
 cold incoming lane, out-of-bounds dock coordinates and an offset that
-would put restore travel outside the virtual envelope.
+would put restore travel outside the virtual envelope. The proof-gated
+path can then encode the complete dock/restore and separate E lanes.
+It commits the modeled tool only after step encoding succeeds.
+The attested GPIO-free MCU fixture runs that trace in 29 frames,
+matches 213 commands and checks five counters at 17 points. Wrong
+pickup evidence yields no trace; a step encoding error keeps the
+previous modeled tool. No real motor, probe, or dock is exercised.
 
 ## Inert multiple-extruder coordinates
 

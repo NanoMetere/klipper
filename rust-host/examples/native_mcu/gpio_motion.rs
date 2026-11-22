@@ -10,12 +10,13 @@ use klipper_host_protocol::{
     gcode_macros::Registry,
     homing::Counter,
     identify::Dictionary,
-    machine_preview::{Machine, SimulatedExtruder, ToolLane, ToolSegment},
+    machine_preview::{DockInput, Machine, SimulatedExtruder, ToolLane, ToolSegment},
     mcu_config::Messages,
     pressure_advance::Advance,
     simulated_printer::{Input, Simulation},
     step_clock::{Clock, Command},
     step_wire::StepMessages,
+    toolchange::{Catalog, Scripts},
     virtual_job::{Issued, Job, Snapshot, State},
     virtual_stepper::Stepper,
     MAX_PAYLOAD,
@@ -60,6 +61,7 @@ pub(super) fn run(
     extrusion: bool,
     batch: bool,
     multitool: usize,
+    dock: bool,
 ) -> Result<(), String> {
     // Fail before any configuration or motion command to an unmarked peer.
     let motion = Codec::from_dictionary(dictionary).map_err(err)?;
@@ -83,6 +85,9 @@ pub(super) fn run(
         printer.push_str(
             "\n[input_shaper]\nshaper_freq_x: 56.6\nshaper_type_y: ei\nshaper_freq_y: 48.4\n",
         );
+    }
+    if dock {
+        printer.push_str("\n[toolchanger]\n[tool T0]\ntool_number:0\ndetection_pin:A\n[tool T2]\ntool_number:2\ndetection_pin:B\ngcode_x_offset:0.25\n");
     }
     let cfg = config::parse(
         &BTreeMap::from([
@@ -125,7 +130,9 @@ pub(super) fn run(
     })
     .map_err(err)?;
     let advance = Advance::new(0.04, &[(0.0, 0.04)]).map_err(err)?;
-    let count = if multitool > 0 {
+    let count = if dock {
+        5
+    } else if multitool > 0 {
         3 + multitool
     } else if extrusion {
         4
@@ -140,8 +147,8 @@ pub(super) fn run(
         inverse_direction: false,
         pressure_advance: Some(&advance),
     };
-    let mut simulation = if multitool > 0 {
-        let sparse = multitool == 3;
+    let mut simulation = if multitool > 0 || dock {
+        let sparse = multitool == 3 || dock;
         let ids = if sparse { [0, 2, 6, 2] } else { [0, 1, 0, 1] };
         let pieces = [
             ToolSegment {
@@ -183,17 +190,55 @@ pub(super) fn run(
             time_origin: 0.,
             hz,
         };
-        let trace = machine
-            .trace_tool_segments(
-                &home,
-                &pieces[..multitool + 1],
-                &lanes[..multitool],
-                2.0,
-                clock,
-                20,
-                [false; 3],
-            )
-            .map_err(err)?;
+        let trace = if dock {
+            let catalog = Catalog::from_config(&cfg).map_err(err)?;
+            let scripts = Scripts {
+                before: "M83\nG1 E-.1 F600",
+                dropoff: "G0 X10 Y12 Z1 F1200",
+                pickup: "M83\nG1 E.15 F600",
+                after: "G1 E.05 F600",
+            };
+            let trial = |observed, changer: &mut _| {
+                machine.trace_dock(
+                    &home,
+                    changer,
+                    DockInput {
+                        catalog: &catalog,
+                        outgoing: lanes[0],
+                        incoming: lanes[1],
+                        scripts,
+                        detected_after_pickup: observed,
+                    },
+                    2.,
+                    clock,
+                    20,
+                    [false; 3],
+                )
+            };
+            let mut changer = catalog.build().map_err(err)?;
+            changer.initialize_from_detection(Some(0)).map_err(err)?;
+            if trial(Some(0), &mut changer).is_ok() || changer.active().is_some() {
+                return Err("wrong detected tool yielded a draft".into());
+            }
+            changer.initialize_from_detection(Some(0)).map_err(err)?;
+            let ready = trial(Some(2), &mut changer).map_err(err)?;
+            if changer.active() != Some(2) {
+                return Err("verified dock failed to commit simulated tool".into());
+            }
+            ready
+        } else {
+            machine
+                .trace_tool_segments(
+                    &home,
+                    &pieces[..multitool + 1],
+                    &lanes[..multitool],
+                    2.0,
+                    clock,
+                    20,
+                    [false; 3],
+                )
+                .map_err(err)?
+        };
         let traces: Vec<_> = trace
             .motors
             .iter()

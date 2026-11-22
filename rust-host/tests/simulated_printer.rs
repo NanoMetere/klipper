@@ -854,4 +854,89 @@ fn checked_dock_applies_lane_geometry_to_staged_and_restore_moves() {
             ChangerState::Faulted
         )
     ));
+    // No draft can change the committed tool if later step encoding fails.
+    let lane = |id, distance| ToolLane {
+        id,
+        parked_e: if id == 0 { 0. } else { 1.3 },
+        extruder: SimulatedExtruder {
+            geometry: &geometry,
+            temperature: 210.,
+            step_distance: distance,
+            inverse_direction: false,
+            pressure_advance: None,
+        },
+    };
+    let request = |distance, detect| DockInput {
+        catalog: &reference,
+        outgoing: lane(0, 0.004),
+        incoming: lane(2, distance),
+        scripts: Scripts {
+            before: "M83\nG1 E-.1 F600",
+            dropoff: "G0 X20 Y30 Z3 F1200",
+            pickup: "M83\nG1 E.15 F600",
+            after: "G1 E.05 F600",
+        },
+        detected_after_pickup: detect,
+    };
+    let clock = klipper_host_protocol::step_clock::Clock {
+        last_encoded: 0,
+        time_origin: 0.,
+        hz: 20e6,
+    };
+    let mut changer = reference.build().unwrap();
+    changer.initialize_from_detection(Some(0)).unwrap();
+    assert!(matches!(
+        machine.trace_dock(
+            &home,
+            &mut changer,
+            request(0., Some(2)),
+            2.,
+            clock,
+            20,
+            [false; 3]
+        ),
+        Err(MachineError::Solver(_))
+    ));
+    assert_eq!(changer.active(), Some(0));
+    let trace = machine
+        .trace_dock(
+            &home,
+            &mut changer,
+            request(0.004, Some(2)),
+            2.,
+            clock,
+            20,
+            [false; 3],
+        )
+        .unwrap();
+    assert_eq!(changer.active(), Some(2));
+    assert_eq!(trace.switches.len(), 1);
+    assert_eq!(trace.switches[0].id, 2);
+    assert!(trace.switches[0].at > 2.);
+    let wire = codec();
+    let mut counters = Vec::new();
+    for (id, records) in trace.tools {
+        let mut model = klipper_host_protocol::virtual_stepper::Stepper::new(id, 0, 0);
+        for row in wire.payloads(id, 0, &records).unwrap() {
+            model.accept_payload(&wire, &row.bytes).unwrap();
+        }
+        counters.push(model.advance(u64::MAX).unwrap().position_steps);
+    }
+    assert_eq!(counters, [-25, 50]);
+    let mut changer = reference.build().unwrap();
+    changer.initialize_from_detection(Some(0)).unwrap();
+    assert!(matches!(
+        machine.trace_dock(
+            &home,
+            &mut changer,
+            request(0.004, Some(0)),
+            2.,
+            clock,
+            20,
+            [false; 3]
+        ),
+        Err(MachineError::Dock(Failure::Change(_)))
+    ));
+    assert_eq!(changer.state(), ChangerState::Faulted);
+    assert_eq!(changer.active(), None);
 }

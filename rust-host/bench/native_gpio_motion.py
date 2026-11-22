@@ -68,8 +68,9 @@ def main():
     upstream, binary = a.upstream.resolve(), a.binary.resolve()
     control = run(binary, upstream/"out/klipper.elf")
     assert control.returncode and "NotFixture" in control.stderr, control.stderr
-    sparse_control = run(binary, upstream/"out/klipper.elf", "--gpio-sparse")
-    assert sparse_control.returncode and "NotFixture" in sparse_control.stderr, sparse_control.stderr
+    for flag in ("--gpio-sparse", "--gpio-dock"):
+        check = run(binary, upstream/"out/klipper.elf", flag)
+        assert check.returncode and "NotFixture" in check.stderr, check.stderr
     with tempfile.TemporaryDirectory(prefix="klipper-gpio-stub-") as folder:
         mcu = build(upstream, Path(folder))
         expected_positions = {
@@ -78,6 +79,7 @@ def main():
             "--gpio-batched": [720, -120, 112, 100],
             "--gpio-multitool": [3920, -80, 40, 150, 175],
             "--gpio-sparse": [4080, 400, 40, 100, 155, 50],
+            "--gpio-dock": [20, 20, 0, -25, 50],
         }
         modes = list(expected_positions)
         series = {mode: [] for mode in modes}

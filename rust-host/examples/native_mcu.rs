@@ -458,7 +458,8 @@ mod linux {
             "--gpio-sparse" => 3,
             _ => 0,
         };
-        let gpio_batched = arg == "--gpio-batched" || gpio_multitool != 0;
+        let gpio_dock = arg == "--gpio-dock";
+        let gpio_batched = arg == "--gpio-batched" || gpio_multitool != 0 || gpio_dock;
         let gpio_extrusion = arg == "--gpio-extrusion" || gpio_batched;
         let gpio_fixture = arg == "--gpio-motion" || gpio_extrusion;
         let config_fixture = arg == "--config-fixture" || trigger || gpio_fixture;
@@ -536,6 +537,7 @@ mod linux {
                 gpio_extrusion,
                 gpio_batched,
                 gpio_multitool,
+                gpio_dock,
             );
         }
         if config_fixture {

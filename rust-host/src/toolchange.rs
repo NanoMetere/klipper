@@ -84,12 +84,14 @@ pub struct Policy {
     pub verify_pickup: bool,
 }
 
+#[derive(Clone)]
 struct Change {
     target: Option<u8>,
     operations: Vec<Action>,
     step: usize,
 }
 
+#[derive(Clone)]
 pub struct Changer {
     tools: Vec<u8>,
     policy: Policy,
