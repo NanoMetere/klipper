@@ -3,6 +3,8 @@
 //! Upstream copyright (C) 2018-2019 Eric Callahan <arksine.code@gmail.com>.
 //! No probing, config writes, sensor control, or device access.
 
+pub mod profile;
+
 const MAX_VALUES: usize = 65_536;
 const MAX_CHECKS: f64 = 16_384.0;
 
@@ -26,6 +28,7 @@ pub enum Algorithm {
     },
 }
 
+#[derive(Clone)]
 pub struct Mesh {
     min: [f64; 2],
     count: [usize; 2],
@@ -172,6 +175,19 @@ impl Mesh {
             })
     }
 
+    fn average(&self) -> f64 {
+        let total: f64 = self
+            .dense
+            .chunks(self.count[0])
+            .map(|row| row.iter().sum::<f64>())
+            .sum();
+        let average = total / self.dense.len() as f64;
+        // Stock's reported default target is rounded to hundredths.
+        format!("{average:.2}")
+            .parse()
+            .expect("bounded finite mesh average")
+    }
+
     pub fn sample(&self, xy: [f64; 2]) -> Result<f64, Error> {
         let mut blend = [0.0; 2];
         let mut index = [0; 2];
@@ -200,6 +216,7 @@ fn lerp(t: f64, a: f64, b: f64) -> f64 {
     (1.0 - t) * a + t * b
 }
 
+#[derive(Clone)]
 pub struct Transform {
     mesh: Mesh,
     fade: Option<(f64, f64, f64)>, // start, end, target
@@ -217,6 +234,17 @@ impl Transform {
         split_z: f64,
         split_distance: f64,
     ) -> Result<Self, Error> {
+        Self::from_parts(mesh, fade, true, tool_z, split_z, split_distance)
+    }
+
+    fn from_parts(
+        mesh: Mesh,
+        fade: Option<(f64, f64, f64)>,
+        explicit_target: bool,
+        tool_z: f64,
+        split_z: f64,
+        split_distance: f64,
+    ) -> Result<Self, Error> {
         if !tool_z.is_finite()
             || !split_z.is_finite()
             || split_z < 0.01
@@ -230,7 +258,7 @@ impl Transform {
             if [start, end, target].iter().any(|x| !x.is_finite())
                 || !(end - start).is_finite()
                 || end - start <= lo.abs().max(hi.abs())
-                || (target != 0.0 && !(lo..=hi).contains(&target))
+                || (explicit_target && target != 0.0 && !(lo..=hi).contains(&target))
             {
                 return Err(Error::Fade);
             }

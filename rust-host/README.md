@@ -530,6 +530,22 @@ taskset -c 2,3,4,5 python3 bench/preview_cli_timing.py \
   --tools --candidate-workers 4 --rounds 40 --moves 2500
 ```
 
+The CLI can explicitly load one fixed version-1 bed mesh profile from
+a regular section or the entry file's Klipper `SAVE_CONFIG` block.
+It reads only the requested saved mesh, never writes configuration,
+and emits a preview constrained by the simulated physical travel after
+mesh compensation. In an interpolation/fade fixture, both config forms
+produced the same 8,797 motor records and 5.781542142 modeled seconds as
+stock ProfileManager + GCodeMove and the C step solver. This does not
+probe a bed, change a profile at runtime, or compose a mesh with scripted
+dock motion.
+
+```sh
+cargo run --locked --release --bin klipper-preview -- --mesh-profile test_surface \
+  examples/preview mesh-saved.cfg examples/preview/path_mesh.gcode \
+  20000000 1 1 .2 printer.cfg rails.cfg
+```
+
 ## Inert multiple-extruder coordinates
 
 Switching a virtual extruder now returns the pending profiles tagged for

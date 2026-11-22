@@ -3,6 +3,7 @@
 //! No powered homing, peripherals, tool/pin setup or hardware I/O.
 
 use crate::{
+    bed_mesh,
     config::Config,
     extrusion::{self, Extruder},
     gcode::{self, Output, Preview, TransformOwner},
@@ -58,6 +59,7 @@ pub struct Machine {
     z_accel: f64,
     arc_resolution: Option<f64>,
     fixed_shaper: Option<Shaper>,
+    fixed_mesh: Option<bed_mesh::Transform>,
     lane_workers: usize,
 }
 
@@ -221,6 +223,7 @@ impl Machine {
             arc_resolution,
             fixed_shaper: input_shaper_defs::from_config(config)
                 .map_err(|field| config_error("input_shaper", field))?,
+            fixed_mesh: None,
             lane_workers: 1,
         })
     }
@@ -246,6 +249,12 @@ impl Machine {
         }
         self.lane_workers = count;
         Ok(self)
+    }
+
+    /// Enable one fixed offline mesh. This does not calibrate or probe it.
+    pub fn with_bed_mesh(mut self, mesh: bed_mesh::Transform) -> Self {
+        self.fixed_mesh = Some(mesh);
+        self
     }
 
     pub fn with_input_shaper(mut self, shaper: Shaper) -> Self {
@@ -325,6 +334,9 @@ impl Machine {
         let start = home
             .ready_position_for(self.homing_kinematics(), self.motor_step)
             .map_err(Error::VirtualHoming)?;
+        if self.fixed_mesh.is_some() {
+            return Err(Error::Unsupported);
+        }
         if !self.in_range(&start) || input.outgoing.id == input.incoming.id {
             return Err(Error::ToolSegment);
         }
@@ -573,6 +585,11 @@ impl Machine {
         preview
             .activate_extruder_position(first.parked_e)
             .map_err(|error| Error::Gcode { line: 0, error })?;
+        if let Some(mesh) = &self.fixed_mesh {
+            preview
+                .install_bed_mesh(mesh.clone())
+                .map_err(|error| Error::Gcode { line: 0, error })?;
+        }
         if let Some(resolution) = self.arc_resolution {
             preview
                 .enable_arcs(resolution)
@@ -779,6 +796,11 @@ impl Machine {
             [start[0], start[1], start[2], 0.0],
         )
         .map_err(|error| Error::Gcode { line: 0, error })?;
+        if let Some(mesh) = &self.fixed_mesh {
+            preview
+                .install_bed_mesh(mesh.clone())
+                .map_err(|error| Error::Gcode { line: 0, error })?;
+        }
         if let Some(resolution) = self.arc_resolution {
             preview
                 .enable_arcs(resolution)

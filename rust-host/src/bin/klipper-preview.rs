@@ -2,7 +2,7 @@
 //! Offline config + G-code to JSON step command trace. Never opens a printer.
 
 use klipper_host_protocol::{
-    config,
+    bed_mesh, config,
     gcode_macros::Registry,
     machine_preview::{tool_profiles, Machine},
     step_clock::{Clock, Command},
@@ -22,7 +22,7 @@ use std::{
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 const HELP: &str =
-    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
+    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] [--mesh-profile NAME] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
     ROOT contains config files; ENTRY and INCLUDE paths must be relative to it.\n\
     List every included file needed, including matches for wildcard includes.\n\
     XYZ is the explicit virtual starting position in millimeters.\n\
@@ -30,7 +30,8 @@ const HELP: &str =
     --virtual-sd previews complete LF-delimited lines and reports the byte checkpoint.\n\
     --tool-temps supplies one modeled temperature per tool ID (e.g. 0:210,2:215).\n\
     --initial-tool defaults to 0. Bare T lines only switch offline lanes; no docking.\n\
-    --lane-workers sets 1–8 motion workers for long multi-tool previews (default 1).";
+    --lane-workers sets 1–8 motion workers for long multi-tool previews (default 1).\n\
+    --mesh-profile uses a saved Klipper mesh for this offline preview.";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -140,6 +141,8 @@ struct PreviewOutput<'a> {
     clock_hz: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     extruder_lanes: Option<Vec<ToolOutput<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mesh_profile: Option<&'a str>,
     mode: &'static str,
     motor_step_distances_mm: [f64; 3],
     motors: [Records<'a>; 3],
@@ -164,6 +167,7 @@ fn run() -> Result<(), String> {
     let mut tool_temps = None;
     let mut initial_tool = None;
     let mut workers = None;
+    let mut mesh_profile = None;
     let mut args = args.as_slice();
     while let Some(flag) = args.first() {
         if flag == "--expand-macros" && !expand_macros {
@@ -190,6 +194,9 @@ fn run() -> Result<(), String> {
                     .parse::<usize>()
                     .map_err(|_| "invalid worker count")?,
             );
+            args = &args[1..];
+        } else if flag == "--mesh-profile" && mesh_profile.is_none() {
+            mesh_profile = Some(args.get(1).ok_or("missing bed mesh profile name")?.as_str());
             args = &args[1..];
         } else {
             break;
@@ -256,9 +263,14 @@ fn run() -> Result<(), String> {
     } else {
         script
     };
-    let machine = Machine::from_config(&parsed)
+    let mut machine = Machine::from_config(&parsed)
         .and_then(|m| m.with_lane_workers(workers.unwrap_or(1)))
         .map_err(|e| format!("machine: {e:?}"))?;
+    if let Some(name) = mesh_profile {
+        let transform = bed_mesh::profile::load(&parsed, &files[entry], name)
+            .map_err(|e| format!("mesh profile: {e:?}"))?;
+        machine = machine.with_bed_mesh(transform);
+    }
     let clock = Clock {
         last_encoded: 0,
         time_origin: 0.,
@@ -318,6 +330,7 @@ fn run() -> Result<(), String> {
     let out = PreviewOutput {
         clock_hz: hz,
         extruder_lanes,
+        mesh_profile,
         mode: "offline",
         motor_step_distances_mm: machine.step_distances(),
         motors: std::array::from_fn(|i| Records(&motors[i])),

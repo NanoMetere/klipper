@@ -75,6 +75,8 @@ def main():
                               "--binary", examples/"multi_extruder_replay"]),
         ("tool_motion", [sys.executable, ROOT/"bench/tool_motion.py", upstream,
                            "--binary", examples/"tool_motion_replay", "--cli-binary", target/"release/klipper-preview"]),
+        ("mesh_profile_motion", [sys.executable, ROOT/"bench/mesh_profile_motion.py", upstream,
+                                 "--binary", target/"release/klipper-preview"]),
         ("fan", [sys.executable, ROOT/"bench/fan.py", upstream,
                   "--binary", examples/"fan_replay"]),
         ("thermal_commands", [sys.executable, ROOT/"bench/thermal_commands.py", upstream,
