@@ -43,6 +43,7 @@ pub struct Machine {
     limits: Limits,
     z_velocity: f64,
     z_accel: f64,
+    arc_resolution: Option<f64>,
 }
 
 fn config_error(section: &'static str, option: &'static str) -> Error {
@@ -144,6 +145,15 @@ impl Machine {
             }
             motor_step[i] = step;
         }
+        let arc_resolution = if config.values("gcode_arcs").is_some() {
+            let resolution = number(config, "gcode_arcs", "resolution", Some(1.0))?;
+            if resolution <= 0.0 {
+                return Err(config_error("gcode_arcs", "resolution"));
+            }
+            Some(resolution)
+        } else {
+            None
+        };
         Ok(Self {
             motor_axis,
             motor_step,
@@ -151,6 +161,7 @@ impl Machine {
             limits,
             z_velocity,
             z_accel,
+            arc_resolution,
         })
     }
 
@@ -204,6 +215,11 @@ impl Machine {
             [start[0], start[1], start[2], 0.0],
         )
         .map_err(|error| Error::Gcode { line: 0, error })?;
+        if let Some(resolution) = self.arc_resolution {
+            preview
+                .enable_arcs(resolution)
+                .map_err(|error| Error::Gcode { line: 0, error })?;
+        }
         let mut queue = Trajectory::new(16_384).map_err(Error::Trajectory)?;
         let mut e_queue = if extruder.is_some() {
             Some(Trajectory::new(16_384).map_err(Error::Trajectory)?)

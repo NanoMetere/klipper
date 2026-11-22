@@ -696,6 +696,23 @@ updates remain in the timed path. This result differs from the pure
 Rust look-ahead benchmark and does not justify running the bridge by
 default.
 
+## Offline arc interpolation
+
+`gcode::Preview` can enable the optional arc extension; the machine preview
+also reads an optional `[gcode_arcs]` / `resolution` section. It supports
+G2/G3 with plane-specific I/J/K offsets, G17/G18/G19, helical motion,
+full circles and proportional E. Relative XYZ and R-format arcs are
+rejected as in stock. A request may generate at most 4,096 linear moves.
+
+```sh
+python3 bench/gcode_arcs.py /path/to/pinned/klipper
+```
+
+A synthetic fixture matched the stock `ArcSupport` G-code handler and
+subsequent stock motion look-ahead: 864 state/flush snapshots and 6,761
+move profiles agreed exactly. The fixture includes all three planes,
+absolute and relative E, and short arcs. Nothing is sent to hardware.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

@@ -62,9 +62,12 @@ fn directive(preview: &mut Preview, line: &str) {
     }
 }
 
-fn solve(lines: &[String], emit: bool) -> (usize, f64) {
+fn solve(lines: &[String], emit: bool, arcs: bool) -> (usize, f64) {
     let limits = Limits::new(160.0, 2500.0, 5.0, 0.5).unwrap();
     let mut p = Preview::new(limits, 4096, Some(1.0)).unwrap();
+    if arcs {
+        p.enable_arcs(0.28).unwrap();
+    }
     let mut n = 0;
     let mut time = 0.0;
     let mut consume = |p: &Preview, out: Output| {
@@ -99,12 +102,14 @@ fn solve(lines: &[String], emit: bool) -> (usize, f64) {
 
 fn main() {
     let lines: Vec<_> = io::stdin().lock().lines().map(Result::unwrap).collect();
-    if std::env::args().nth(1).is_some() {
-        black_box(solve(&lines, false));
+    let args: Vec<_> = std::env::args().collect();
+    let arcs = args.iter().any(|a| a == "--arcs");
+    if args.iter().any(|a| a == "--bench") {
+        black_box(solve(&lines, false, arcs));
         let start = Instant::now();
-        let (n, time) = black_box(solve(&lines, false));
+        let (n, time) = black_box(solve(&lines, false, arcs));
         println!("{} {n} {time:.17e}", start.elapsed().as_nanos());
     } else {
-        solve(&lines, true);
+        solve(&lines, true, arcs);
     }
 }

@@ -56,7 +56,7 @@ def fixture():
             yield cmd + sep + sep.join(f"{a}{values[a]:.6f}" for a in axes)
 
 
-def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=None):
+def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=None, arc_resolution=None):
     from extras.gcode_move import GCodeMove
     from gcode import GCodeDispatch
     from kinematics.extruder import PrinterExtruder
@@ -81,6 +81,13 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
                               config_error=ValueError)
     dispatch.printer = printer
     coords = GCodeMove(SimpleNamespace(get_printer=lambda: printer))
+
+    if arc_resolution is not None:
+        from extras.gcode_arcs import ArcSupport
+        objects["gcode_move"] = coords
+        printer.load_object = lambda _, name: objects[name]
+        ArcSupport(SimpleNamespace(get_printer=lambda: printer,
+                                  getfloat=lambda *_, **__: arc_resolution))
 
     axis = SimpleNamespace(instant_corner_v=1.0, check_move=lambda *_: None)
     axis.calc_junction = lambda a, b, i: PrinterExtruder.calc_junction(axis, a, b, i)

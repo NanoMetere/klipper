@@ -6,6 +6,8 @@
 use crate::lookahead::{self, Limits, LookAhead, Move, Profile};
 use std::collections::BTreeMap;
 
+#[path = "gcode/arcs.rs"]
+mod arcs;
 #[path = "gcode/extended.rs"]
 mod extended;
 #[path = "gcode/transform.rs"]
@@ -28,6 +30,7 @@ pub enum Error {
     StateLimit,
     TransformOwner,
     TransformLimit,
+    ArcLimit,
     Motion(lookahead::Error),
 }
 
@@ -101,25 +104,7 @@ impl State {
         let result = match (words.family, words.code) {
             (b'G', 0 | 1) => {
                 words.allow(b"XYZEF")?;
-                for (i, axis) in AXES.into_iter().enumerate() {
-                    if let Some(mut value) = words.get(axis) {
-                        if i == 3 {
-                            value *= next.flow;
-                        }
-                        let absolute = next.absolute_xyz && (i != 3 || next.absolute_e_allowed);
-                        next.last[i] = value + if absolute { next.base[i] } else { next.last[i] };
-                    }
-                }
-                if let Some(feed) = words.get(b'F') {
-                    if feed <= 0.0 {
-                        return Err(Error::InvalidParameter);
-                    }
-                    next.speed = feed * next.speed_factor;
-                }
-                Effect::Linear {
-                    position: next.last,
-                    speed: next.speed,
-                }
+                next.linear(AXES.map(|axis| words.get(axis)), words.get(b'F'))?
             }
             (b'G', 92) => {
                 words.allow(b"XYZE")?;
@@ -182,6 +167,28 @@ impl State {
         next.validate()?;
         *self = next;
         Ok(result)
+    }
+
+    fn linear(&mut self, xyze: [Option<f64>; 4], feed: Option<f64>) -> Result<Effect, Error> {
+        for (i, value) in xyze.into_iter().enumerate() {
+            if let Some(mut value) = value {
+                if i == 3 {
+                    value *= self.flow;
+                }
+                let absolute = self.absolute_xyz && (i != 3 || self.absolute_e_allowed);
+                self.last[i] = value + if absolute { self.base[i] } else { self.last[i] };
+            }
+        }
+        if let Some(feed) = feed {
+            if feed <= 0.0 {
+                return Err(Error::InvalidParameter);
+            }
+            self.speed = feed * self.speed_factor;
+        }
+        Ok(Effect::Linear {
+            position: self.last,
+            speed: self.speed,
+        })
     }
 
     fn validate(&self) -> Result<(), Error> {
@@ -299,6 +306,7 @@ pub struct Preview {
     coords: State,
     saved: BTreeMap<String, State>,
     transform: transform::Stack,
+    arcs: Option<arcs::Mode>,
     failed: bool,
     planner: LookAhead,
     limits: Limits,
@@ -329,6 +337,7 @@ impl Preview {
             },
             saved: BTreeMap::new(),
             transform: transform::Stack::default(),
+            arcs: None,
             failed: false,
             planner,
             limits,
@@ -378,6 +387,12 @@ impl Preview {
         Ok(())
     }
 
+    /// Enable the optional stock G2/G3 plane extension for this offline preview.
+    pub fn enable_arcs(&mut self, resolution_mm: f64) -> Result<(), Error> {
+        self.arcs = Some(arcs::Mode::new(resolution_mm)?);
+        Ok(())
+    }
+
     pub fn line(&mut self, line: &str) -> Result<Output, Error> {
         self.line_with(line, |_, _| Ok(()))
     }
@@ -385,10 +400,34 @@ impl Preview {
     pub(crate) fn line_with(
         &mut self,
         line: &str,
-        check: impl FnOnce([f64; 4], &mut Move) -> Result<(), Error>,
+        mut check: impl FnMut([f64; 4], &mut Move) -> Result<(), Error>,
     ) -> Result<Output, Error> {
         if self.failed {
             return Err(Error::InvalidSession);
+        }
+        if let Some(mode) = &mut self.arcs {
+            if let Some(ops) = mode.commands(line, &self.coords)? {
+                let mut output = Output::default();
+                for (position, feed) in ops {
+                    let result = (|| {
+                        let mut next = self.coords;
+                        let Effect::Linear { position, speed } = next.linear(position, feed)?
+                        else {
+                            unreachable!()
+                        };
+                        next.validate()?;
+                        self.queue_move(position, speed, &mut check, &mut output)?;
+                        self.coords = next;
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        // A partially planned arc is never exposed or replayed.
+                        self.failed = true;
+                        return Err(error);
+                    }
+                }
+                return Ok(output);
+            }
         }
         let mut candidate = self.coords;
         let effect = match extended::apply(&mut candidate, &mut self.saved, line)? {
@@ -398,18 +437,7 @@ impl Preview {
         let mut out = Output::default();
         match effect {
             Effect::Linear { position, speed } => {
-                let position = self.transform.physical(position)?;
-                if let Some(mut move_) =
-                    Move::optional(self.limits, self.toolhead, position, speed)?
-                {
-                    check(self.toolhead, &mut move_)?;
-                    let end = move_.end_position();
-                    let lazy = self.planner.push(move_)?;
-                    self.toolhead = end;
-                    if lazy {
-                        out.moves = self.flush(true)?;
-                    }
-                }
+                self.queue_move(position, speed, &mut check, &mut out)?
             }
             Effect::Barrier => out.moves = self.finish()?,
             Effect::Dwell(sec) => {
@@ -420,6 +448,26 @@ impl Preview {
         }
         self.coords = candidate;
         Ok(out)
+    }
+
+    fn queue_move(
+        &mut self,
+        position: [f64; 4],
+        speed: f64,
+        check: &mut impl FnMut([f64; 4], &mut Move) -> Result<(), Error>,
+        out: &mut Output,
+    ) -> Result<(), Error> {
+        let position = self.transform.physical(position)?;
+        if let Some(mut move_) = Move::optional(self.limits, self.toolhead, position, speed)? {
+            check(self.toolhead, &mut move_)?;
+            let end = move_.end_position();
+            let lazy = self.planner.push(move_)?;
+            self.toolhead = end;
+            if lazy {
+                out.moves.extend(self.flush(true)?);
+            }
+        }
+        Ok(())
     }
 
     pub fn finish(&mut self) -> Result<Vec<Profile>, Error> {
@@ -572,6 +620,24 @@ mod tests {
         p.unwrap_translation(TransformOwner(2)).unwrap();
         p.reset_last_position().unwrap();
         assert_eq!(p.coords().position(), [11.0, 10.0, 0.0, 3.0]);
+    }
+
+    #[test]
+    fn arcs_require_opt_in_and_reject_unbounded_or_relative_requests() {
+        let limits = Limits::new(160.0, 2000.0, 5.0, 0.5).unwrap();
+        let mut p = Preview::new(limits, 96, None).unwrap();
+        assert!(p.line("G3 X2 Y1 I1 J0").is_err());
+        p.enable_arcs(0.2).unwrap();
+        p.line("G1 X1 Y0 F900").unwrap();
+        p.line("G17").unwrap();
+        p.line("G3 X0 Y1 Z0.4 I-1 J0").unwrap();
+        assert_eq!(p.coords().gcode_position()[..3], [0.0, 1.0, 0.4]);
+        assert!(matches!(p.line("G3 I1000000 J0"), Err(Error::ArcLimit)));
+        assert_eq!(p.coords().gcode_position()[..3], [0.0, 1.0, 0.4]);
+        p.line("G91").unwrap();
+        assert!(matches!(p.line("G2 X1 I1"), Err(Error::InvalidParameter)));
+        p.line("G90").unwrap();
+        assert!(p.line("G2 X1 R2").is_err());
     }
 
     #[test]
