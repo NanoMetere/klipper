@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Compose an inert scripted tool exchange. No configured plugin macros run.
 
-use super::{Action, Catalog, Changer, Completion, Dock, Error};
+use super::{
+    Action, Catalog, Changer, Completion, Dock, Error, ExtruderPositionError, ExtruderPositions,
+};
 use crate::gcode::{self, Output, Preview, TransformOwner};
 
 #[derive(Debug)]
 pub enum Failure {
     Change(Error),
     Coordinates(gcode::Error),
+    Extruder(ExtruderPositionError),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -26,6 +29,30 @@ pub struct ChangeRequest<'a> {
     pub scripts: Scripts<'a>,
 }
 
+/// Each held output retains the modeled extruder active when it was queued.
+pub struct LaneOutput {
+    pub tool: u8,
+    pub phases: Vec<Output>,
+}
+
+pub struct LanePreview {
+    pub preview: Preview,
+    pub positions: ExtruderPositions,
+    pub groups: Vec<LaneOutput>,
+}
+
+struct Handoff {
+    positions: ExtruderPositions,
+    corner_velocity: Option<f64>,
+    outgoing: Option<LaneOutput>,
+}
+
+struct Exchange {
+    preview: Preview,
+    phases: Vec<Output>,
+    handoff: Option<Handoff>,
+}
+
 impl Catalog {
     /// Offline, all-or-nothing selection. The returned preview and profiles
     /// are released only after the pickup proof and restoration both finish.
@@ -38,6 +65,67 @@ impl Catalog {
         owner: TransformOwner,
         change: ChangeRequest<'_>,
     ) -> Result<(Preview, Vec<Output>), Failure> {
+        let result = self.exchange(changer, preview, owner, change, None)?;
+        Ok((result.preview, result.phases))
+    }
+
+    /// Tag synthetic before/dropoff E moves with the old lane and pickup/
+    /// after moves with the rebased incoming lane, in plugin action order.
+    /// A failed pickup yields no drafts, state or partial motor profiles.
+    /// This does not validate physical extrusion safety or run product macros.
+    pub fn preview_change_lanes(
+        &self,
+        changer: &mut Changer,
+        preview: Preview,
+        owner: TransformOwner,
+        change: ChangeRequest<'_>,
+        positions: ExtruderPositions,
+        incoming_corner_velocity: Option<f64>,
+    ) -> Result<LanePreview, Failure> {
+        let target = change.target.ok_or(Failure::Change(Error::Tool))?;
+        if changer.active() != Some(positions.active())
+            || positions.observed_position(target, &preview).is_none()
+        {
+            return Err(Failure::Extruder(ExtruderPositionError::Unknown));
+        }
+        let result = self.exchange(
+            changer,
+            preview,
+            owner,
+            change,
+            Some(Handoff {
+                positions,
+                corner_velocity: incoming_corner_velocity,
+                outgoing: None,
+            }),
+        )?;
+        let Handoff {
+            positions,
+            outgoing,
+            ..
+        } = result.handoff.expect("lane-aware exchange");
+        let mut groups = outgoing.into_iter().collect::<Vec<_>>();
+        if !result.phases.is_empty() {
+            groups.push(LaneOutput {
+                tool: positions.active(),
+                phases: result.phases,
+            });
+        }
+        Ok(LanePreview {
+            preview: result.preview,
+            positions,
+            groups,
+        })
+    }
+
+    fn exchange(
+        &self,
+        changer: &mut Changer,
+        preview: Preview,
+        owner: TransformOwner,
+        change: ChangeRequest<'_>,
+        mut handoff: Option<Handoff>,
+    ) -> Result<Exchange, Failure> {
         let to = change
             .target
             .map(|target| self.numbered(target).ok_or(Failure::Change(Error::Tool)))
@@ -50,7 +138,11 @@ impl Catalog {
             .select(change.target, change.homed_axes)
             .map_err(Failure::Change)?
         else {
-            return Ok((preview, Vec::new()));
+            return Ok(Exchange {
+                preview,
+                phases: Vec::new(),
+                handoff,
+            });
         };
         let axes = to.or(from).map_or(0, |tool| tool.restore_axes);
         let offset = to.map_or([0.; 3], |tool| tool.nozzle_offset);
@@ -116,7 +208,18 @@ impl Catalog {
                                 .map_err(Failure::Coordinates)?,
                         );
                     }
-                    Action::ApplyToolConfig(_)
+                    Action::ApplyToolConfig(Some(incoming)) => {
+                        if let Some(state) = &mut handoff {
+                            let tool = state.positions.active();
+                            let phases = draft.as_mut().ok_or(missing)?.handoff_extrusion(
+                                &mut state.positions,
+                                incoming,
+                                state.corner_velocity,
+                            )?;
+                            state.outgoing = Some(LaneOutput { tool, phases });
+                        }
+                    }
+                    Action::ApplyToolConfig(None)
                     | Action::SuspendMissingWatch
                     | Action::ResumeMissingWatch(_) => {}
                 }
@@ -124,7 +227,12 @@ impl Catalog {
                     .finish_step(req.ticket, observed)
                     .map_err(Failure::Change)?;
             }
-            done.ok_or(Failure::Change(Error::State))
+            let (preview, phases) = done.ok_or(Failure::Change(Error::State))?;
+            Ok(Exchange {
+                preview,
+                phases,
+                handoff,
+            })
         })();
         if result.is_err() {
             if let Some(req) = changer.current() {
@@ -188,5 +296,66 @@ mod tests {
         assert_eq!(changer.active(), Some(3));
         assert_eq!(p.physical_position(), [13.25, 70., 1., 1.7]);
         assert!(out.iter().any(|o| !o.moves.is_empty()));
+    }
+
+    #[test]
+    fn lane_change_never_yields_a_draft_after_bad_detection_or_bad_pickup_script() {
+        let cfg = catalog();
+        let mut changer = cfg.build().unwrap();
+        let slots = || ExtruderPositions::new(&[(0, 0.), (3, 1.3)], 0).unwrap();
+        let run = |changer: &mut Changer, observed, pickup| {
+            changer.initialize_from_detection(Some(0)).unwrap();
+            let (p, owner) = preview();
+            cfg.preview_change_lanes(
+                changer,
+                p,
+                owner,
+                ChangeRequest {
+                    target: Some(3),
+                    homed_axes: 7,
+                    detected_after_pickup: observed,
+                    scripts: Scripts {
+                        before: "M83\nG1 E-.1 F600",
+                        dropoff: "G0 X40 Y80 Z5\nG1 E-.3 F600",
+                        pickup,
+                        after: "G1 E.2 F600",
+                    },
+                },
+                slots(),
+                Some(0.75),
+            )
+        };
+        assert!(matches!(
+            run(&mut changer, Some(2), "G1 E.1 F600"),
+            Err(Failure::Change(Error::Detection))
+        ));
+        assert_eq!(changer.state(), State::Faulted);
+        assert_eq!(changer.active(), None);
+        assert!(matches!(
+            run(&mut changer, Some(3), "UNKNOWN_COMMAND"),
+            Err(Failure::Coordinates(_))
+        ));
+        assert_eq!(changer.state(), State::Faulted);
+        let ready = run(&mut changer, Some(3), "G1 E.1 F600").unwrap();
+        let measured = ready
+            .groups
+            .iter()
+            .map(|g| {
+                (
+                    g.tool,
+                    g.phases
+                        .iter()
+                        .flat_map(|p| &p.moves)
+                        .map(|m| m.end[3] - m.start[3])
+                        .sum::<f64>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(measured.len(), 2);
+        assert_eq!(measured[0].0, 0);
+        assert_eq!(measured[1].0, 3);
+        assert!((measured[0].1 - 1.6).abs() < 1e-12);
+        assert!((measured[1].1 - 0.3).abs() < 1e-12);
+        assert_eq!(changer.active(), Some(3));
     }
 }

@@ -11,7 +11,7 @@ mod coordinates;
 pub use coordinates::Dock;
 #[path = "toolchange/program.rs"]
 mod program;
-pub use program::{ChangeRequest, Failure, Scripts};
+pub use program::{ChangeRequest, Failure, LaneOutput, LanePreview, Scripts};
 #[path = "toolchange/fan_transfer.rs"]
 mod fan_transfer;
 pub use fan_transfer::{FanError, FanIntent, FanTransfer};

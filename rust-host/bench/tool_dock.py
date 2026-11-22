@@ -25,7 +25,7 @@ def run(lines):
     return list(map(float, state))
 
 
-def fixture(module, old, new, start, target, mask):
+def fixture(module, old, new, start, target, mask, lanes=False):
     vec = lambda values: " ".join(f"{v:.13f}" for v in values)
     cmd = lambda fields, fmt: " ".join(f"{axis}{v:{fmt}}" for axis, v in fields)
     init = [
@@ -59,9 +59,42 @@ def fixture(module, old, new, start, target, mask):
     tc._set_toolchange_transform()
     items += ["G90", "G0 "+cmd(zip("XYZ", target, strict=True), ".13f"), "G91", "M83",
               "G1 E-.3 F600", "M400"]
+    if lanes:
+        tc.active_tool = SimpleNamespace(deactivate=lambda: None)
+        tc.tool_probe_endstop = None
+        next_tool.activate = lambda: items.extend(["M400", "!use"])
+        tc._configure_toolhead_for_tool(next_tool)
+        items += ["G91", "M83", "G1 E.1 F600", "G1 E.2 F600"]
     tc._restore_state_and_transform(next_tool)
-    items += ["M400", "G1 E3.1", "M400"]
-    return run(init+items)
+    items += ["M400", *(["!end_groups"] if lanes else []), "G1 E3.1", "M400"]
+    if not lanes:
+        return run(init+items)
+    active = 0
+    old = None
+    collect = True
+    totals = [0.,0.]
+
+    def visit(line, coords, head):
+        nonlocal active, old, collect
+        if line == "!use":
+            old = head.commanded_pos[3]
+            head.commanded_pos[3] = 1.3
+            coords._handle_activate_extruder()
+            active = 1
+        else:
+            assert line == "!end_groups"
+            collect = False
+
+    def profiles(moves, _):
+        if collect:
+            for m in moves:
+                totals[active] += m.axes_d[3]
+    sink = StringIO()
+    with redirect_stdout(sink):
+        stock(init+items, True, emit_profiles=profiles, extend_directive=visit)
+    final = [l.split()[1:] for l in sink.getvalue().splitlines() if l.startswith("state ")][-1]
+    final = list(map(float, final))
+    return [*final, old, final[15], *totals]
 
 
 def main():
@@ -78,7 +111,7 @@ def main():
     extras.__path__.insert(0, str(a.toolchanger.resolve()/"klipper/extras"))
     module = importlib.import_module("extras.toolchanger")
     rng = random.Random(1150)
-    wanted, script = [], []
+    wanted, wanted_lanes, script = [], [], []
     for i in range(240):
         old = [rng.randint(-150, 150) / 100. for _ in "xyz"]
         new = [rng.randint(-150, 150) / 100. for _ in "xyz"]
@@ -86,12 +119,17 @@ def main():
         target = [rng.randint(2000, 5000) / 100. for _ in "xyz"]
         mask = i % 8
         wanted.append(fixture(module, old, new, start, target, mask))
+        wanted_lanes.append(fixture(module, old, new, start, target, mask, True))
         script.append(" ".join(map(str, [mask,*old,*new,*start,*target])))
-    actual = subprocess.check_output([a.binary], text=True, input="\n".join(script)+"\n")
-    for i, (w, got) in enumerate(zip(wanted, actual.splitlines(), strict=True)):
-        for want, value in zip(w, map(float, got.split()), strict=True):
-            assert math.isclose(want, value, abs_tol=3e-12, rel_tol=3e-12), (i, w, got)
-    print(f"{len(wanted)} stock toolchanger dock/restore cases; {17*len(wanted)} coordinate/feed observations")
+    data = "\n".join(script)+"\n"
+    for args, expected in [([],wanted),(["--lanes"],wanted_lanes)]:
+        actual = subprocess.check_output([a.binary,*args], text=True, input=data)
+        for i, (w, got) in enumerate(zip(expected, actual.splitlines(), strict=True)):
+            for want, value in zip(w, map(float, got.split()), strict=True):
+                assert math.isclose(want, value, abs_tol=3e-12, rel_tol=3e-12), (args, i, w, got)
+        print(f"{len(expected)} stock dock/restore cases; {len(expected[0])*len(expected)} "
+              f"observations {'including sparse extruder lane attribution' if args else 'without lane attribution'}")
+
 
 
 if __name__ == "__main__":

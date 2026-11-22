@@ -84,6 +84,29 @@ impl Dock {
         Ok(self)
     }
 
+    pub(super) fn handoff_extrusion(
+        &mut self,
+        positions: &mut super::ExtruderPositions,
+        incoming: u8,
+        corner_velocity: Option<f64>,
+    ) -> Result<Vec<Output>, super::Failure> {
+        if !self.in_dock {
+            return Err(super::Failure::Coordinates(gcode::Error::InvalidSession));
+        }
+        if let Some((_, previous)) = positions
+            .switch(incoming, &mut self.preview)
+            .map_err(super::Failure::Extruder)?
+        {
+            self.outputs.push(previous);
+        }
+        if let Some(corner_velocity) = corner_velocity {
+            self.preview
+                .set_extruder_corner(corner_velocity)
+                .map_err(super::Failure::Coordinates)?;
+        }
+        Ok(std::mem::take(&mut self.outputs))
+    }
+
     /// Restore the paused nozzle coordinates only on explicitly named axes.
     /// Physical E is preserved, and its logical extrusion base is restored
     /// by the stock-compatible SAVE/RESTORE state engine.

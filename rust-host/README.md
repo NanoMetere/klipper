@@ -470,6 +470,17 @@ T0 → T2 → T6 → T2, preserve all six virtual motor lanes, and verify
 the pause, resume, final filament total and read-only status. The status
 does not attest to actual hardware state or physical docking.
 
+For explicitly supplied synthetic dock programs, the separate lane-aware
+exchange preview follows the stock action ordering: pre-change/dropoff
+extrusion stays on the outgoing lane, and the parked E position of the
+incoming lane is restored before pickup/after-change extrusion. Both
+sets of staged profiles are returned only after detection verification
+(if enabled) and coordinate restoration succeed. A failed pickup or
+malformed synthetic script yields no partial profiles and faults the
+inert changer. The actual stock coordinate/configure handlers and
+GCodeMove activation matched 5,040 fields across 240 supplied cases.
+This does not run actual docking macros or prove a safe physical path.
+
 ## Inert multiple-extruder coordinates
 
 Switching a virtual extruder now returns the pending profiles tagged for
