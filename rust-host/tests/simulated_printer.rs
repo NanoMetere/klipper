@@ -1048,3 +1048,55 @@ fn temperature_wait_blocks_virtual_release_until_the_right_fresh_source() {
     assert!(stopped.advance(end + tick(5.), 256).unwrap().is_empty());
     verify(&mut stopped, false);
 }
+
+#[test]
+fn dispatching_heater_text_only_commits_after_a_valid_motion_gate() {
+    use klipper_host_protocol::thermal::commands::{
+        Bank, Gate, Observation, Output, Profile, Role, Source,
+    };
+    let profiles = [Profile {
+        name: "extruder",
+        role: Role::Extruder(0),
+        minimum: 0.,
+        maximum: 270.,
+    }];
+    let mut bank = Bank::new(&profiles, &[], Some(0), false).unwrap();
+    let mut sim = plan("TEST_PATH\n");
+    assert!(matches!(
+        sim.dispatch_temperature(&mut bank, "G1 X5", 0.5),
+        Ok(None)
+    ));
+    assert!(sim
+        .dispatch_temperature(&mut bank, "M109 S210", 0.5)
+        .is_err());
+    assert_eq!(bank.targets(), [0.]);
+    sim.start(0).unwrap();
+    assert!(sim
+        .dispatch_temperature(&mut bank, "M109 S210", f64::NAN)
+        .is_err());
+    assert_eq!(bank.targets(), [0.]);
+    assert!(matches!(
+        sim.dispatch_temperature(&mut bank, "M109 S210", 0.5),
+        Ok(Some(Output::Set { wait: Some(_), .. }))
+    ));
+    assert_eq!(bank.targets(), [210.]);
+    assert!(sim
+        .dispatch_temperature(&mut bank, "M104 S100", 0.5)
+        .is_err());
+    assert_eq!(bank.targets(), [210.]);
+    let fresh = Observation {
+        source: Source::Heater(0),
+        sampled_at: 0.,
+        temperature: 210.,
+        controller_busy: false,
+    };
+    assert_eq!(
+        sim.poll_temperature_wait(0, Some(fresh), false).unwrap(),
+        Gate::Ready
+    );
+    assert!(matches!(
+        sim.dispatch_temperature(&mut bank, "TURN_OFF_HEATERS", 0.5),
+        Ok(Some(Output::AllOff))
+    ));
+    assert_eq!(bank.targets(), [0.]);
+}

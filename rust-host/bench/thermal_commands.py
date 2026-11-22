@@ -158,6 +158,34 @@ def stock(path, rows, debug):
             f" {heater.target_temp:.1f}" for heater in catalog.values())
 
 
+def gcode_cases(rows):
+    for row in rows:
+        command, *args = row.split()
+        if command == "select":
+            yield row
+            continue
+        samples = []
+        if command in {"M104","M109"}:
+            tool, target, *samples = args
+            line = f"{command} S{target}" + (f" T{tool}" if tool != "-" else "")
+        elif command in {"M140","M190"}:
+            target, *samples = args
+            line = f"{command} S{target}"
+        elif command == "set":
+            name, target = args
+            line = f"SET_HEATER_TEMPERATURE HEATER='{name}' TARGET={target}"
+        elif command == "off":
+            line = "TURN_OFF_HEATERS"
+        else:
+            name, low, high, *samples = args
+            line = f'TEMPERATURE_WAIT SENSOR="{name}"'
+            if low != "-":
+                line += f" MINIMUM={low}"
+            if high != "-":
+                line += f" MAXIMUM={high}"
+        yield f'{line} ; inert | {" ".join(samples)}'
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("upstream", type=Path, help=f"checkout at {PIN}")
@@ -165,12 +193,17 @@ def main():
     a = p.parse_args()
     rows = cases()
     for debug in [False, True]:
-        got = subprocess.run([a.binary, *(["debug"] if debug else [])], text=True,
-                             input="\n".join(rows) + "\n", capture_output=True, check=True)
-        expected = stock(a.upstream.resolve(), rows, debug)
-        for row, x, y in zip(rows, got.stdout.splitlines(), expected, strict=True):
-            assert x == y, (debug, row, x, y)
-    print(f"{2*len(rows)} matching heater command outcomes, target snapshots and wait poll counts")
+        expected = list(stock(a.upstream.resolve(), rows, debug))
+        for text in [False, True]:
+            flags = (["debug"] if debug else []) + (["--gcode"] if text else [])
+            payload = list(gcode_cases(rows)) if text else rows
+            got = subprocess.run([a.binary, *flags], text=True,
+                                 input="\n".join(payload) + "\n", capture_output=True, check=True)
+            for row, x, y in zip(payload, got.stdout.splitlines(), expected, strict=True):
+                assert x == y, (debug, text, row, x, y)
+    print(f"{2*len(rows)} matching heater command outcomes, target snapshots and wait poll counts "
+          "for typed inputs and independently parsed G-code")
+
 
 
 if __name__ == "__main__":

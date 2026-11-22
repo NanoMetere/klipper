@@ -1118,6 +1118,13 @@ resume without replaying the elapsed wall clock as motion. A simulated
 shutdown faults instead. The read-only `virtual_heat_wait` status
 reports whether this gate is active. It does not issue heater commands
 or assure that any physical reading is valid.
+The explicit simulation boundary can now also consume stock heater
+G-code text. It stages the target update and accepts it only if the wait
+can be installed. It does not interpret Klippain's T-number remapping
+or automatically schedule arbitrary job files; bare T selections stay
+distinct from heater indices. Parsed text and typed commands both
+match the 1,848 stock heater handler outcomes in the reference fixture.
+
 
 ## Offline motion wire encoding
 

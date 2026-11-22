@@ -411,6 +411,34 @@ impl Simulation {
         Ok(())
     }
 
+    /// Apply recognized heater text at an explicit virtual motion boundary.
+    /// Non-heater G-code is left to the caller. If a wait cannot be armed,
+    /// the heater target table is not updated. No hardware effects occur.
+    pub fn dispatch_temperature<'a>(
+        &mut self,
+        bank: &mut thermal::Bank<'a>,
+        line: &str,
+        max_sample_age: f64,
+    ) -> Result<Option<thermal::Output<'a>>, Error> {
+        let Some(cmd) = thermal::parse_gcode(line).map_err(Error::Thermal)? else {
+            return Ok(None);
+        };
+        if self.heat_wait.is_some() {
+            return Err(Error::ThermalGate);
+        }
+        let mut staged = bank.clone();
+        let result = staged.command(cmd).map_err(Error::Thermal)?;
+        if let thermal::Output::Set {
+            wait: Some(wait), ..
+        }
+        | thermal::Output::Range(wait) = result
+        {
+            self.begin_temperature_wait(wait, max_sample_age)?;
+        }
+        *bank = staged;
+        Ok(Some(result))
+    }
+
     /// Pause the virtual release cursor at an already planned command
     /// boundary. A generic resume cannot bypass this simulated wait.
     pub fn begin_temperature_wait(

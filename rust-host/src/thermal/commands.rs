@@ -2,6 +2,8 @@
 //! Inert host heater routing. Store targets and assess supplied observations;
 //! do not open a sensor, schedule hardware or emit a PWM request.
 
+pub use super::commands_parse::parse_gcode;
+
 const MAX_HEATERS: usize = 32;
 const MAX_SENSORS: usize = 64;
 
@@ -13,6 +15,7 @@ pub enum Error {
     Target,
     Range,
     Observation,
+    Syntax,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +145,7 @@ impl Wait<'_> {
     }
 }
 
+#[derive(Clone)]
 pub struct Bank<'a> {
     profiles: &'a [Profile<'a>],
     sensors: &'a [&'a str],
