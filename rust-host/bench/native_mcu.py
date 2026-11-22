@@ -66,8 +66,8 @@ def stock(endpoint, count):
 CORRUPTION = b"\xff" * 80 + b"\x7e"
 
 
-def rust_run(binary, count, stream, inject):
-    if not inject:
+def rust_run(binary, count, stream, fault):
+    if fault is None:
         return subprocess.run([binary, str(count)], stdin=stream, stdout=stream,
                               stderr=subprocess.PIPE, timeout=30, text=True, check=False)
     host, client = pty.openpty()
@@ -76,7 +76,8 @@ def rust_run(binary, count, stream, inject):
     errors = []
 
     def relay():
-        corrupt = True
+        injected = False
+        cut = bytearray()
         try:
             while not stop.is_set():
                 ready, _, _ = select.select([host, stream], [], [], 0.05)
@@ -84,14 +85,41 @@ def rust_run(binary, count, stream, inject):
                     data = os.read(src, 1024)
                     if src == stream:
                         dst = host
-                        if corrupt and data:
+                        if fault == "corruption" and not injected and data:
                             data = CORRUPTION + data
-                            corrupt = False
+                            injected = True
+                        elif fault == "reply" and not injected:
+                            cut.extend(data)
+                            data = bytearray()
+                            while cut and len(cut) >= cut[0]:
+                                length = cut[0]
+                                if not 5 <= length <= 64:
+                                    raise ValueError("firmware produced invalid frame length")
+                                # First identify response: sequence 1 and bootstrap ID 0.
+                                if not injected and length > 5 and cut[1:3] == b"\x11\x00":
+                                    injected = True
+                                else:
+                                    data.extend(cut[:length])
+                                del cut[:length]
+                            if injected:
+                                data.extend(cut)
+                                cut.clear()
                     else:
                         dst = stream
+                        if fault == "silent":
+                            continue
+                        if fault == "request" and not injected:
+                            cut.extend(data)
+                            if not cut or len(cut) < cut[0]:
+                                continue
+                            if not 5 <= cut[0] <= 64:
+                                raise ValueError("host produced invalid frame length")
+                            data = bytes(cut[cut[0]:])
+                            cut.clear()
+                            injected = True
                     while data:
                         data = data[os.write(dst, data):]
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             errors.append(exc)
 
     thread = threading.Thread(target=relay, daemon=True)
@@ -111,7 +139,7 @@ def rust_run(binary, count, stream, inject):
     return run
 
 
-def fresh(mcu, binary, upstream, count, kind, inject=False):
+def fresh(mcu, binary, upstream, count, kind, fault=None):
     # No operating printer, GPIO outputs, realtime scheduling, or watchdog.
     with tempfile.TemporaryDirectory(prefix="klipper-rust-pty-") as tmp:
         endpoint = Path(tmp) / "mcu"
@@ -129,13 +157,22 @@ def fresh(mcu, binary, upstream, count, kind, inject=False):
                     tty.setraw(endpoint_setup.fileno(), termios.TCSANOW)
                 if kind == "rust":
                     with endpoint.open("r+b", buffering=0) as stream:
-                        run = rust_run(binary, count, stream.fileno(), inject)
+                        begin = time.monotonic()
+                        run = rust_run(binary, count, stream.fileno(), fault)
+                    if fault == "silent":
+                        if run.returncode == 0 or "NoAck" not in run.stderr:
+                            raise RuntimeError(f"expected explicit NoAck, got {run.stderr}")
+                        if time.monotonic() - begin > 3:
+                            raise RuntimeError("silent peer did not fail promptly")
+                        return None
                     if run.returncode:
                         raise RuntimeError(run.stderr)
-                    init, discarded, samples = run.stderr.strip().split(" ", 2)
-                    expected_discarded = len(CORRUPTION) if inject else 0
-                    if int(discarded) != expected_discarded:
-                        raise RuntimeError(f"expected {expected_discarded} discarded bytes, got {discarded}")
+                    init, discarded, frame, reply, samples = run.stderr.strip().split(" ", 4)
+                    expected = {"corruption": (len(CORRUPTION), 0, 0),
+                                "request": (0, 1, 0), "reply": (0, 0, 1)}.get(fault, (0, 0, 0))
+                    actual = (int(discarded), int(frame), int(reply))
+                    if actual != expected:
+                        raise RuntimeError(f"{fault}: expected counters {expected}, got {actual}")
                     return [int(init), json.loads(samples)]
                 env = os.environ.copy()
                 env["PYTHONPATH"] = str(upstream / "klippy") + os.pathsep + env.get("PYTHONPATH", "")
@@ -172,8 +209,9 @@ def main():
     # Prime the C helper build and both implementations before collected rounds.
     for kind in data:
         fresh(mcu, args.binary.resolve(), upstream, 8, kind)
-    fresh(mcu, args.binary.resolve(), upstream, 32, "rust", inject=True)
-    print(f"recovery: discarded {len(CORRUPTION)} injected bytes and completed 32 exchanges")
+    for fault in ["corruption", "request", "reply", "silent"]:
+        fresh(mcu, args.binary.resolve(), upstream, 32, "rust", fault=fault)
+        print(f"fault case passed: {fault}")
     for index in range(args.rounds):
         for kind in list(data)[::(-1 if index % 2 else 1)]:
             data[kind].append(fresh(mcu, args.binary.resolve(), upstream, args.samples, kind))

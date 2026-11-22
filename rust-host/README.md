@@ -33,8 +33,7 @@ normalized in the published fixture; no printer or live device was involved.
 
 The bootstrap requests 40-byte chunks and caps compressed and expanded
 dictionary sizes at 256 KiB and 2 MiB, respectively. Short, oversized, or
-misaligned chunks do not advance the exchange. Timeouts, retries, sequence tracking, and clock synchronization are not part of
-this offline API. A separate stream receiver and disposable PTY test are described
+misaligned chunks do not advance the exchange. Clock synchronization and runtime session behavior are not part of this offline API. A separate stream receiver and disposable PTY test are described
 below. It does not interpret movement or heater commands.
 
 ```sh
@@ -72,9 +71,10 @@ python3 bench/native_mcu.py /path/to/pinned/klipper \
 ```
 
 The PTY runner creates its own temporary endpoint with the native firmware;
-it does not take a real serial device path. A separate recovery case injects
-81 invalid bytes and verifies that identify and 32 read-only exchanges still
-complete. The measured runs use a direct PTY with no injected data, a fresh MCU
+it does not take a real serial device path. Separate PTY fault tests inject invalid bytes, drop the first request entirely,
+drop the first identify response while forwarding its ACK, or silence the
+peer. The first three tests must finish identify and 32 read-only exchanges
+with the expected counters. The silent case must exit promptly with `NoAck`. The measured runs use a direct PTY with no injected data, a fresh MCU
 per run, one request in flight, and one uptime per eight requests. Stock uses
 upstream Python `SerialReader` with the upstream C serial queue; the Rust
 example uses the bounded frame receiver. The connection figure measures
@@ -88,14 +88,19 @@ host order over eight runs:
 
 | Host | Identify (median) | Clock/uptime RTT (median) | RTT (p95) |
 | --- | ---: | ---: | ---: |
-| Rust PTY example | 1.451 ms | 6.770 µs | 10.636 µs |
-| Stock Klippy serial reader | 19.741 ms | 77.617 µs | 112.840 µs |
+| Rust PTY example | 1.577 ms | 7.551 µs | 23.415 µs |
+| Stock Klippy serial reader | 19.624 ms | 71.778 µs | 111.598 µs |
 
 Each host completed 8,192 measured requests. This compares a minimal,
 single-in-flight Rust loop with stock's full transport path. It does not
 measure feature-equivalent scheduler performance, physical links, G-code,
-or printing time. The external harness terminates hung tests; the example
-does not yet implement a production retry, timeout, or flow-control policy.
+or printing time. The end-to-end harness has an independent process timeout. The Rust example
+uses a limited `ReadQuery` state machine with a one-second per-query deadline:
+unacknowledged wire frames retry their existing sequence with a sync prefix;
+an acknowledged read without a reply is reissued with a new sequence. Both
+retry counts are bounded. It is not stock's adaptive RTO, multi-command flow
+control, or a general policy for retrying state-changing operations. For the
+pre-retry benchmark, see commit `a922819c`.
 
 ## Frame validation microbenchmark
 
