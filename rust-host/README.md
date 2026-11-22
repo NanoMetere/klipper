@@ -238,7 +238,13 @@ process discarded the session rather than blindly replaying commands.
 
 This measures a matched, pre-encoded read-only workload over PTY, not an
 individual request RTT, print time, CPU load, or full Klippy feature parity.
-The example uses a fixed retry timer and does not exercise physical I/O.
+These rows are the recorded fixed-timer baseline. The same example now
+uses the stock-matched adaptive timer with a separate one-second test
+deadline. An adaptive rerun over the same wave counts measured 127.277
+µs median / 241.925 µs p95 for Rust and 970.198 µs median / 1668.456 µs
+p95 for stock. Clean waves had no retries; the dropped-frame and
+dropped-reply tests still passed. Between-run differences are not a
+speedup claim for the timer. No physical I/O was exercised.
 
 ## Offline motion look-ahead
 
@@ -591,8 +597,10 @@ by the six-node fixture.
 
 `retry_timing` models the stock transport's RTT sample tracking,
 variance smoothing, timeout floor/cap, timeout doubling, fast retry,
-and Karn-style suppression after cached retransmits. The caller supplies
-the predicted wire-end time and notifies it of retired frames and sends.
+and Karn-style suppression after cached retransmits. `timed_flight`
+composes that estimator with the flight ledger and lengths on the chosen
+wire. The caller supplies the planned wire-start and receive timestamps.
+This composition now drives the disposable read-only PTY pipeline.
 
 ```sh
 python3 bench/retry_timing.py /path/to/pinned/klipper

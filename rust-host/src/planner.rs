@@ -23,7 +23,7 @@ pub enum Wire {
 }
 
 impl Wire {
-    fn seconds(self, bytes: usize) -> Result<f64, Error> {
+    pub(crate) fn seconds(self, bytes: usize) -> Result<f64, Error> {
         match self {
             Self::Pty => Ok(0.0),
             Self::Uart8N1 { baud } if baud != 0 => Ok((10.0 / f64::from(baud)) * bytes as f64),

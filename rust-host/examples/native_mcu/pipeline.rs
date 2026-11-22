@@ -3,9 +3,11 @@
 
 use crate::linux::{wait_readable, Link};
 use klipper_host_protocol::{
-    flight::{Flight, ReceiveError, Retry},
+    flight::ReceiveError,
     identify::{identify_payload, identify_response},
     planner::{Decision, Planner, Priority, Snapshot, Wire},
+    retry_timing::Timer,
+    timed_flight::{Error as LinkError, TimedFlight},
 };
 use std::{
     io::{self, Read, Write},
@@ -14,7 +16,6 @@ use std::{
 };
 
 const CHUNK: usize = 16;
-const ACK_TIMEOUT: Duration = Duration::from_millis(25);
 const WAVE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(super) fn run(
@@ -24,10 +25,14 @@ pub(super) fn run(
     width: usize,
     receive_window: usize,
 ) -> Result<(), String> {
-    if !(1..=128).contains(&width) || reference.len() < width * CHUNK || !count.is_multiple_of(width) {
+    if !(1..=128).contains(&width)
+        || reference.len() < width * CHUNK
+        || !count.is_multiple_of(width)
+    {
         return Err("invalid pipeline width or count".into());
     }
-    let mut flight = Flight::established(16 + u64::from(link.sequence));
+    let mut flight = TimedFlight::established(16 + u64::from(link.sequence), Wire::Pty)
+        .map_err(|e| format!("{e:?}"))?;
     let mut planner = Planner::new(1, width).map_err(|e| format!("{e:?}"))?;
     let (mut peak, mut retries, mut largest_frame_count) = (0, 0, 0);
     let (mut discarded, mut invalid) = (0, 0);
@@ -41,7 +46,6 @@ pub(super) fn run(
     for _ in 0..count / width {
         seen.fill(false);
         let mut missing = width;
-        let mut retry_at = None;
         let mut frames_this_wave = 0;
         let begin = Instant::now();
         let expires = begin + WAVE_TIMEOUT;
@@ -79,30 +83,37 @@ pub(super) fn run(
             {
                 Decision::Send(payload) => {
                     flight
-                        .send(payload.as_slice(), receive_window, |bytes| {
+                        .send(payload.as_slice(), receive_window, now, |bytes| {
                             link.writer.write(bytes)
                         })
                         .map_err(|e| format!("{e:?}"))?;
                     frames_this_wave += 1;
                     peak = peak.max(flight.pending_frames());
-                    retry_at.get_or_insert_with(|| Instant::now() + ACK_TIMEOUT);
                     continue;
                 }
                 Decision::Idle | Decision::AwaitAck { .. } => {}
                 other => return Err(format!("unexpected PTY decision: {other:?}")),
             }
-            if retry_at.is_some_and(|at| Instant::now() >= at) {
+            let current = 1.0 + link.epoch.elapsed().as_secs_f64();
+            if flight.timer() == Timer::Fast
+                || matches!(flight.timer(), Timer::At(t) if current >= t)
+            {
                 flight
-                    .retry(Retry::Timeout, |bytes| link.writer.write(bytes))
+                    .retry_if_due(current, |bytes| link.writer.write(bytes))
                     .map_err(|e| format!("{e:?}"))?;
                 retries += 1;
-                retry_at = Some(Instant::now() + ACK_TIMEOUT);
             }
-            let until = retry_at.unwrap_or(expires).min(expires);
-            match wait_readable(
-                link.reader.as_fd(),
-                until.saturating_duration_since(Instant::now()),
-            ) {
+            let now = Instant::now();
+            let remaining = expires.saturating_duration_since(now);
+            let wait = match flight.timer() {
+                Timer::At(at) => Duration::from_secs_f64(
+                    (at - (1.0 + now.duration_since(link.epoch).as_secs_f64())).max(0.0),
+                )
+                .min(remaining),
+                Timer::Idle => remaining,
+                Timer::Fast => Duration::ZERO,
+            };
+            match wait_readable(link.reader.as_fd(), wait) {
                 Ok(false) => continue,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e.to_string()),
@@ -115,14 +126,14 @@ pub(super) fn run(
                 Err(e) => return Err(e.to_string()),
             };
             let mut error = None;
-            let mut fast = false;
+            let receive_at = 1.0 + link.epoch.elapsed().as_secs_f64();
             let stats = link.rx.feed(&read_buf[..n], |frame| {
                 if error.is_some() {
                     return;
                 }
-                let p = match flight.observe_decoded(frame) {
-                    Ok(p) => p,
-                    Err(ReceiveError::OutsideWindow) => {
+                match flight.observe(frame, receive_at) {
+                    Ok(_) => {}
+                    Err(LinkError::Receive(ReceiveError::OutsideWindow)) => {
                         invalid += 1;
                         return;
                     }
@@ -130,17 +141,15 @@ pub(super) fn run(
                         error = Some(format!("{e:?}"));
                         return;
                     }
-                };
-                if p.retired != 0 {
-                    fast = false;
-                    retry_at = (flight.pending_frames() != 0).then(|| Instant::now() + ACK_TIMEOUT);
                 }
-                fast |= p.fast_retry;
                 if let Ok((offset, bytes)) = identify_response(frame) {
                     // Ignore late bootstrap replies (size 40 or a terminal empty);
                     // a measured response must match the exact bytes and offset.
                     let offset = offset as usize;
-                    if bytes.len() != CHUNK || !offset.is_multiple_of(CHUNK) || offset >= width * CHUNK {
+                    if bytes.len() != CHUNK
+                        || !offset.is_multiple_of(CHUNK)
+                        || offset >= width * CHUNK
+                    {
                         return;
                     }
                     if seen[offset / CHUNK] || bytes != &reference[offset..offset + CHUNK] {
@@ -155,13 +164,6 @@ pub(super) fn run(
                 return Err(error);
             }
             discarded += stats.discarded;
-            if fast {
-                flight
-                    .retry(Retry::DuplicateAck, |bytes| link.writer.write(bytes))
-                    .map_err(|e| format!("{e:?}"))?;
-                retries += 1;
-                retry_at = Some(Instant::now() + ACK_TIMEOUT);
-            }
         }
         largest_frame_count = largest_frame_count.max(frames_this_wave);
         wave_ns.push(begin.elapsed().as_nanos());
