@@ -610,6 +610,25 @@ python3 bench/retry_timing.py /path/to/pinned/klipper
 across PTY, UART-style and Classic CAN wire-time formulas. The C harness
 writes only to an isolated UNIX socketpair; no device timing was measured.
 
+## Shared-bus CAN simulation
+
+`virtual_can::Bus` composes Classic CAN packetization, per-node queues,
+sequence ledgers, and adaptive retries over a deterministic shared host
+timeline. Each node has independent release/ACK state. A silent peer is
+isolated after bounded retries. The simulation only trades in-memory
+datagrams. Host sends use a minimum-bit wire estimate; inbound datagrams
+are timestamped by the fixture. This is not physical arbitration, bus
+utilization, or measured device performance.
+
+```sh
+cargo test --locked --test virtual_can
+```
+
+One fixture interleaves six independent streams and drops a packet burst;
+only its node is retried, with byte-identical data after the sync marker.
+A second drives a healthy node through sequence wraps while a silent
+node times out, then verifies that the healthy node can still send.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
