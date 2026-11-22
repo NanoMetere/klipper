@@ -6,6 +6,7 @@ use klipper_host_protocol::{
     gcode_macros::Registry,
     machine_preview::Machine,
     step_clock::{Clock, Command},
+    virtual_sd::Job as SdJob,
 };
 use serde_json::{json, Value};
 use std::{
@@ -18,11 +19,12 @@ use std::{
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 const HELP: &str =
-    "Usage: klipper-preview [--expand-macros] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
+    "Usage: klipper-preview [--expand-macros] [--virtual-sd] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
     ROOT contains config files; ENTRY and INCLUDE paths must be relative to it.\n\
     List every included file needed, including matches for wildcard includes.\n\
     XYZ is the explicit virtual starting position in millimeters.\n\
-    Prints JSON to stdout, never connects to a printer. Opt in to limited offline macro expansion.";
+    Prints JSON to stdout, never connects to a printer. Opt in to limited offline macro expansion.\n\
+    --virtual-sd previews complete LF-delimited lines and reports the byte checkpoint.";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -68,12 +70,19 @@ fn run() -> Result<(), String> {
         println!("{HELP}");
         return Ok(());
     }
-    let expand_macros = args.first().is_some_and(|flag| flag == "--expand-macros");
-    let args = if expand_macros {
-        &args[1..]
-    } else {
-        args.as_slice()
-    };
+    let mut expand_macros = false;
+    let mut virtual_sd = false;
+    let mut args = args.as_slice();
+    while let Some(flag) = args.first() {
+        if flag == "--expand-macros" && !expand_macros {
+            expand_macros = true;
+        } else if flag == "--virtual-sd" && !virtual_sd {
+            virtual_sd = true;
+        } else {
+            break;
+        }
+        args = &args[1..];
+    }
     if args.len() < 7 || args.len() - 6 > 1024 {
         return Err(HELP.into());
     }
@@ -106,17 +115,35 @@ fn run() -> Result<(), String> {
     }
 
     let parsed = config::parse(&files, entry).map_err(|e| format!("configuration: {e:?}"))?;
+    let sd = if virtual_sd {
+        let mut job = SdJob::select(script.as_bytes());
+        let parse = |e| format!("virtual SD: {e:?}");
+        job.resume().map_err(parse)?;
+        while let Some(line) = job.issue().map_err(parse)? {
+            job.commit(line.token, None).map_err(parse)?;
+        }
+        Some(job.snapshot())
+    } else {
+        None
+    };
+    let script = if let Some(checkpoint) = sd {
+        &script[..checkpoint.position]
+    } else {
+        &script
+    };
+    let expanded;
     let script = if expand_macros {
-        Registry::from_config(&parsed)
-            .and_then(|registry| registry.expand(&script))
-            .map_err(|e| format!("macro expansion: {e:?}"))?
+        expanded = Registry::from_config(&parsed)
+            .and_then(|registry| registry.expand(script))
+            .map_err(|e| format!("macro expansion: {e:?}"))?;
+        expanded.as_str()
     } else {
         script
     };
     let machine = Machine::from_config(&parsed).map_err(|e| format!("machine: {e:?}"))?;
     let trace = machine
         .trace(
-            &script,
+            script,
             start,
             2.0,
             Clock {
@@ -137,11 +164,14 @@ fn run() -> Result<(), String> {
             })
             .collect::<Vec<Value>>()
     });
-    let out = json!({
+    let mut out = json!({
         "schema":1, "mode":"offline", "virtual_start_mm":start, "virtual_start_time":2.0,
         "clock_hz":hz, "planned_duration_seconds":trace.duration, "motors":motors,
         "motor_step_distances_mm":machine.step_distances(),
     });
+    if let Some(checkpoint) = sd {
+        out["virtual_sd"] = json!({"position":checkpoint.position, "size":checkpoint.size});
+    }
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &out).map_err(|e| e.to_string())?;
     stdout.write_all(b"\n").map_err(|e| e.to_string())

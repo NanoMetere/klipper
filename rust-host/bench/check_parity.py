@@ -55,6 +55,8 @@ def main():
                             "--binary", examples/"trigger_sync_replay"]),
         ("trigger_dispatch", [sys.executable, ROOT/"bench/trigger_dispatch.py", upstream,
                               "--binary", examples/"trigger_dispatch_replay"]),
+        ("virtual_sd", [sys.executable, ROOT/"bench/virtual_sd.py", upstream,
+                        "--binary", examples/"virtual_sd_replay"]),
     ])
     if dictionary.is_file():
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,

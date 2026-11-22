@@ -379,6 +379,28 @@ tests additionally cover absent literals, empty wildcard matches, escaped
 paths and cycles. This is read-only parsing parity for the fixture, not
 validation that all configured hardware/modules are supported.
 
+## Virtual SD checkpoints
+
+The offline `virtual_sd::Job` issues immutable LF-delimited lines, tracks
+UTF-8 byte checkpoints, supports controlled boundary rewind/pause, and
+does not advance a failed or uncommitted line. An unterminated final
+line is not dispatched, matching pinned stock virtual SD. Interior seeks,
+invalid UTF-8 in a complete line, and overlong lines are rejected rather
+than dispatched. This does not open a live SD service or execute an
+on-error macro.
+
+```sh
+python3 bench/virtual_sd.py /path/to/pinned/klipper
+cargo run --locked --release --bin klipper-preview -- \
+  --virtual-sd --expand-macros examples/preview printer.cfg \
+  examples/preview/path_macro_tail.gcode 20000000 1 1 .2 rails.cfg
+```
+
+The in-memory comparison against stock `VirtualSD.work_handler` matched
+19,761 line/checkpoint, pause, and terminal observations across 64
+fixtures, including UTF-8, CRLF, rewind, pause/resume and dispatch failure.
+The CLI option only exposes an inert byte checkpoint and motion preview.
+
 ## Opt-in offline macro expansion
 
 The preview CLI can expand bounded static `[gcode_macro NAME]` bodies,
