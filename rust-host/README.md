@@ -646,6 +646,24 @@ local run passed 25/25 phases, including debug/release/no-default unit
 tests and disposable native MCU PTY fault cases. The Toolchanger legacy
 probe baseline remains a separate multi-checkout test.
 
+## Virtual job lifecycle
+
+`virtual_job::Job` preflights a simulated trace, releases inert command
+records by virtual tick, and supports pause/resume, cancel, and a sticky
+fault. It does not expose those operations over WebHooks. Its optional
+read-only status object is explicitly named `virtual_job`, not a claim
+of compatibility with physical Klippy printing.
+
+```sh
+cargo test --locked --test virtual_job
+```
+
+A config-to-motion fixture sends the prepared dictionary payloads through
+three in-memory CAN nodes and verifies each node receives exactly its
+original command bytes in order. Separate tests enforce pause/resume
+without replay, fault isolation, and read-only status differences. No
+device path, motor, external service or physical bus is opened.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

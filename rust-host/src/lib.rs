@@ -30,6 +30,8 @@ pub mod timed_flight;
 pub mod virtual_can;
 #[cfg(feature = "identify")]
 pub mod step_wire;
+#[cfg(feature = "identify")]
+pub mod virtual_job;
 #[cfg(feature = "webhooks")]
 pub mod webhooks;
 #[cfg(feature = "identify")]
