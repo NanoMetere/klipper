@@ -413,6 +413,26 @@ Klippy handlers (with only offline endpoints exposed and portable
 `info` fields compared). Unit tests also exercise subscription changes
 and stream recovery. No production status providers are loaded.
 
+## Offline tool-coordinate translation lifecycle
+
+The G-code preview can wrap a prior translation with another layer, update
+or detach the top layer by its owner, and reset the reported position from
+commanded physical coordinates without emitting a move. XYZ transforms
+leave E unchanged. This models the mechanics needed for a tool-offset
+handover only; no Python extension, tool pickup sequence, nonlinear
+transform, or probe is implemented.
+
+```sh
+python3 bench/tool_transform.py /path/to/pinned/klipper
+```
+
+A synthetic two-layer tool-change fixture matched the pinned Python
+`GCodeMove.set_move_transform` / `reset_last_position` and coordinate
+commands: 31 state snapshots and six resulting move profiles. The
+fixture changes offsets while preserving toolhead position, restores
+logical coordinates, and returns selected axes. It does not run the
+Toolchanger plugin.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

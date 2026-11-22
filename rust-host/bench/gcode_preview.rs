@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use klipper_host_protocol::{
-    gcode::{Output, Preview},
+    gcode::{Output, Preview, TransformOwner},
     lookahead::Limits,
 };
 use std::{
@@ -22,6 +22,7 @@ fn log(p: &Preview, o: Output) {
         .into_iter()
         .chain(p.coords().gcode_position())
         .chain(p.coords().homing_origin())
+        .chain(p.physical_position())
         .chain([p.coords().physical_feed_rate()])
     {
         print!(" {v:.17e}");
@@ -35,6 +36,29 @@ fn log(p: &Preview, o: Output) {
             print!(" {v:.17e}");
         }
         println!();
+    }
+}
+
+fn directive(preview: &mut Preview, line: &str) {
+    let mut words = line.split_ascii_whitespace();
+    let cmd = words.next().unwrap();
+    if cmd == "!reset" {
+        preview.reset_last_position().unwrap();
+        return;
+    }
+    let owner = TransformOwner(words.next().unwrap().parse().unwrap());
+    if cmd == "!unwrap" {
+        preview.unwrap_translation(owner).unwrap();
+        return;
+    }
+    let offset = std::array::from_fn(|_| words.next().unwrap().parse().unwrap());
+    if cmd == "!wrap" {
+        let force = words.next().unwrap() == "1";
+        preview.wrap_translation(owner, offset, force).unwrap();
+    } else if cmd == "!set" {
+        preview.set_translation(owner, offset).unwrap();
+    } else {
+        panic!("{line}");
     }
 }
 
@@ -54,7 +78,12 @@ fn solve(lines: &[String], emit: bool) -> (usize, f64) {
         }
     };
     for line in lines {
-        let out = p.line(line).unwrap_or_else(|e| panic!("{line}: {e:?}"));
+        let out = if line.starts_with('!') {
+            directive(&mut p, line);
+            Output::default()
+        } else {
+            p.line(line).unwrap_or_else(|e| panic!("{line}: {e:?}"))
+        };
         consume(&p, out);
     }
     let moves = p.finish().unwrap();

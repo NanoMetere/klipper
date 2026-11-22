@@ -76,7 +76,9 @@ def stock(lines, emit, settings=None, emit_profiles=None):
             handlers[name] = f
 
     dispatch.register_command = register
-    printer = SimpleNamespace(lookup_object=lambda _: dispatch, register_event_handler=lambda *_: None)
+    objects = {"gcode": dispatch}
+    printer = SimpleNamespace(lookup_object=objects.get, register_event_handler=lambda *_: None,
+                              config_error=ValueError)
     dispatch.printer = printer
     coords = GCodeMove(SimpleNamespace(get_printer=lambda: printer))
 
@@ -117,7 +119,45 @@ def stock(lines, emit, settings=None, emit_profiles=None):
     head.wait_moves = head._flush_lookahead
     handlers["M400"] = lambda cmd: ToolHeadCommandHelper.cmd_M400(dispatch, cmd)
     handlers["G4"] = lambda cmd: ToolHeadCommandHelper.cmd_G4(dispatch, cmd)
-    coords.move_with_transform = lambda p, v: ToolHead.move(head, p, v)
+    root_transform = SimpleNamespace(move=lambda p, v: ToolHead.move(head, p, v),
+                                     get_position=lambda: head.commanded_pos[:])
+    objects["toolhead"] = root_transform
+    coords.is_printer_ready = True
+    coords.move_with_transform = root_transform.move
+    coords.position_with_transform = root_transform.get_position
+    layers = []
+
+    class Offset:
+        def __init__(self, offset):
+            self.offset = offset
+
+        def move(self, position, speed):
+            out = [position[i] + self.offset[i] for i in range(3)] + position[3:]
+            self.next.move(out, speed)
+
+        def get_position(self):
+            position = self.next.get_position()
+            return [position[i] - self.offset[i] for i in range(3)] + position[3:]
+
+    def directive(line):
+        op, *args = line.split()
+        if op == "!reset":
+            coords.reset_last_position()
+        elif op == "!wrap":
+            owner, x, y, z, force = args
+            layer = Offset(tuple(map(float, (x, y, z))))
+            layer.next = coords.set_move_transform(layer, force=bool(int(force)))
+            layers.append((owner, layer))
+        elif op == "!set":
+            owner, *offset = args
+            assert owner == layers[-1][0]
+            layers[-1][1].offset = tuple(map(float, offset))
+        elif op == "!unwrap":
+            owner, layer = layers.pop()
+            assert owner == args[0]
+            coords.set_move_transform(layer.next, force=True)
+        else:
+            raise ValueError(line)
 
     total = 0.
     count = 0
@@ -129,7 +169,7 @@ def stock(lines, emit, settings=None, emit_profiles=None):
             emit_profiles(tuple(moves), dwell or 0.)
         if emit:
             print("line", len(moves), -1. if dwell is None else dwell)
-            print("state", *coords.last_position, *coords._get_gcode_position(), *coords.homing_position, coords.speed)
+            print("state", *coords.last_position, *coords._get_gcode_position(), *coords.homing_position, *head.commanded_pos, coords.speed)
         for m in moves:
             total += m.accel_t + m.cruise_t + m.decel_t
             if emit:
@@ -140,7 +180,10 @@ def stock(lines, emit, settings=None, emit_profiles=None):
 
     for line in lines:
         dwell = None
-        dispatch._process_commands([line], need_ack=False)
+        if line.startswith("!"):
+            directive(line)
+        else:
+            dispatch._process_commands([line], need_ack=False)
         log()
     dwell = None
     head._flush_lookahead()

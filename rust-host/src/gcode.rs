@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 
 #[path = "gcode/extended.rs"]
 mod extended;
+#[path = "gcode/transform.rs"]
+mod transform;
+pub use transform::Owner as TransformOwner;
 
 const MAX_LINE: usize = 4096;
 const AXES: [u8; 4] = *b"XYZE";
@@ -23,6 +26,8 @@ pub enum Error {
     MoveOutsidePreview,
     UnknownState,
     StateLimit,
+    TransformOwner,
+    TransformLimit,
     Motion(lookahead::Error),
 }
 
@@ -293,6 +298,7 @@ pub struct Output {
 pub struct Preview {
     coords: State,
     saved: BTreeMap<String, State>,
+    transform: transform::Stack,
     failed: bool,
     planner: LookAhead,
     limits: Limits,
@@ -322,6 +328,7 @@ impl Preview {
                 ..State::default()
             },
             saved: BTreeMap::new(),
+            transform: transform::Stack::default(),
             failed: false,
             planner,
             limits,
@@ -331,6 +338,44 @@ impl Preview {
 
     pub fn coords(&self) -> &State {
         &self.coords
+    }
+
+    pub fn physical_position(&self) -> [f64; 4] {
+        self.toolhead
+    }
+
+    /// Install a top translation, optionally wrapping the existing one.
+    /// It does not move the toolhead or reset reported coordinates.
+    pub fn wrap_translation(
+        &mut self,
+        owner: TransformOwner,
+        offset: [f64; 3],
+        force: bool,
+    ) -> Result<(), Error> {
+        self.transform.add(owner, offset, force)
+    }
+
+    pub fn set_translation(
+        &mut self,
+        owner: TransformOwner,
+        offset: [f64; 3],
+    ) -> Result<(), Error> {
+        self.transform.set(owner, offset)
+    }
+
+    pub fn unwrap_translation(&mut self, owner: TransformOwner) -> Result<(), Error> {
+        self.transform.remove(owner)
+    }
+
+    /// Rebase the coordinates the parser sees from the commanded physical
+    /// position, as on a stock transform change. Leaves offsets and saved
+    /// state intact and emits no move.
+    pub fn reset_last_position(&mut self) -> Result<(), Error> {
+        let mut candidate = self.coords;
+        candidate.last = self.transform.reported(self.toolhead)?;
+        candidate.validate()?;
+        self.coords = candidate;
+        Ok(())
     }
 
     pub fn line(&mut self, line: &str) -> Result<Output, Error> {
@@ -353,6 +398,7 @@ impl Preview {
         let mut out = Output::default();
         match effect {
             Effect::Linear { position, speed } => {
+                let position = self.transform.physical(position)?;
                 if let Some(mut move_) =
                     Move::optional(self.limits, self.toolhead, position, speed)?
                 {
@@ -499,6 +545,33 @@ mod tests {
             p.line("G1 E11").unwrap();
             assert_eq!(p.coords().position()[3], 9.25);
         }
+    }
+
+    #[test]
+    fn translation_wrap_preserves_machine_position_on_resync() {
+        let limits = Limits::new(160.0, 2000.0, 5.0, 0.5).unwrap();
+        let mut p = Preview::new(limits, 128, None).unwrap();
+        p.line("G1 X10 Y12 E3").unwrap();
+        p.wrap_translation(TransformOwner(1), [1.0, 2.0, 0.0], false)
+            .unwrap();
+        assert_eq!(
+            p.wrap_translation(TransformOwner(2), [4.0; 3], false),
+            Err(Error::TransformOwner)
+        );
+        p.wrap_translation(TransformOwner(2), [4.0, 0.0, 0.0], true)
+            .unwrap();
+        assert_eq!(
+            p.set_translation(TransformOwner(1), [4.0; 3]),
+            Err(Error::TransformOwner)
+        );
+        p.reset_last_position().unwrap();
+        assert_eq!(p.physical_position(), [10.0, 12.0, 0.0, 3.0]);
+        assert_eq!(p.coords().position(), [5.0, 10.0, 0.0, 3.0]);
+        p.line("G1 X7").unwrap();
+        assert_eq!(p.physical_position(), [12.0, 12.0, 0.0, 3.0]);
+        p.unwrap_translation(TransformOwner(2)).unwrap();
+        p.reset_last_position().unwrap();
+        assert_eq!(p.coords().position(), [11.0, 10.0, 0.0, 3.0]);
     }
 
     #[test]
