@@ -102,6 +102,36 @@ retry counts are bounded. It is not stock's adaptive RTO, multi-command flow
 control, or a general policy for retrying state-changing operations. For the
 pre-retry benchmark, see commit `a922819c`.
 
+## Primary and secondary MCU clock models
+
+`clock_sync::PrimaryClock` initializes from firmware uptime, extends ordered
+32-bit samples, tracks drift and minimum RTT, and estimates a conservative
+release anchor separately from the host/MCU clock mapping.
+`SecondaryClock` aligns another MCU to the primary print timeline without
+requiring identical oscillator rates. These are pure models: the runtime
+still must supply valid timestamps, periodic samples, reset/reconnect events
+and an independently verified command scheduler. A counter wrap is not
+distinguishable from a reboot using only a wrapped counter. Do not use these
+models to drive a printer.
+
+```sh
+python3 bench/clock_sync.py /path/to/pinned/klipper --bench 300
+```
+
+The differential script runs stock `klippy/clocksync.py` from the same pinned
+checkout. Across 6,000 synthetic primary samples (drift, jitter, multiple
+wraps, missing send timestamps, outliers and a reinitialized epoch), release
+ticks and sample disposition agreed. Across 1,493 two-MCU calibration points,
+horizon tick predictions agreed. The largest primary frequency difference
+observed was 2.33e-10 Hz. These are differences against the Python model, not
+claims about physical oscillator accuracy.
+
+On the same AMD EPYC 9V74 host, pinned to one logical CPU, the primary
+model microbenchmark used pre-parsed sample inputs, seven measured alternating
+rounds and 450,000 samples per round: 12.17 ns/sample median in Rust vs
+896.20 ns/sample for stock Python with a no-I/O serial callback. This excludes
+I/O, clock-query scheduling, message parsing and physical printing.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
