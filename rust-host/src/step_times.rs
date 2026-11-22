@@ -96,6 +96,23 @@ impl Solver {
         abs_end: f64,
         cap: usize,
     ) -> Result<Vec<Event>, Error> {
+        let axis = self.axis;
+        if !axis.active(m.direction) {
+            return Ok(Vec::new());
+        }
+        self.solve_range(m, abs_start, abs_end, cap, |next| {
+            Ok(axis.position(m.local(next)))
+        })
+    }
+
+    pub(crate) fn solve_range(
+        &mut self,
+        m: &Segment,
+        abs_start: f64,
+        abs_end: f64,
+        cap: usize,
+        mut position: impl FnMut(f64) -> Result<f64, Error>,
+    ) -> Result<Vec<Event>, Error> {
         if !(1..=MAX_EVENTS).contains(&cap)
             || !abs_start.is_finite()
             || !abs_end.is_finite()
@@ -115,7 +132,7 @@ impl Solver {
         let start = (abs_start - m.at).max(0.0);
         let end = (abs_end - m.at).min(m.duration);
         let mut events = Vec::new();
-        if start >= end || !self.axis.active(m.direction) {
+        if start >= end {
             return Ok(events);
         }
         let mut push = |event| {
@@ -150,9 +167,7 @@ impl Solver {
             }
             old = guess;
             // Evaluate at relative time to retain stock sub-tick precision.
-            let d = (m.start_velocity + m.half_acceleration * next) * next;
-            let xyz = std::array::from_fn(|i| m.position[i] + m.direction[i] * d);
-            guess = (next, self.axis.position(xyz));
+            guess = (next, position(next)?);
             if !guess.1.is_finite() || !target.is_finite() {
                 return Err(Error::Invalid);
             }

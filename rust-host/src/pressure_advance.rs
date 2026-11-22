@@ -3,7 +3,10 @@
 //! Upstream copyright (C) 2018-2019 Kevin O'Connor <kevin@koconnor.net>.
 //! The result is a geometric sample only, not an actuator command.
 
-use crate::trajectory::{Segment, Trajectory};
+use crate::{
+    step_times::{self, Axis, Event, Solver},
+    trajectory::{Segment, Trajectory},
+};
 
 const MAX_CHANGES: usize = 128;
 const MAX_PHASES_PER_SAMPLE: usize = 256;
@@ -96,20 +99,29 @@ impl Advance {
         } else {
             insertion as isize - 1
         };
-        let lookup = |idx: isize| {
-            if idx < 0 {
-                &head
-            } else {
-                segs.get(idx as usize).unwrap_or(&tail)
-            }
-        };
+        let m = pick(segs, &head, &tail, k);
+        Ok(Some(self.sample_relative(
+            segs,
+            &head,
+            &tail,
+            k,
+            time - m.at,
+        )?))
+    }
+
+    fn sample_relative(
+        &self,
+        segs: &[Segment],
+        head: &Segment,
+        tail: &Segment,
+        k: isize,
+        local: f64,
+    ) -> Result<f64, Error> {
+        let lookup = |index| pick(segs, head, tail, index);
         let m = lookup(k);
         let base = m.position[0];
-        let local = time - m.at;
         if self.half == 0.0 {
-            return Ok(Some(
-                base + (m.start_velocity + m.half_acceleration * local) * local,
-            ));
+            return Ok(base + (m.start_velocity + m.half_acceleration * local) * local);
         }
         let (mut left, mut right) = (local - self.half, local + self.half);
         let mut area = self.integrate(m, 0.0, left, local, left);
@@ -136,7 +148,66 @@ impl Advance {
         if !sample.is_finite() {
             return Err(Error::Time);
         }
-        Ok(Some(sample))
+        Ok(sample)
+    }
+
+    /// Offline raw crossings for an E timeline. Run the same lead/trailing
+    /// spans around active nominal phases that stock uses for smoothing.
+    pub fn crossings(
+        &self,
+        timeline: &Trajectory,
+        distance: f64,
+    ) -> Result<Vec<Event>, step_times::Error> {
+        let segs = timeline.segments();
+        let Some((first, last)) = segs.first().zip(segs.last()) else {
+            return Ok(Vec::new());
+        };
+        let start = [first.position[0], 0.0, 0.0];
+        let mut solver = Solver::new(Axis::X, distance, start)?;
+        let head = idle(first.at - 1.0, 1.0, start[0]);
+        let tail = idle(last.end(), 1.0, last.local(last.duration)[0]);
+        let mut out = Vec::new();
+        let mut solve = |idx: usize, start: f64, end: f64| -> Result<(), step_times::Error> {
+            let room = 65_535_usize
+                .checked_sub(out.len())
+                .filter(|n| *n > 0)
+                .ok_or(step_times::Error::EventLimit)?;
+            let seg = pick(segs, &head, &tail, idx as isize);
+            let got = solver.solve_range(seg, start.max(0.0), end, room, |t| {
+                self.sample_relative(segs, &head, &tail, idx as isize, t)
+                    .map_err(|_| step_times::Error::Invalid)
+            })?;
+            out.extend(got);
+            Ok(())
+        };
+        let mut force_until = self.half;
+        let mut skipped = None;
+        for (i, m) in (0..=segs.len()).map(|i| (i, pick(segs, &head, &tail, i as isize))) {
+            if m.direction[0] != 0.0 {
+                if let Some(inactive) = skipped.take() {
+                    let lead = (m.at - self.half).max(force_until);
+                    if lead < m.at {
+                        solve(inactive, lead, m.at)?;
+                    }
+                }
+                solve(i, m.at, m.end())?;
+                force_until = m.end() + self.half;
+            } else {
+                if m.at < force_until && m.end() > 0.0 {
+                    solve(i, m.at, m.end().min(force_until).max(0.0))?;
+                }
+                skipped = Some(i);
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn pick<'a>(segs: &'a [Segment], head: &'a Segment, tail: &'a Segment, i: isize) -> &'a Segment {
+    if i < 0 {
+        head
+    } else {
+        segs.get(i as usize).unwrap_or(tail)
     }
 }
 

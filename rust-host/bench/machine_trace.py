@@ -78,7 +78,7 @@ M400
 
 
 
-def traced(config_path, c, script, use_extruder):
+def traced(config_path, c, script, use_extruder, pressure):
     from configfile import ConfigFileReader, ConfigWrapper
     from kinematics.cartesian import CartKinematics
     from kinematics.corexy import CoreXYKinematics
@@ -133,7 +133,9 @@ def traced(config_path, c, script, use_extruder):
                                      distances, (0, 1, 0), strict=True):
         rows.append(("s", axis, *start, distance, time + .01, 20e6, 20, invert))
     if use_extruder:
-        rows.append(("s", "e", 0., 0., 0., 0.004, time + .01, 20e6, 20, 1))
+        if pressure:
+            rows.extend([("g", 0., .05, .04), ("g", 2.46, .075, .04)])
+        rows.append(("s", "e", 0., 0., 0., 0.004, time + .08, 20e6, 20, 1))
     trace = subprocess.check_output([c], text=True, input="\n".join(" ".join(map(str, r)) for r in rows)+"\n")
     return trace.splitlines(), elapsed
 
@@ -158,17 +160,17 @@ def main():
         cfg = d / "machine.cfg"
         for kin in ("cartesian", "corexy"):
             cfg.write_text(CONFIG.format(kinematics=kin))
-            for e_enabled in (False, True):
+            for e_enabled, pressure in ((False, False), (True, False), (True, True)):
                 script = WITH_E if e_enabled else GCODE
-                args = [rust, cfg] + (["--extruder"] if e_enabled else [])
-                want, expected_time = traced(cfg, c, script, e_enabled)
+                args = [rust, cfg] + (["--pressure" if pressure else "--extruder"] if e_enabled else [])
+                want, expected_time = traced(cfg, c, script, e_enabled, pressure)
                 actual = subprocess.check_output(args, input=script, text=True).splitlines()
                 timeline = float(actual.pop().split()[1])
                 assert math.isclose(expected_time, timeline, abs_tol=1e-12, rel_tol=1e-12)
                 for i, (x, y) in enumerate(zip(want, actual, strict=True)):
                     assert x == y, (kin, e_enabled, i, x, y)
                 motor_count = 4 if e_enabled else 3
-                print(f"{kin}, {motor_count} motors: {len(want)-motor_count} exact commands; "
+                print(f"{kin}, {motor_count} motors, pressure={pressure}: {len(want)-motor_count} exact commands; "
                       f"{timeline:.9f} simulated seconds")
 
 

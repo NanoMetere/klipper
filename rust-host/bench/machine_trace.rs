@@ -3,6 +3,7 @@ use klipper_host_protocol::{
     config,
     extrusion::{Extruder, Settings},
     machine_preview::{Machine, SimulatedExtruder},
+    pressure_advance::Advance,
     step_clock::{Clock, Command},
 };
 use std::{
@@ -32,15 +33,15 @@ fn main() {
         min_simulated_temperature: 170.0,
     })
     .unwrap();
-    let extra = std::env::args()
-        .nth(2)
-        .is_some()
-        .then_some(SimulatedExtruder {
-            geometry: &e,
-            temperature: 210.0,
-            step_distance: 0.004,
-            inverse_direction: true,
-        });
+    let pressure = Advance::new(0.04, &[(0.0, 0.05), (2.46, 0.075)]).unwrap();
+    let flag = std::env::args().nth(2);
+    let extra = flag.as_ref().map(|value| SimulatedExtruder {
+        geometry: &e,
+        temperature: 210.0,
+        step_distance: 0.004,
+        inverse_direction: true,
+        pressure_advance: (value == "--pressure").then_some(&pressure),
+    });
     let trace = machine
         .trace_with_extruder(
             &script,

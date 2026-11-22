@@ -380,9 +380,9 @@ G-code coordinates, travel checks, Z velocity/acceleration limits, XYZ
 trajectory, and clocked step traces. It accepts one motor per Cartesian or
 CoreXY rail and begins from a caller-supplied virtual position. An optional
 offline extruder lane requires explicit geometry, step distance and
-simulated temperature. No physical heater is used. It does not implement
-pressure advance, real temperature verification, homing, bed transforms,
-tool changes or I/O; the result is not a live controller.
+simulated temperature, with optional pressure advance. No physical heater
+is used. It does not implement real temperature verification, homing, bed
+transforms, tool changes or I/O; the result is not a live controller.
 
 ```sh
 python3 bench/machine_trace.py /path/to/pinned/klipper
@@ -552,8 +552,9 @@ taskset -c <CPU> python3 bench/step_compress.py /path/to/pinned/klipper \
 `pressure_advance::Advance` samples a signed nominal E trajectory with
 stock's triangular smoothing, per-phase pressure eligibility, and an
 ordered gain-change timeline. Retraction and E-only travel are not
-pressure-advanced. It does not generate pressure-advanced step commands
-or change a printer's settings.
+pressure-advanced. It also supplies sample positions to the offline E step solver. The solver
+includes lead/trailing smoothing windows around nominal E motion. It
+does not change a printer's settings or output real steps.
 
 ```sh
 python3 bench/pressure_advance.py /path/to/pinned/klipper
@@ -562,8 +563,10 @@ python3 bench/pressure_advance.py /path/to/pinned/klipper
 17,832 queries matched the real stock C extruder position callback,
 including pressure gain changes, idle gaps, retracts, enabled and
 disabled phases, and sampling around phase boundaries. The maximum
-absolute difference was below 1e-12 mm on this run. No physical material
-flow was measured.
+absolute difference was below 1e-12 mm. With a timed gain change,
+the full `bench/machine_trace.py` comparison also matched 381 Cartesian
+and 423 CoreXY direction/step records across four lanes, including the
+E lane. No physical material flow was measured.
 
 ## Frame validation microbenchmark
 

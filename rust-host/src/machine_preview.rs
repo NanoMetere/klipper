@@ -7,6 +7,7 @@ use crate::{
     extrusion::{self, Extruder},
     gcode::{self, Output, Preview},
     lookahead::{Limits, Profile},
+    pressure_advance::Advance,
     step_clock::{self, Clock, Command},
     step_times::{self, Axis, Event, Solver},
     trajectory::{self, Trajectory},
@@ -85,6 +86,7 @@ pub struct SimulatedExtruder<'a> {
     pub temperature: f64,
     pub step_distance: f64,
     pub inverse_direction: bool,
+    pub pressure_advance: Option<&'a Advance>,
 }
 
 impl Machine {
@@ -275,15 +277,23 @@ impl Machine {
             )?;
         }
         let extruder = match (e_queue, extruder) {
-            (Some(queue), Some(e)) => Some(step_lane(
-                &queue,
-                Axis::X,
-                e.step_distance,
-                [0.0; 3],
-                clock,
-                max_error,
-                e.inverse_direction,
-            )?),
+            (Some(queue), Some(e)) => Some(if let Some(advance) = e.pressure_advance {
+                let raw = advance
+                    .crossings(&queue, e.step_distance)
+                    .map_err(Error::Solver)?;
+                step_clock::encode_trace(clock, &raw, max_error, e.inverse_direction)
+                    .map_err(Error::Clock)?
+            } else {
+                step_lane(
+                    &queue,
+                    Axis::X,
+                    e.step_distance,
+                    [0.0; 3],
+                    clock,
+                    max_error,
+                    e.inverse_direction,
+                )?
+            }),
             _ => None,
         };
         Ok(Trace {

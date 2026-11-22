@@ -15,11 +15,15 @@ struct stepper_kinematics *corexy_stepper_alloc(char axis);
 
 struct stepper_kinematics *extruder_stepper_alloc(void);
 void extruder_stepper_free(struct stepper_kinematics *sk);
+void extruder_set_pressure_advance(struct stepper_kinematics *sk, double print_time,
+                                    double pressure_advance, double smooth_time);
 
 int main(void)
 {
     struct trapq *q = trapq_alloc(), *eq = trapq_alloc();
     char op;
+    int n_params = 0;
+    double params[8][3];
     while (scanf(" %c", &op) == 1) {
         if (op == 'm' || op == 'e') {
             double at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel;
@@ -27,6 +31,11 @@ int main(void)
                       &at, &a, &c, &d, &x, &y, &z, &rx, &ry, &rz, &sv, &cv, &accel) != 13)
                 return 2;
             trapq_append(op == 'm' ? q : eq, at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel);
+        } else if (op == 'g') {
+            if (n_params >= 8 || scanf("%lf %lf %lf", &params[n_params][0],
+                                        &params[n_params][1], &params[n_params][2]) != 3)
+                return 2;
+            n_params++;
         } else if (op == 's') {
             double xpos, ypos, zpos, step, last, hz;
             unsigned err, invert;
@@ -45,6 +54,9 @@ int main(void)
             stepcompress_set_time(sc, 0., hz);
             itersolve_set_trapq(sk, trajectory, step);
             itersolve_set_position(sk, xpos, ypos, zpos);
+            if (axis == 'e')
+                for (int i = 0; i < n_params; i++)
+                    extruder_set_pressure_advance(sk, params[i][0], params[i][1], params[i][2]);
             trapq_check_sentinels(trajectory);
             if (itersolve_generate_steps(sk, sc, last) || stepcompress_flush(sc, UINT64_MAX))
                 return 3;
