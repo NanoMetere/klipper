@@ -413,6 +413,23 @@ Klippy handlers (with only offline endpoints exposed and portable
 `info` fields compared). Unit tests also exercise subscription changes
 and stream recovery. No production status providers are loaded.
 
+### Run the preview CLI
+
+From `rust-host/`:
+
+```sh
+cargo run --locked --release --bin klipper-preview -- \
+  examples/preview printer.cfg examples/preview/path.gcode 20000000 1 1 0.2 rails.cfg
+```
+
+The inputs are the configuration root, entry path, G-code path, clock Hz,
+explicit virtual X/Y/Z start, and any included config files. Include
+only the files the configuration needs; paths are resolved under the
+specified root. The synthetic fixture sends nothing to a printer. The
+JSON shows duration and step/direction blocks per motor. The CLI uses
+zero compression error and logical motor directions, without physical pin
+inversion. Errors do not yield a partial trace.
+
 ## Offline tool-coordinate translation lifecycle
 
 The G-code preview can wrap a prior translation with another layer, update

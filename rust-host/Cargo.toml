@@ -26,3 +26,7 @@ required-features = ["identify"]
 [[example]]
 name = "webhook_replay"
 required-features = ["webhooks"]
+
+[[bin]]
+name = "klipper-preview"
+required-features = ["webhooks"]
