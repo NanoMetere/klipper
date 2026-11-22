@@ -292,6 +292,24 @@ look-ahead timed; startup, file I/O, step generation and hardware are
 excluded. The compared algorithm produces the same planned timing, not
 faster physical motion.
 
+## Offline XYZ trajectory
+
+`trajectory::Trajectory` turns look-ahead profiles into bounded XYZ
+acceleration, cruise, deceleration and hold segments. It supports querying
+coordinates at arbitrary times, including stationary gaps; the caller owns
+the timeline for dwells and extrusion-only moves. Position resets, history
+pruning, kinematic transforms, and motor step generation are not included.
+
+```sh
+python3 bench/trajectory.py /path/to/pinned/klipper
+```
+
+Against the pinned C `trapq_append` / `move_get_coord`, all 5,356 segments
+and 14,953 coordinate samples matched exactly in the offline fixture. Inputs
+included zero phases, short phases, idle gaps and samples at boundaries.
+A Rust unit test also builds a timeline from in-memory G-code profiles.
+No performance or hardware claim is made from this comparison.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
