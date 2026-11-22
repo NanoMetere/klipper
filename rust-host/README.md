@@ -713,6 +713,23 @@ subsequent stock motion look-ahead: 864 state/flush snapshots and 6,761
 move profiles agreed exactly. The fixture includes all three planes,
 absolute and relative E, and short arcs. Nothing is sent to hardware.
 
+## Offline bed mesh arithmetic
+
+`bed_mesh` builds a bounded rectangular interpolated mesh using direct,
+Lagrange, or bicubic sampling. It supports bilinear queries, XY
+offsets, Z fade and its inverse, and the stock move splitter. It only
+uses measurements supplied in memory; no probing, calibration state,
+or printer configuration is changed.
+
+```sh
+python3 bench/bed_mesh.py /path/to/pinned/klipper
+```
+
+Against stock `ZMesh` and `MoveSplitter`, 3,528 point queries,
+3,192 inverse positions, and 44,314 split positions across 3,192
+moves matched exactly. The fixture varies grid density, all three
+interpolation modes, mesh offsets and fade state.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one

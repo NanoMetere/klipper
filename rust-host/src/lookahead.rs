@@ -55,7 +55,7 @@ fn positive(v: f64) -> bool {
 
 // Python 3.12's floating sum preserves the low terms when computing
 // sqrt(dx² + dy² + dz²). That rounding can change junctions near reversal.
-fn squared_xyz(delta: [f64; 4]) -> f64 {
+pub(crate) fn squared_xyz(delta: [f64; 4]) -> f64 {
     let (mut high, mut low) = (0.0_f64, 0.0);
     for v in &delta[..3] {
         let x = v * v;
