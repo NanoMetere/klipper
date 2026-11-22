@@ -56,7 +56,7 @@ def fixture():
             yield cmd + sep + sep.join(f"{a}{values[a]:.6f}" for a in axes)
 
 
-def stock(lines, emit, settings=None, emit_profiles=None):
+def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=None):
     from extras.gcode_move import GCodeMove
     from gcode import GCodeDispatch
     from kinematics.extruder import PrinterExtruder
@@ -99,7 +99,7 @@ def stock(lines, emit, settings=None, emit_profiles=None):
         head.max_velocity, head.max_accel = vmax, amax
         head.square_corner_velocity, head.min_cruise_ratio = scv, cruise
         head.commanded_pos[:] = coords.last_position[:] = [*start, 0.]
-        head.extra_axes = []
+        head.extra_axes = [] if simulated_extruder is None else [simulated_extruder]
     ToolHead._calc_junction_deviation(head)
     dispatch.toolhead = head
     moves = []

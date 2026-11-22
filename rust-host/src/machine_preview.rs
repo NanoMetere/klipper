@@ -4,6 +4,7 @@
 
 use crate::{
     config::Config,
+    extrusion::{self, Extruder},
     gcode::{self, Output, Preview},
     lookahead::{Limits, Profile},
     step_clock::{self, Clock, Command},
@@ -28,6 +29,7 @@ pub enum Error {
         line: usize,
         error: gcode::Error,
     },
+    Extrusion(extrusion::Error),
     Trajectory(trajectory::Error),
     Solver(step_times::Error),
     Clock(step_clock::Error),
@@ -75,6 +77,14 @@ fn gear_product(cfg: &Config, section: &'static str) -> Result<f64, Error> {
             (ratio.is_finite() && ratio > 0.0).then_some(ratio)
         })
         .ok_or_else(|| config_error(section, "gear_ratio"))
+}
+
+/// All values are for offline simulation; no physical thermistor is read.
+pub struct SimulatedExtruder<'a> {
+    pub geometry: &'a Extruder,
+    pub temperature: f64,
+    pub step_distance: f64,
+    pub inverse_direction: bool,
 }
 
 impl Machine {
@@ -164,20 +174,47 @@ impl Machine {
         max_error: u32,
         invert: [bool; 3],
     ) -> Result<Trace, Error> {
+        self.trace_with_extruder(script, start, at, clock, max_error, invert, None)
+    }
+
+    /// Offline trace with an explicitly modeled single extruder.
+    #[allow(clippy::too_many_arguments)]
+    pub fn trace_with_extruder(
+        &self,
+        script: &str,
+        start: [f64; 3],
+        at: f64,
+        clock: Clock,
+        max_error: u32,
+        invert: [bool; 3],
+        extruder: Option<SimulatedExtruder<'_>>,
+    ) -> Result<Trace, Error> {
         if !self.in_range(&start) || !at.is_finite() || at <= 0.0 {
             return Err(Error::InitialPosition);
         }
         if script.len() > 8 * 1024 * 1024 {
             return Err(Error::MaximumLines);
         }
-        let mut preview =
-            Preview::new_at(self.limits, 4096, None, [start[0], start[1], start[2], 0.0])
-                .map_err(|error| Error::Gcode { line: 0, error })?;
+        let mut preview = Preview::new_at(
+            self.limits,
+            4096,
+            extruder.as_ref().map(|e| e.geometry.corner_velocity()),
+            [start[0], start[1], start[2], 0.0],
+        )
+        .map_err(|error| Error::Gcode { line: 0, error })?;
         let mut queue = Trajectory::new(16_384).map_err(Error::Trajectory)?;
+        let mut e_queue = if extruder.is_some() {
+            Some(Trajectory::new(16_384).map_err(Error::Trajectory)?)
+        } else {
+            None
+        };
         let mut time = at;
         let mut n = 0;
         let mut append = |o: Output| -> Result<(), Error> {
             for m in o.moves {
+                if let Some(queue) = &mut e_queue {
+                    extrusion::append_nominal(queue, time, &m).map_err(Error::Trajectory)?;
+                }
                 append_move(&mut queue, &mut time, &m).map_err(Error::Trajectory)?;
             }
             time += o.dwell_seconds.unwrap_or(0.0);
@@ -191,18 +228,31 @@ impl Machine {
             if n > MAX_LINES {
                 return Err(Error::MaximumLines);
             }
+            let mut extrusion_error = None;
             let output = preview
                 .line_with(line, |previous, next| {
                     let end = next.end_position();
-                    if !self.in_range(&end[..3]) || end[3] != previous[3] {
+                    if !self.in_range(&end[..3]) {
                         return Err(gcode::Error::MoveOutsidePreview);
                     }
                     if let Some(z) = next.z_ratio() {
                         next.limit(z * self.z_velocity, z * self.z_accel)?;
                     }
+                    if end[3] != previous[3] {
+                        let Some(ex) = &extruder else {
+                            return Err(gcode::Error::MoveOutsidePreview);
+                        };
+                        if let Err(err) = ex.geometry.check_move(next, previous, ex.temperature) {
+                            extrusion_error = Some(err);
+                            return Err(gcode::Error::MoveOutsidePreview);
+                        }
+                    }
                     Ok(())
                 })
-                .map_err(|error| Error::Gcode { line: n, error })?;
+                .map_err(|error| match extrusion_error {
+                    Some(e) => Error::Extrusion(e),
+                    None => Error::Gcode { line: n, error },
+                })?;
             append(output)?;
         }
         let moves = preview
@@ -214,27 +264,58 @@ impl Machine {
         })?;
         let mut commands = std::array::from_fn(|_| Vec::new());
         for (motor, output) in commands.iter_mut().enumerate() {
-            let mut solver = Solver::new(self.motor_axis[motor], self.motor_step[motor], start)
-                .map_err(Error::Solver)?;
-            let mut events: Vec<Event> = Vec::new();
-            for seg in queue.segments().iter().filter(|s| s.direction != [0.0; 3]) {
-                let room = MAX_EVENTS
-                    .checked_sub(events.len())
-                    .filter(|n| *n > 0)
-                    .ok_or(Error::Solver(step_times::Error::EventLimit))?;
-                let more = solver
-                    .crossing_events(seg, seg.at, seg.end(), room)
-                    .map_err(Error::Solver)?;
-                events.extend(more);
-            }
-            *output = step_clock::encode_trace(clock, &events, max_error, invert[motor])
-                .map_err(Error::Clock)?;
+            *output = step_lane(
+                &queue,
+                self.motor_axis[motor],
+                self.motor_step[motor],
+                start,
+                clock,
+                max_error,
+                invert[motor],
+            )?;
         }
+        let extruder = match (e_queue, extruder) {
+            (Some(queue), Some(e)) => Some(step_lane(
+                &queue,
+                Axis::X,
+                e.step_distance,
+                [0.0; 3],
+                clock,
+                max_error,
+                e.inverse_direction,
+            )?),
+            _ => None,
+        };
         Ok(Trace {
             motors: commands,
+            extruder,
             duration: time - at,
         })
     }
+}
+
+fn step_lane(
+    queue: &Trajectory,
+    axis: Axis,
+    distance: f64,
+    start: [f64; 3],
+    clock: Clock,
+    max_error: u32,
+    invert: bool,
+) -> Result<Vec<Command>, Error> {
+    let mut solver = Solver::new(axis, distance, start).map_err(Error::Solver)?;
+    let mut events: Vec<Event> = Vec::new();
+    for seg in queue.segments().iter().filter(|s| s.direction != [0.0; 3]) {
+        let room = MAX_EVENTS
+            .checked_sub(events.len())
+            .filter(|n| *n > 0)
+            .ok_or(Error::Solver(step_times::Error::EventLimit))?;
+        let more = solver
+            .crossing_events(seg, seg.at, seg.end(), room)
+            .map_err(Error::Solver)?;
+        events.extend(more);
+    }
+    step_clock::encode_trace(clock, &events, max_error, invert).map_err(Error::Clock)
 }
 
 fn append_move(queue: &mut Trajectory, at: &mut f64, m: &Profile) -> Result<(), trajectory::Error> {
@@ -242,13 +323,19 @@ fn append_move(queue: &mut Trajectory, at: &mut f64, m: &Profile) -> Result<(), 
         queue.append_profile(*at, m)?;
         *at = queue.segments().last().unwrap().end();
     } else {
-        *at += m.accel_t + m.cruise_t + m.decel_t;
+        let cruise = if (-1e-12..0.0).contains(&m.cruise_t) {
+            0.0
+        } else {
+            m.cruise_t
+        };
+        *at = *at + m.accel_t + cruise + m.decel_t;
     }
     Ok(())
 }
 
 pub struct Trace {
     pub motors: [Vec<Command>; 3],
+    pub extruder: Option<Vec<Command>>,
     pub duration: f64,
 }
 

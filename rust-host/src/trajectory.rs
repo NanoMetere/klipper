@@ -102,6 +102,14 @@ impl Trajectory {
 
     /// Append up to three phases and an optional idle span atomically.
     pub fn append(&mut self, move_: Trapezoid) -> Result<(), Error> {
+        self.append_phases(move_, false)
+    }
+
+    pub(crate) fn append_signed(&mut self, move_: Trapezoid) -> Result<(), Error> {
+        self.append_phases(move_, true)
+    }
+
+    fn append_phases(&mut self, move_: Trapezoid, signed: bool) -> Result<(), Error> {
         let Trapezoid {
             mut at,
             phase_sec,
@@ -115,7 +123,7 @@ impl Trajectory {
             || phase_sec.iter().any(|t| !t.is_finite() || *t < 0.0)
             || [start_velocity, cruise_velocity, accel]
                 .iter()
-                .any(|x| !x.is_finite() || *x < 0.0)
+                .any(|x| !x.is_finite() || (!signed && *x < 0.0))
             || position.iter().chain(&direction).any(|x| !x.is_finite())
         {
             return Err(Error::Invalid);

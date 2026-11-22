@@ -378,9 +378,11 @@ validation that all configured hardware/modules are supported.
 `machine_preview::Machine` combines supported printer and rail settings with
 G-code coordinates, travel checks, Z velocity/acceleration limits, XYZ
 trajectory, and clocked step traces. It accepts one motor per Cartesian or
-CoreXY rail and begins from a caller-supplied virtual position. This does not
-implement homing, bed transforms, extrusion, tool changes or I/O; the
-result is not a live controller.
+CoreXY rail and begins from a caller-supplied virtual position. An optional
+offline extruder lane requires explicit geometry, step distance and
+simulated temperature. No physical heater is used. It does not implement
+pressure advance, real temperature verification, homing, bed transforms,
+tool changes or I/O; the result is not a live controller.
 
 ```sh
 python3 bench/machine_trace.py /path/to/pinned/klipper
@@ -391,6 +393,13 @@ coordinate reset and Z movement, were processed through stock Python config,
 G-code and kinematics and pinned C trapq/itersolve/stepcompress. All 337
 Cartesian and 378 CoreXY direction/step commands (including cumulative
 ticks) matched exactly. Both planned the same 0.728039557 simulated seconds.
+The optional extruder fixture matches 278 Cartesian and 320 CoreXY
+commands across all four lanes, including E-only moves and retracts, XY+E
+moves, flow overrides, and Z limits. Both versions planned 0.824010918
+simulated seconds on that fixture. Stock's real extrusion geometry,
+nominal trapq, compression and step routines are used with a simulated
+temperature gate. This does not exercise pressure advance.
+
 These are deterministic traces in memory with no peripherals or hardware.
 
 ## Offline read-only Klippy requests

@@ -13,17 +13,20 @@
 struct stepper_kinematics *cartesian_stepper_alloc(char axis);
 struct stepper_kinematics *corexy_stepper_alloc(char axis);
 
+struct stepper_kinematics *extruder_stepper_alloc(void);
+void extruder_stepper_free(struct stepper_kinematics *sk);
+
 int main(void)
 {
-    struct trapq *q = trapq_alloc();
+    struct trapq *q = trapq_alloc(), *eq = trapq_alloc();
     char op;
     while (scanf(" %c", &op) == 1) {
-        if (op == 'm') {
+        if (op == 'm' || op == 'e') {
             double at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel;
             if (scanf("%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
                       &at, &a, &c, &d, &x, &y, &z, &rx, &ry, &rz, &sv, &cv, &accel) != 13)
                 return 2;
-            trapq_append(q, at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel);
+            trapq_append(op == 'm' ? q : eq, at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel);
         } else if (op == 's') {
             double xpos, ypos, zpos, step, last, hz;
             unsigned err, invert;
@@ -31,17 +34,18 @@ int main(void)
             if (scanf(" %c %lf %lf %lf %lf %lf %lf %u %u", &axis, &xpos, &ypos,
                       &zpos, &step, &last, &hz, &err, &invert) != 9)
                 return 2;
-            struct stepper_kinematics *sk = axis == '+' || axis == '-'
-                ? corexy_stepper_alloc(axis) : cartesian_stepper_alloc(axis);
+            struct stepper_kinematics *sk = axis == 'e' ? extruder_stepper_alloc()
+                : axis == '+' || axis == '-' ? corexy_stepper_alloc(axis) : cartesian_stepper_alloc(axis);
+            struct trapq *trajectory = axis == 'e' ? eq : q;
             struct list_head messages;
             list_init(&messages);
             struct stepcompress *sc = stepcompress_alloc(&messages);
             stepcompress_fill(sc, 1, err, 3, 4);
             stepcompress_set_invert_sdir(sc, invert);
             stepcompress_set_time(sc, 0., hz);
-            itersolve_set_trapq(sk, q, step);
+            itersolve_set_trapq(sk, trajectory, step);
             itersolve_set_position(sk, xpos, ypos, zpos);
-            trapq_check_sentinels(q);
+            trapq_check_sentinels(trajectory);
             if (itersolve_generate_steps(sk, sc, last) || stepcompress_flush(sc, UINT64_MAX))
                 return 3;
             struct queue_message *m;
@@ -62,12 +66,14 @@ int main(void)
                     return 4;
             }
             puts("end");
-            free(sk);
+            if (axis == 'e') extruder_stepper_free(sk);
+            else free(sk);
             stepcompress_free(sc);
             message_queue_free(&messages);
         } else
             return 2;
     }
     trapq_free(q);
+    trapq_free(eq);
     return 0;
 }

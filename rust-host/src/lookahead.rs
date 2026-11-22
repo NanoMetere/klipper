@@ -154,6 +154,10 @@ impl Move {
         }))
     }
 
+    pub(crate) fn axes_ratio(&self) -> [f64; 4] {
+        self.direction
+    }
+
     pub(crate) fn z_ratio(&self) -> Option<f64> {
         let z = (self.end[2] - self.start[2]).abs();
         (z != 0.0).then(|| self.distance / z)

@@ -22,6 +22,7 @@ pub mod step_clock;
 pub mod config;
 pub mod machine_preview;
 pub mod thermal;
+pub mod extrusion;
 #[cfg(feature = "identify")]
 pub mod step_wire;
 #[cfg(feature = "webhooks")]
