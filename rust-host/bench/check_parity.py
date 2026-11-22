@@ -71,6 +71,8 @@ def main():
                         "--binary", examples/"virtual_sd_replay"]),
         ("print_stats", [sys.executable, ROOT/"bench/print_stats.py", upstream,
                          "--binary", examples/"print_stats_replay"]),
+        ("multi_extruder", [sys.executable, ROOT/"bench/multi_extruder.py", upstream,
+                              "--binary", examples/"multi_extruder_replay"]),
         ("fan", [sys.executable, ROOT/"bench/fan.py", upstream,
                   "--binary", examples/"fan_replay"]),
         ("verify_heater", [sys.executable, ROOT/"bench/verify_heater.py", upstream,

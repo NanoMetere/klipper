@@ -15,6 +15,9 @@ pub use program::{ChangeRequest, Failure, Scripts};
 #[path = "toolchange/fan_transfer.rs"]
 mod fan_transfer;
 pub use fan_transfer::{FanError, FanIntent, FanTransfer};
+#[path = "toolchange/extruders.rs"]
+mod extruders;
+pub use extruders::{Error as ExtruderPositionError, ExtruderPositions};
 
 const MAX_TOOLS: usize = 64;
 

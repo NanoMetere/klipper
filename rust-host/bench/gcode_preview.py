@@ -56,7 +56,7 @@ def fixture():
             yield cmd + sep + sep.join(f"{a}{values[a]:.6f}" for a in axes)
 
 
-def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=None, arc_resolution=None):
+def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=None, arc_resolution=None, extend_directive=None):
     from extras.gcode_move import GCodeMove
     from gcode import GCodeDispatch
     from kinematics.extruder import PrinterExtruder
@@ -179,6 +179,8 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
             owner, layer = layers.pop()
             assert owner == args[0]
             coords.set_move_transform(layer.next, force=True)
+        elif extend_directive:
+            extend_directive(line, coords, head)
         else:
             raise ValueError(line)
 

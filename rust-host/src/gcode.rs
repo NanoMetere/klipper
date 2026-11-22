@@ -422,6 +422,36 @@ impl Preview {
         Ok(())
     }
 
+    /// Rebase the inert E axis at a simulated extruder activation. Like
+    /// stock, flush prior profiles, then reset the flow factor and logical
+    /// E origin without creating an extrusion move.
+    pub fn activate_extruder_position(&mut self, position: f64) -> Result<Output, Error> {
+        if !position.is_finite() {
+            return Err(Error::Nonfinite);
+        }
+        let mut physical = self.toolhead;
+        physical[3] = position;
+        let unmeshed = match &self.mesh {
+            Some((mesh, _)) => mesh.reported(physical).map_err(Error::Mesh)?,
+            None => physical,
+        };
+        let mut candidate = self.coords;
+        candidate.last = self.transform.reported(unmeshed)?;
+        candidate.base[3] = position;
+        candidate.flow = 1.0;
+        candidate.validate()?;
+        let moves = self.finish()?;
+        self.coords = candidate;
+        self.toolhead = physical;
+        if let Some((_, last)) = &mut self.mesh {
+            *last = unmeshed;
+        }
+        Ok(Output {
+            moves,
+            dwell_seconds: None,
+        })
+    }
+
     /// Enable the optional stock G2/G3 plane extension for this offline preview.
     pub fn enable_arcs(&mut self, resolution_mm: f64) -> Result<(), Error> {
         self.arcs = Some(arcs::Mode::new(resolution_mm)?);

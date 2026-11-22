@@ -418,6 +418,22 @@ cargo build --locked --release --example tool_dock_replay
 python3 bench/tool_dock.py /path/to/legacy/klipper /path/to/toolchanger
 ```
 
+## Inert multiple-extruder coordinates
+
+Switching a virtual extruder now returns the pending profiles tagged for
+the outgoing lane, rebases the new tool to its parked physical E
+coordinate, and resets logical E and flow exactly as stock GCodeMove
+does on activation. The switch itself emits no extrusion. Comparing with
+the actual stock activation handler on an inert toolhead matched 21,120
+coordinate snapshots with flow changes, state restore and retractions.
+This tracks independent coordinates, not a complete multi-tool firmware
+motion pipeline.
+
+```sh
+cargo build --locked --release --example multi_extruder_replay
+python3 bench/multi_extruder.py /path/to/pinned/klipper
+```
+
 ## Inert fan and tool fan handoff
 
 The fan queue coalesces requests, applies minimum scheduling intervals and
