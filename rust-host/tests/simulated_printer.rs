@@ -551,6 +551,19 @@ fn verified_two_tool_segments_yield_independent_inert_motor_lanes() {
         Err(Error::Extrusion(_))
     ));
     let lanes = [mk(0, 0., 210.), mk(1, 1.3, 210.)];
+    assert!(matches!(
+        machine.trace_tool_gcode(
+            &home,
+            "G90\nT255 ; no motion",
+            0,
+            &lanes,
+            2.,
+            clock,
+            20,
+            [false; 3]
+        ),
+        Err(Error::ToolSegment)
+    ));
     let result = machine
         .trace_tool_segments(&home, &pieces, &lanes, 2., clock, 20, [false; 3])
         .unwrap();

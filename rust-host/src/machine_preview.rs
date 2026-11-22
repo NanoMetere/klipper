@@ -13,7 +13,7 @@ use crate::{
     pressure_advance::Advance,
     step_clock::{self, Clock, Command},
     step_times::{self, Axis, Event, Solver},
-    toolchange::ExtruderPositions,
+    toolchange::{split_tool_gcode, ExtruderPositions, SegmentError},
     trajectory::{self, Trajectory},
 };
 
@@ -37,6 +37,7 @@ pub enum Error {
     },
     Extrusion(extrusion::Error),
     ToolSegment,
+    ToolDispatch(SegmentError),
     Trajectory(trajectory::Error),
     Solver(step_times::Error),
     Clock(step_clock::Error),
@@ -269,6 +270,25 @@ impl Machine {
         invert: [bool; 3],
     ) -> Result<Trace, Error> {
         self.trace_with_extruder(script, start, at, clock, max_error, invert, None)
+    }
+
+    /// Preview bare T selections as topology changes with no physical
+    /// docking or plugin calls. Every selected tool, including a trailing
+    /// motionless T command, must be present in the declared lane list.
+    #[allow(clippy::too_many_arguments)]
+    pub fn trace_tool_gcode(
+        &self,
+        home: &VirtualHoming,
+        script: &str,
+        initial: u8,
+        lanes: &[ToolLane<'_>],
+        at: f64,
+        clock: Clock,
+        max_error: u32,
+        invert: [bool; 3],
+    ) -> Result<MultiTrace, Error> {
+        let pieces = split_tool_gcode(script, initial).map_err(Error::ToolDispatch)?;
+        self.trace_tool_segments(home, &pieces, lanes, at, clock, max_error, invert)
     }
 
     /// Run bounded, explicitly selected tool phases from verified virtual home.

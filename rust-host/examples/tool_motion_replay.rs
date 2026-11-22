@@ -93,6 +93,29 @@ fn main() {
             [false; 3],
         )
         .unwrap();
+    let text = format!(
+        "{}T1\n{}T0\n{}",
+        pieces[0].gcode, pieces[1].gcode, pieces[2].gcode
+    );
+    let textual = machine
+        .trace_tool_gcode(
+            &home,
+            &text,
+            0,
+            &[lane(0, 0.), lane(1, 1.3)],
+            2.,
+            Clock {
+                last_encoded: 0,
+                time_origin: 0.,
+                hz: 20e6,
+            },
+            20,
+            [false; 3],
+        )
+        .unwrap();
+    assert_eq!(textual.motors, trace.motors);
+    assert_eq!(textual.tools, trace.tools);
+    assert_eq!(textual.duration, trace.duration);
     for segment in trace
         .motors
         .into_iter()

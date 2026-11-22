@@ -18,6 +18,9 @@ pub use fan_transfer::{FanError, FanIntent, FanTransfer};
 #[path = "toolchange/extruders.rs"]
 mod extruders;
 pub use extruders::{Error as ExtruderPositionError, ExtruderPositions};
+#[path = "toolchange/segments.rs"]
+mod segments;
+pub use segments::{split as split_tool_gcode, Error as SegmentError};
 
 const MAX_TOOLS: usize = 64;
 

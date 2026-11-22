@@ -433,7 +433,11 @@ Python+C (1.270130318 simulated seconds). The GPIO-free C firmware mode
 checks all five motors at 17 checkpoints, reaching
 `[3920, -80, 40, 150, 175]` on the fixed path. This validates moving
 with explicitly selected lanes, not automatic T-command docking, a full
-tool-change plugin runtime, or any physical setup.
+tool-change plugin runtime, or any physical setup. The preview accepts
+bare `T0`–`T255` selection lines as an alternative to explicit sections.
+They select only a declared simulation lane; they do not dock tools or
+run T-command macros. A missing lane is rejected even on a trailing T
+line with no motion; `M104 T1` is not a selection line.
 
 ```sh
 cargo build --locked --release --example multi_extruder_replay
