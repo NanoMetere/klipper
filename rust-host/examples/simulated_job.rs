@@ -73,7 +73,8 @@ fn run() -> Result<(), String> {
             script: include_str!("preview/path_macro_tail.gcode"),
             macros: Some(&macros),
             discovered: &codec,
-            oids: [3, 4, 5],
+            oids: &[3, 4, 5],
+            extruder: None,
             hz,
         },
     )

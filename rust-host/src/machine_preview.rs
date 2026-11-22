@@ -215,10 +215,25 @@ impl Machine {
         max_error: u32,
         invert: [bool; 3],
     ) -> Result<Trace, Error> {
+        self.trace_homed_with_extruder(script, home, at, clock, max_error, invert, None)
+    }
+
+    /// Optional inert extrusion on the same verified virtual home geometry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn trace_homed_with_extruder(
+        &self,
+        script: &str,
+        home: &VirtualHoming,
+        at: f64,
+        clock: Clock,
+        max_error: u32,
+        invert: [bool; 3],
+        extruder: Option<SimulatedExtruder<'_>>,
+    ) -> Result<Trace, Error> {
         let start = home
             .ready_position_for(self.homing_kinematics(), self.motor_step)
             .map_err(Error::VirtualHoming)?;
-        self.trace(script, start, at, clock, max_error, invert)
+        self.trace_with_extruder(script, start, at, clock, max_error, invert, extruder)
     }
 
     /// Previews a bounded script from an explicit virtual position. Inversion

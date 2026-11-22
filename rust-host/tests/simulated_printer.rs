@@ -52,7 +52,8 @@ fn plan(script: &str) -> Simulation {
         script,
         macros: Some(&registry),
         discovered: &codec,
-        oids: [4, 5, 6],
+        oids: &[4, 5, 6],
+        extruder: None,
         hz: 20e6,
     };
     assert!(matches!(
@@ -177,6 +178,99 @@ fn simulated_heater_failure_prevents_any_remaining_motion() {
     );
     assert_eq!(simulation.snapshot().state, State::Faulted);
     assert!(simulation.advance(500_000_000, 256).unwrap().is_empty());
+}
+
+#[test]
+fn optional_fourth_lane_rejects_cold_extrusion_and_tracks_inert_observations() {
+    use klipper_host_protocol::{
+        extrusion::{Extruder, Settings},
+        machine_preview::SimulatedExtruder,
+        pressure_advance::Advance,
+        print_stats::Extrusion,
+    };
+    let cfg = source();
+    let machine = Machine::from_config(&cfg).unwrap();
+    let xyz = [1., 1., 0.2];
+    let mut home = machine.virtual_homing(xyz).unwrap();
+    for (axis, coordinate) in xyz.into_iter().enumerate() {
+        let arm = home.arm(axis as u8, coordinate, true).unwrap();
+        let c = Some(Counter {
+            start: 10,
+            trigger: 9,
+            halt: 9,
+        });
+        let readings = if axis < 2 {
+            [c, c, None]
+        } else {
+            [None, None, c]
+        };
+        home.complete(arm, readings, true).unwrap();
+    }
+    let geometry = Extruder::new(Settings {
+        nozzle: 0.4,
+        filament: 1.75,
+        max_area: 0.64,
+        retraction_distance: 15.,
+        retraction_velocity: 20.,
+        retraction_accel: 300.,
+        corner_velocity: 1.,
+        min_simulated_temperature: 170.,
+    })
+    .unwrap();
+    let pressure = Advance::new(0.04, &[(0., 0.04)]).unwrap();
+    let code = codec();
+    let input = |temperature| Input {
+        name: "extrusion.gcode",
+        script: include_str!("../examples/preview/path_extrusion.gcode"),
+        macros: None,
+        discovered: &code,
+        oids: &[1, 3, 8, 13],
+        hz: 20e6,
+        extruder: Some(SimulatedExtruder {
+            geometry: &geometry,
+            temperature,
+            step_distance: 0.004,
+            inverse_direction: false,
+            pressure_advance: Some(&pressure),
+        }),
+    };
+    assert!(matches!(
+        Simulation::prepare(&machine, &home, input(30.)),
+        Err(simulated_printer::Error::Machine(
+            klipper_host_protocol::machine_preview::Error::Extrusion(_)
+        ))
+    ));
+    let mut sim = Simulation::prepare(&machine, &home, input(210.)).unwrap();
+    sim.start(0).unwrap();
+    sim.advance(50_000, 256).unwrap();
+    sim.extrusion_observation(Extrusion {
+        position: 1.2,
+        factor: 1.,
+    })
+    .unwrap();
+    let mut source = Snapshot::default();
+    sim.publish(&mut source).unwrap();
+    let request = b"{\"id\":1,\"method\":\"objects/query\",\"params\":{\"objects\":{\"print_stats\":[\"filament_used\"]}}}\x03";
+    let mut replies = Vec::new();
+    Session::default().feed(request, &source, 1., |response| {
+        collect(response, &mut replies)
+    });
+    assert_eq!(
+        replies[0]["result"]["status"]["print_stats"]["filament_used"],
+        1.2
+    );
+    let mut lanes = BTreeSet::new();
+    let end = sim.snapshot().planned_end;
+    for _ in 0..4 {
+        lanes.extend(
+            sim.advance(end, 256)
+                .unwrap()
+                .into_iter()
+                .map(|item| item.lane),
+        );
+    }
+    assert_eq!(sim.snapshot().state, State::Finished);
+    assert!(lanes.contains(&3));
 }
 
 #[cfg(unix)]

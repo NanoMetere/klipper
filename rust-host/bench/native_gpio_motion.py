@@ -33,6 +33,10 @@ def build(upstream, directory):
             raise RuntimeError("git archive failed")
     shutil.copyfile(source, directory / ".config")
     shutil.copyfile(ROOT/"bench/linux_gpio_fixture.c", directory/"src/linux/gpio.c")
+    shutil.copyfile(ROOT/"bench/linux_timer_fixture.c", directory/"src/linux/timer.c")
+    # Test-only accessor; the stock scheduling logic is unchanged.
+    with (directory/"src/sched.c").open("a") as sched:
+        sched.write("\nuint32_t rust_fixture_next_timer(void) { return SchedStatus.timer_list->waketime; }\n")
     for cmd in (["make", "olddefconfig"], ["make", "-j2"]):
         result = subprocess.run(cmd, cwd=directory, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
@@ -40,14 +44,14 @@ def build(upstream, directory):
             raise RuntimeError(result.stdout)
     compiled = directory / "out/klipper.dict"
     config = json.loads(compiled.read_text())["config"]
-    if config.get("GPIO_SIM_ONLY") != "rust-host-test-v1":
+    if any(config.get(key) != "rust-host-test-v1" for key in ("GPIO_SIM_ONLY", "TIMER_SIM_ONLY")):
         raise RuntimeError("refusing to run an unmarked software fixture")
     return directory / "out/klipper.elf"
 
 
-def run(binary, firmware):
+def run(binary, firmware, mode="--gpio-motion"):
     with fresh(firmware) as port:
-        return subprocess.run([binary, "--gpio-motion", "1"], stdin=port, stdout=port,
+        return subprocess.run([binary, mode, "1"], stdin=port, stdout=port,
                               stderr=subprocess.PIPE, text=True, timeout=12)
 
 
@@ -64,14 +68,17 @@ def main():
     assert control.returncode and "NotFixture" in control.stderr, control.stderr
     with tempfile.TemporaryDirectory(prefix="klipper-gpio-stub-") as folder:
         mcu = build(upstream, Path(folder))
-        for _ in range(a.rounds):
-            outcome = run(binary, mcu)
-            assert outcome.returncode == 0, outcome.stderr
-            tag, crc, payloads, *positions = outcome.stderr.split()
-            assert tag == "GPIO_FIXTURE" and int(crc) != 0
-            assert int(payloads) > 0 and [int(p) for p in positions] == [720, -120, 112], outcome.stderr
-    print(f"{a.rounds} isolated native run(s): {payloads} queued commands; C firmware and Rust "
-          "agree on motor counts [720, -120, 112]; plain Linux MCU rejected")
+        cases = {"--gpio-motion": [720, -120, 112], "--gpio-extrusion": [720, -120, 112, 100]}
+        for mode, expected in cases.items():
+            for _ in range(a.rounds):
+                outcome = run(binary, mcu, mode)
+                assert outcome.returncode == 0, (mode, outcome.stderr)
+                tag, crc, payloads, *positions = outcome.stderr.split()
+                assert tag == "GPIO_FIXTURE" and int(crc) != 0
+                assert int(payloads) > 0 and [int(p) for p in positions] == expected, outcome.stderr
+            print(f"{mode}: {a.rounds} isolated run(s), {payloads} commands; C firmware and "
+                  f"Rust agree on motor counts {expected}")
+    print("Plain Linux MCU refused before configuration/motion")
 
 
 if __name__ == "__main__":

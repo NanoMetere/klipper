@@ -400,8 +400,9 @@ stock-compatible SD line boundaries, optional limited macros, the offline
 step pipeline and a virtual job. It presents read-only progress and print
 statistics while moving through standby, printing, paused, complete or
 faulted states. The reported input byte boundary is preflight metadata,
-not a live virtual SD read position. This particular runner is XYZ-only
-and accepts no physical device or control-client paths.
+not a live virtual SD read position. The demo command below is XYZ-only;
+the simulation library can also hold one explicitly inert extruder lane.
+Neither accepts physical device or control-client paths.
 
 ```sh
 cargo run --locked --release --example simulated_job -- /path/to/klipper.dict
@@ -416,14 +417,18 @@ including timing boundaries and 32-bit clock wrap. The virtual stepper can
 drop all pending edges on a latched stop. No electrical or motor timing is
 measured by these tests.
 
-The opt-in native GPIO fixture archives pinned stock Linux firmware into a
-temporary tree, substitutes compile-time GPIO memory stubs, and adds a
-fixture-only identifier. The Rust test refuses the normal stock dictionary
-before sending any configuration or motion writes. With the fixture
-dictionary it enqueues real firmware commands on a fresh PTY and reads the
-stock C stepper counters. All 138 commands and final counts
-`[720, -120, 112]` were reproduced. This is real firmware scheduling with
-no physical pins, pulses, or motors.
+The opt-in native motion fixture archives pinned stock Linux firmware into
+a temporary tree, replaces GPIO with memory stubs, and uses an explicit
+virtual board clock. Stock C scheduler and stepper logic are preserved.
+The Rust test refuses the normal dictionary before sending configuration
+or motion commands. With the marked fixture, it queues real firmware
+commands on a fresh PTY and compares C and Rust step counters at 17 virtual
+clock checkpoints. The XYZ macro path runs 138 commands with end counts
+`[720, -120, 112]`. A second path with input shaping, pressure advance,
+retraction and extrusion runs 277 commands with end counts
+`[720, -120, 112, 100]`. Cold extrusion is rejected during virtual
+preflight. No physical pins, pulses, motors or wall-clock timing are tested
+in this deterministic fixture.
 
 ```sh
 cargo build --locked --release --example native_mcu

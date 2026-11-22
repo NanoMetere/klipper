@@ -5,9 +5,9 @@
 use crate::{
     gcode_macros::Registry,
     homing::VirtualHoming,
-    machine_preview::{self, Machine},
+    machine_preview::{self, Machine, SimulatedExtruder},
     print_stats::{self, Extrusion, Stats},
-    step_clock::Clock,
+    step_clock::{Clock, Command},
     step_wire::StepMessages,
     verify_heater::{Decision as HeaterDecision, Fault as HeaterFault, Monitor},
     virtual_job::{self, Issued, Job, State},
@@ -39,6 +39,8 @@ pub struct Simulation {
     source_bytes: usize,
     hz: f64,
     last_clock: u64,
+    reading: Extrusion,
+    extruder_lane: bool,
 }
 
 /// Inputs bound to the explicitly virtual run; no external paths are opened.
@@ -47,7 +49,8 @@ pub struct Input<'a> {
     pub script: &'a str,
     pub macros: Option<&'a Registry>,
     pub discovered: &'a StepMessages,
-    pub oids: [u8; 3],
+    pub oids: &'a [u8],
+    pub extruder: Option<SimulatedExtruder<'a>>,
     pub hz: f64,
 }
 
@@ -83,15 +86,37 @@ impl Simulation {
             hz: input.hz,
         };
         let trace = machine
-            .trace_homed(script, home, START_TIME, clock, 20, [false; 3])
+            .trace_homed_with_extruder(
+                script,
+                home,
+                START_TIME,
+                clock,
+                20,
+                [false; 3],
+                input.extruder,
+            )
             .map_err(Error::Machine)?;
         let ticks = ((START_TIME + trace.duration) * clock.hz).ceil();
         if !(0.0..u64::MAX as f64).contains(&ticks) {
             return Err(Error::Clock);
         }
-        let end = (ticks as u64).checked_add(1).ok_or(Error::Clock)?;
+        let end_motion = trace
+            .motors
+            .iter()
+            .chain(trace.extruder.iter())
+            .flat_map(|lane| lane.iter())
+            .filter_map(|cmd| match cmd {
+                Command::Steps(b) => Some(b.last_clock),
+                _ => None,
+            })
+            .max()
+            .unwrap_or_default();
+        let end = (ticks as u64)
+            .max(end_motion)
+            .checked_add(1)
+            .ok_or(Error::Clock)?;
         let job =
-            Job::for_trace(input.discovered, &trace, &input.oids, 0, end, 1).map_err(Error::Job)?;
+            Job::for_trace(input.discovered, &trace, input.oids, 0, end, 1).map_err(Error::Job)?;
         let mut stats = Stats::default();
         stats.select(input.name).map_err(Error::Status)?;
         Ok(Self {
@@ -101,6 +126,8 @@ impl Simulation {
             source_bytes: input.script.len(),
             hz: input.hz,
             last_clock: 0,
+            reading: NO_EXTRUDER,
+            extruder_lane: trace.extruder.is_some(),
         })
     }
 
@@ -116,7 +143,7 @@ impl Simulation {
         let at = self.seconds(clock)?;
         self.job.start(clock).map_err(Error::Job)?;
         self.stats
-            .note_start(at, NO_EXTRUDER)
+            .note_start(at, self.reading)
             .map_err(Error::Status)?;
         self.last_clock = clock;
         Ok(())
@@ -139,7 +166,7 @@ impl Simulation {
         let at = self.seconds(self.last_clock)?;
         self.job.pause().map_err(Error::Job)?;
         self.stats
-            .note_pause(at, NO_EXTRUDER)
+            .note_pause(at, self.reading)
             .map_err(Error::Status)
     }
 
@@ -147,9 +174,26 @@ impl Simulation {
         let at = self.seconds(clock)?;
         self.job.resume(clock).map_err(Error::Job)?;
         self.stats
-            .note_start(at, NO_EXTRUDER)
+            .note_start(at, self.reading)
             .map_err(Error::Status)?;
         self.last_clock = clock;
+        Ok(())
+    }
+
+    /// Attach an inert extrusion observation to print status. This is
+    /// separate from planning and never controls heat or motion.
+    pub fn extrusion_observation(&mut self, reading: Extrusion) -> Result<(), Error> {
+        if !self.extruder_lane
+            || !reading.position.is_finite()
+            || !reading.factor.is_finite()
+            || reading.factor <= 0.0
+        {
+            return Err(Error::Status(print_stats::Error::Extrusion));
+        }
+        self.stats
+            .observe(self.seconds(self.last_clock)?, reading)
+            .map_err(Error::Status)?;
+        self.reading = reading;
         Ok(())
     }
 
@@ -209,7 +253,7 @@ impl Simulation {
         });
         let stats = self
             .stats
-            .observe(time, NO_EXTRUDER)
+            .observe(time, self.reading)
             .map_err(Error::Status)?;
         Ok(stats.publish(source)
             && self.job.publish_status(source)

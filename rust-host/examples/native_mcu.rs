@@ -14,6 +14,7 @@ mod linux {
         clock::{ClockMessages, Error as ClockError, Response},
         clock_sync::{PrimaryClock, Sample, Update},
         encode,
+        fixture_mcu::ShutdownWatch,
         identify::Identify,
         mcu_config::{Error as ConfigError, Messages, Profile, Report, Session, Start},
         read_query::{Action, ReadQuery},
@@ -68,6 +69,7 @@ mod linux {
         pub(super) reader: File,
         pub(super) writer: File,
         pub(super) sequence: u8,
+        pub(super) shutdown_watch: Option<ShutdownWatch>,
         discarded: usize,
         frame_retries: usize,
         response_retries: usize,
@@ -127,6 +129,9 @@ mod linux {
                         let read_end = Instant::now();
                         let now = read_end.duration_since(start);
                         let stats = self.rx.feed(&bytes[..count], |frame| {
+                            if let Some(watch) = &mut self.shutdown_watch {
+                                watch.observe(frame.payload);
+                            }
                             if result.is_some() || !query.expects(frame.sequence) {
                                 return;
                             }
@@ -206,6 +211,9 @@ mod linux {
             };
             let mut received = None;
             link.rx.feed(&buf[..read], |f| {
+                if let Some(watch) = &mut link.shutdown_watch {
+                    watch.observe(f.payload);
+                }
                 if f.sequence == expected_sequence && received.is_none() {
                     received = accept(f).transpose();
                 }
@@ -445,7 +453,8 @@ mod linux {
         let trace = arg == "--clock-trace";
         let pipe = arg == "--pipeline";
         let trigger = arg == "--trigger-fixture";
-        let gpio_fixture = arg == "--gpio-motion";
+        let gpio_extrusion = arg == "--gpio-extrusion";
+        let gpio_fixture = arg == "--gpio-motion" || gpio_extrusion;
         let config_fixture = arg == "--config-fixture" || trigger || gpio_fixture;
         let number = if trace || pipe || config_fixture {
             argv.next().ok_or("missing trace size")?
@@ -489,6 +498,7 @@ mod linux {
                 .open("/proc/self/fd/1")
                 .map_err(|e| e.to_string())?,
             sequence: 0,
+            shutdown_watch: None,
             discarded: 0,
             frame_retries: 0,
             response_retries: 0,
@@ -514,7 +524,7 @@ mod linux {
         }
         let dictionary = identify.dictionary().map_err(|e| format!("{e:?}"))?;
         if gpio_fixture {
-            return crate::gpio_motion::run(link, &dictionary);
+            return crate::gpio_motion::run(link, &dictionary, gpio_extrusion);
         }
         if config_fixture {
             let messages = Messages::from_dictionary(&dictionary).map_err(|e| format!("{e:?}"))?;
