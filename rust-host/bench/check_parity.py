@@ -23,6 +23,7 @@ def main():
     p.add_argument("--upstream", type=Path, required=True, help=f"git checkout at {PIN}")
     p.add_argument("--dictionary", type=Path, help="JSON from matching Linux MCU build")
     p.add_argument("--native-pty", action="store_true", help="run only against a newly created Linux MCU PTY")
+    p.add_argument("--macro-reference", action="store_true", help="also compare stock macro dispatch (requires Jinja2)")
     a = p.parse_args()
     upstream = a.upstream.resolve()
     got = subprocess.check_output(["git", "-C", upstream, "rev-parse", "HEAD"], text=True).strip()
@@ -43,6 +44,8 @@ def main():
         runtime = "sh" if name.endswith(".sh") else sys.executable
         extra = ["--rounds", "0"] if name in ("lookahead.py", "gcode_preview.py") else []
         phases.append((name, [runtime, ROOT/"bench"/name, upstream, *extra]))
+    if a.macro_reference:
+        phases.append(("gcode_macros", [sys.executable, ROOT/"bench/gcode_macros.py", upstream]))
     phases.extend([
         ("build_fixture_binaries", ["cargo", "build", "--locked", "--release", "--examples"]),
         ("webhooks", [sys.executable, ROOT/"bench/webhooks.py", upstream, examples/"webhook_replay"]),

@@ -3,6 +3,7 @@
 
 use klipper_host_protocol::{
     config,
+    gcode_macros::Registry,
     machine_preview::Machine,
     step_clock::{Clock, Command},
 };
@@ -17,11 +18,11 @@ use std::{
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 const HELP: &str =
-    "Usage: klipper-preview ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
+    "Usage: klipper-preview [--expand-macros] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
     ROOT contains config files; ENTRY and INCLUDE paths must be relative to it.\n\
     List every included file needed, including matches for wildcard includes.\n\
     XYZ is the explicit virtual starting position in millimeters.\n\
-    Prints JSON to stdout. Does not connect to any printer or load macros.";
+    Prints JSON to stdout, never connects to a printer. Opt in to limited offline macro expansion.";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -67,6 +68,12 @@ fn run() -> Result<(), String> {
         println!("{HELP}");
         return Ok(());
     }
+    let expand_macros = args.first().is_some_and(|flag| flag == "--expand-macros");
+    let args = if expand_macros {
+        &args[1..]
+    } else {
+        args.as_slice()
+    };
     if args.len() < 7 || args.len() - 6 > 1024 {
         return Err(HELP.into());
     }
@@ -99,6 +106,13 @@ fn run() -> Result<(), String> {
     }
 
     let parsed = config::parse(&files, entry).map_err(|e| format!("configuration: {e:?}"))?;
+    let script = if expand_macros {
+        Registry::from_config(&parsed)
+            .and_then(|registry| registry.expand(&script))
+            .map_err(|e| format!("macro expansion: {e:?}"))?
+    } else {
+        script
+    };
     let machine = Machine::from_config(&parsed).map_err(|e| format!("machine: {e:?}"))?;
     let trace = machine
         .trace(

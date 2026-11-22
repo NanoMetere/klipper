@@ -379,6 +379,30 @@ tests additionally cover absent literals, empty wildcard matches, escaped
 paths and cycles. This is read-only parsing parity for the fixture, not
 validation that all configured hardware/modules are supported.
 
+## Opt-in offline macro expansion
+
+The preview CLI can expand bounded static `[gcode_macro NAME]` bodies,
+nested calls, and finite numeric `{params.NAME}` substitutions with optional
+numeric `|default(n)`. Unsupported definitions may be present but are
+rejected if called. The expander does not execute Jinja, access printer
+objects, register live commands, emulate template actions, rename commands,
+or support macro variables and conditionals. Expansion is off by default.
+
+```sh
+cargo run --locked --release --bin klipper-preview -- --expand-macros \
+  examples/preview printer.cfg examples/preview/path_macro.gcode \
+  20000000 1 1 .2 rails.cfg
+python3 bench/gcode_macros.py /path/to/pinned/klipper
+```
+
+The optional Python comparator requires stock Klippy's Jinja2 dependency.
+Under the supported subset, all 2,700 dispatched commands from 600 seeded
+calls matched stock Klippy/Jinja2, including nested and parameterized
+calls. The CLI integration fixture produced byte-identical step traces
+with and without macro expansion. The tests check rejection of cycles,
+unsupported templates and missing arguments; this is not broad Toolchanger
+macro compatibility.
+
 ## Offline homing evidence
 
 `homing` projects simulated trigger and halt counters to Cartesian or

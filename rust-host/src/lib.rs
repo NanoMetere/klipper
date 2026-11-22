@@ -15,6 +15,7 @@ pub mod planner;
 pub mod flight;
 pub mod lookahead;
 pub mod gcode;
+pub mod gcode_macros;
 pub mod trajectory;
 pub mod step_times;
 pub mod step_compress;

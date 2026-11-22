@@ -36,3 +36,25 @@ fn previews_fixture_without_hardware_and_rejects_missing_includes() {
         assert!(reply.stdout.is_empty());
     }
 }
+
+#[test]
+fn opts_in_to_pure_macro_expansion_and_produces_the_same_motion() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/preview");
+    let run = |flags: &[&str], script: &str| {
+        Command::new(env!("CARGO_BIN_EXE_klipper-preview"))
+            .args(flags)
+            .arg(&root)
+            .arg("printer.cfg")
+            .arg(root.join(script))
+            .args(["20000000", "1", "1", ".2", "rails.cfg"])
+            .output()
+            .unwrap()
+    };
+    let flat = run(&[], "path.gcode");
+    let rejected = run(&[], "path_macro.gcode");
+    let macro_run = run(&["--expand-macros"], "path_macro.gcode");
+    assert!(flat.status.success() && macro_run.status.success());
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(rejected.stdout.is_empty());
+    assert_eq!(macro_run.stdout, flat.stdout);
+}
