@@ -4,63 +4,63 @@
 //! Framing and CRC adapted from Klipper's klippy/msgproto.py.
 //! Upstream copyright (C) 2016-2024 Kevin O'Connor <kevin@koconnor.net>.
 
-#[cfg(feature = "identify")]
-pub mod identify;
+pub mod bed_mesh;
+pub mod can;
 #[cfg(feature = "identify")]
 pub mod clock;
-#[cfg(feature = "identify")]
-pub mod mcu_config;
+pub mod clock_sync;
+pub mod config;
+pub mod extrusion;
+pub mod fan;
 #[cfg(feature = "identify")]
 pub mod fixture_mcu;
-#[cfg(feature = "identify")]
-pub mod trigger_sync;
-#[cfg(feature = "identify")]
-pub mod trigger_dispatch;
-pub mod stream;
-pub mod read_query;
-pub mod clock_sync;
-pub mod planner;
 pub mod flight;
-pub mod lookahead;
 pub mod gcode;
 pub mod gcode_macros;
-pub mod trajectory;
-pub mod step_times;
-pub mod step_compress;
-pub mod step_clock;
-pub mod config;
-pub mod machine_preview;
-pub mod thermal;
-pub mod fan;
-pub mod verify_heater;
-pub mod toolchange;
-pub mod extrusion;
-pub mod pressure_advance;
+pub mod homing;
+#[cfg(feature = "identify")]
+pub mod identify;
 pub mod input_shaper;
 mod input_shaper_defs;
-pub mod bed_mesh;
-pub mod probe;
-pub mod homing;
-pub mod can;
-pub mod retry_timing;
-pub mod timed_flight;
-pub mod virtual_can;
-pub mod virtual_sd;
+pub mod lookahead;
+pub mod machine_preview;
+#[cfg(feature = "identify")]
+pub mod mcu_config;
+pub mod planner;
+pub mod pressure_advance;
 pub mod print_stats;
+pub mod probe;
+pub mod read_query;
+pub mod retry_timing;
+#[cfg(feature = "identify")]
+pub mod simulated_printer;
+#[cfg(all(unix, feature = "webhooks"))]
+pub mod status_socket;
+pub mod step_clock;
+pub mod step_compress;
+pub mod step_times;
 #[cfg(feature = "identify")]
 pub mod step_wire;
+pub mod stream;
+pub mod thermal;
+pub mod timed_flight;
+pub mod toolchange;
+pub mod trajectory;
+#[cfg(feature = "identify")]
+pub mod trigger_dispatch;
+#[cfg(feature = "identify")]
+pub mod trigger_sync;
+pub mod verify_heater;
+pub mod virtual_can;
+#[cfg(feature = "identify")]
+pub mod virtual_job;
+pub mod virtual_sd;
 #[cfg(feature = "identify")]
 pub mod virtual_stepper;
 #[cfg(feature = "identify")]
-pub mod virtual_job;
-#[cfg(feature = "identify")]
-pub mod simulated_printer;
+mod vlq;
 #[cfg(feature = "webhooks")]
 pub mod webhooks;
-#[cfg(all(unix, feature = "webhooks"))]
-pub mod status_socket;
-#[cfg(feature = "identify")]
-mod vlq;
 
 pub const MIN_FRAME: usize = 5;
 pub const MAX_FRAME: usize = 64;
@@ -118,7 +118,9 @@ fn crc16(bytes: &[u8]) -> [u8; 2] {
     let blocks = bytes.chunks_exact(4);
     let remaining = blocks.remainder();
     for block in blocks {
-        let [a, b, c, d] = *block else { unreachable!("four-byte chunk") };
+        let [a, b, c, d] = *block else {
+            unreachable!("four-byte chunk")
+        };
         crc = CRC_TABLES[3][(a ^ crc as u8) as usize]
             ^ CRC_TABLES[2][(b ^ (crc >> 8) as u8) as usize]
             ^ CRC_TABLES[1][c as usize]
@@ -168,10 +170,13 @@ pub fn decode_prefix(input: &[u8]) -> Result<Option<(Frame<'_>, usize)>, FrameEr
     if crc16(&input[..crc_offset]).as_slice() != &input[crc_offset..length - 1] {
         return Err(FrameError::Checksum);
     }
-    Ok(Some((Frame {
-        sequence: input[1] & SEQ_MASK,
-        payload: &input[2..crc_offset],
-    }, length)))
+    Ok(Some((
+        Frame {
+            sequence: input[1] & SEQ_MASK,
+            payload: &input[2..crc_offset],
+        },
+        length,
+    )))
 }
 
 #[cfg(test)]
@@ -182,10 +187,16 @@ mod tests {
     fn checks_upstream_wire_vectors() {
         for (seq, payload, expected) in VECTORS {
             assert_eq!(encode(*seq, payload).unwrap().as_slice(), *expected);
-            assert_eq!(decode_prefix(expected), Ok(Some((Frame {
-                sequence: *seq & SEQ_MASK,
-                payload,
-            }, expected.len()))));
+            assert_eq!(
+                decode_prefix(expected),
+                Ok(Some((
+                    Frame {
+                        sequence: *seq & SEQ_MASK,
+                        payload,
+                    },
+                    expected.len()
+                )))
+            );
         }
     }
 
@@ -216,8 +227,10 @@ mod tests {
                     let offset = frame.len() - 3;
                     assert_eq!(&frame[offset..offset + 2], &scalar(&frame[..offset]));
                     let (decoded, size) = decode_prefix(&frame).unwrap().unwrap();
-                    assert_eq!((decoded.sequence, decoded.payload, size),
-                               (seq, payload.as_slice(), frame.len()));
+                    assert_eq!(
+                        (decoded.sequence, decoded.payload, size),
+                        (seq, payload.as_slice(), frame.len())
+                    );
                 }
             }
         }
@@ -234,7 +247,10 @@ mod tests {
             assert_eq!(frame.payload, data.as_slice());
             assert_eq!(consumed, bytes.len());
         }
-        assert_eq!(encode(0, &[0; MAX_PAYLOAD + 1]), Err(FrameError::PayloadTooLong));
+        assert_eq!(
+            encode(0, &[0; MAX_PAYLOAD + 1]),
+            Err(FrameError::PayloadTooLong)
+        );
     }
 
     #[test]

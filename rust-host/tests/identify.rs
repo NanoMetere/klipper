@@ -21,7 +21,10 @@ fn unhex(s: &str) -> Vec<u8> {
 fn upstream_fixture() -> Identify {
     let mut reader = Identify::default();
     let mut done = false;
-    for (index, line) in include_str!("fixtures/identify_wire.txt").lines().enumerate() {
+    for (index, line) in include_str!("fixtures/identify_wire.txt")
+        .lines()
+        .enumerate()
+    {
         let (request, response) = line.split_once(' ').unwrap();
         let seq = (index % 16) as u8;
         assert!(!done);
@@ -39,8 +42,12 @@ fn upstream_fixture() -> Identify {
 fn replays_upstream_identify_frames() {
     let reader = upstream_fixture();
     let dictionary = reader.dictionary().unwrap();
-    assert!(dictionary.commands.contains_key("identify offset=%u count=%c"));
-    assert!(dictionary.responses.contains_key("identify_response offset=%u data=%.*s"));
+    assert!(dictionary
+        .commands
+        .contains_key("identify offset=%u count=%c"));
+    assert!(dictionary
+        .responses
+        .contains_key("identify_response offset=%u data=%.*s"));
     assert_eq!(dictionary.version, "native-linux-identify-fixture");
     assert_eq!(dictionary.config["MCU"], "linux");
     assert_eq!(dictionary.commands.len(), 121);
@@ -65,7 +72,12 @@ fn rejected_chunks_do_not_advance() {
         (&[0, 0, 2, 9][..], "InvalidChunk"),
         (&oversized, "InvalidChunk"),
     ] {
-        let error = reader.accept(Frame { sequence: 0, payload }).unwrap_err();
+        let error = reader
+            .accept(Frame {
+                sequence: 0,
+                payload,
+            })
+            .unwrap_err();
         assert!(format!("{error:?}").starts_with(expected));
         assert_eq!(reader.request(1).unwrap(), initial);
     }
@@ -89,22 +101,40 @@ fn from_chunks(data: &[u8]) -> Result<Identify, Error> {
         payload[0] = 0;
         *payload.last_mut().unwrap() = chunk.len() as u8;
         payload.extend_from_slice(chunk);
-        reader.accept(Frame { sequence: 0, payload: &payload })?;
+        reader.accept(Frame {
+            sequence: 0,
+            payload: &payload,
+        })?;
     }
     Ok(reader)
 }
 
 #[test]
 fn enforces_dictionary_size_and_integrity() {
-    assert!(matches!(from_chunks(&vec![0; 256 * 1024 + 1]), Err(Error::CompressedLimit)));
+    assert!(matches!(
+        from_chunks(&vec![0; 256 * 1024 + 1]),
+        Err(Error::CompressedLimit)
+    ));
     let large = compress(&vec![b' '; 2 * 1024 * 1024 + 16]);
-    assert!(matches!(from_chunks(&large).unwrap().dictionary(), Err(Error::JsonLimit)));
-    assert!(matches!(from_chunks(&compress(b"{}")).unwrap().dictionary(), Err(Error::InvalidJson(_))));
+    assert!(matches!(
+        from_chunks(&large).unwrap().dictionary(),
+        Err(Error::JsonLimit)
+    ));
+    assert!(matches!(
+        from_chunks(&compress(b"{}")).unwrap().dictionary(),
+        Err(Error::InvalidJson(_))
+    ));
     let mut ok = compress(br#"{"commands":{},"responses":{}}"#);
     assert!(from_chunks(&ok).unwrap().dictionary().is_ok());
-    assert!(matches!(from_chunks(&ok[..ok.len()-1]).unwrap().dictionary(), Err(Error::InvalidCompression)));
+    assert!(matches!(
+        from_chunks(&ok[..ok.len() - 1]).unwrap().dictionary(),
+        Err(Error::InvalidCompression)
+    ));
     ok.push(0);
-    assert!(matches!(from_chunks(&ok).unwrap().dictionary(), Err(Error::InvalidCompression)));
+    assert!(matches!(
+        from_chunks(&ok).unwrap().dictionary(),
+        Err(Error::InvalidCompression)
+    ));
 }
 
 #[test]
@@ -122,7 +152,10 @@ fn uses_dictionary_ids_and_reads_clock_wrap_cases() {
         let (actual_request, expected) = if kind == "clock" {
             (messages.get_clock(seq).unwrap(), Response::Clock(low))
         } else {
-            (messages.get_uptime(seq).unwrap(), Response::Uptime((u64::from(high) << 32) | u64::from(low)))
+            (
+                messages.get_uptime(seq).unwrap(),
+                Response::Uptime((u64::from(high) << 32) | u64::from(low)),
+            )
         };
         assert_eq!(actual_request, request);
         let (frame, _) = decode_prefix(&response).unwrap().unwrap();

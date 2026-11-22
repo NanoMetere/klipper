@@ -17,14 +17,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("bad frame: {e:?}"))?
             .ok_or("truncated final frame")?;
         if !frame.payload.is_empty() {
-            identify.accept(frame).map_err(|e| format!("identify: {e:?}"))?;
+            identify
+                .accept(frame)
+                .map_err(|e| format!("identify: {e:?}"))?;
         }
         input = &input[count..];
     }
-    let dictionary = identify.dictionary().map_err(|e| format!("dictionary: {e:?}"))?;
-    println!("{}: {} commands, {} responses, {} output formats",
-             dictionary.version, dictionary.commands.len(),
-             dictionary.responses.len(), dictionary.output.len());
+    let dictionary = identify
+        .dictionary()
+        .map_err(|e| format!("dictionary: {e:?}"))?;
+    println!(
+        "{}: {} commands, {} responses, {} output formats",
+        dictionary.version,
+        dictionary.commands.len(),
+        dictionary.responses.len(),
+        dictionary.output.len()
+    );
     Ok(())
 }
 

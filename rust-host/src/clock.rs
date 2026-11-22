@@ -28,10 +28,21 @@ pub struct ClockMessages {
 impl ClockMessages {
     pub fn from_dictionary(dictionary: &Dictionary) -> Result<Self, Error> {
         Ok(Self {
-            get_clock: *dictionary.commands.get("get_clock").ok_or(Error::MissingFormat("get_clock"))?,
-            get_uptime: *dictionary.commands.get("get_uptime").ok_or(Error::MissingFormat("get_uptime"))?,
-            clock: *dictionary.responses.get("clock clock=%u").ok_or(Error::MissingFormat("clock clock=%u"))?,
-            uptime: *dictionary.responses.get("uptime high=%u clock=%u")
+            get_clock: *dictionary
+                .commands
+                .get("get_clock")
+                .ok_or(Error::MissingFormat("get_clock"))?,
+            get_uptime: *dictionary
+                .commands
+                .get("get_uptime")
+                .ok_or(Error::MissingFormat("get_uptime"))?,
+            clock: *dictionary
+                .responses
+                .get("clock clock=%u")
+                .ok_or(Error::MissingFormat("clock clock=%u"))?,
+            uptime: *dictionary
+                .responses
+                .get("uptime high=%u clock=%u")
                 .ok_or(Error::MissingFormat("uptime high=%u clock=%u"))?,
         })
     }
@@ -61,7 +72,8 @@ impl ClockMessages {
 
         let mut input = frame.payload;
         let id = vlq::read(&mut input)
-            .and_then(|id| i32::try_from(id).ok()).ok_or(Error::InvalidInteger)?;
+            .and_then(|id| i32::try_from(id).ok())
+            .ok_or(Error::InvalidInteger)?;
         let response = if id == self.clock {
             Response::Clock(read_u32(&mut input)?)
         } else if id == self.uptime {
