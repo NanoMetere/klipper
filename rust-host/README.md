@@ -747,6 +747,21 @@ taskset -c 2 python3 bench/hybrid_lookahead_timing.py /path/to/pinned/klipper \
   --baseline-adapter /path/to/baseline/klipper_rust_lookahead.py
 ```
 
+A separate whole-process A/B runs the same 12,000 moves on the same
+pinned Klippy and times launch, input parsing, scheduling and writing
+the MCU debug files. It matched 43,033 motor records in every round.
+Runs of 9 and 15 paired repetitions did **not** demonstrate a whole-host
+speedup from the bridge: paired median CPU changes were +1.17% and
++0.79%, and elapsed changes were +1.48% and +1.28%, respectively. This
+does not negate the isolated look-ahead reduction; that stage is only
+part of the process. The output files are simulated, not printer I/O.
+
+```sh
+taskset -c 3 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
+  /path/to/pinned/klipper/out/klipper.dict \
+  target/release/libklipper_host_protocol.so --rounds 15 --moves 12000
+```
+
 Step timing now retains the clock epoch until compression advances it,
 rather than revalidating and recomputing it on every crossing. Two
 60-round rotating-order runs matched the same 6,835 records and modeled

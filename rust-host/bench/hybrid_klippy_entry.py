@@ -13,7 +13,7 @@ def main():
     if len(sys.argv) < 4:
         raise SystemExit("usage: hybrid_klippy_entry.py KLIPPY.py LIBRARY [Klippy debug arguments]")
     klippy = Path(sys.argv[1]).resolve()
-    library = Path(sys.argv[2]).resolve()
+    library = None if sys.argv[2] == "--stock-only" else Path(sys.argv[2]).resolve()
     args = sys.argv[3:]
     # Only explicit debug-output flags. Flag values may not be other flags.
     if not args or args[0].startswith("-") or len(args[1:]) % 2:
@@ -30,13 +30,16 @@ def main():
     sys.path.insert(0, str(klippy.parent))
     sys.path.insert(0, str(ROOT / "python"))
     import toolhead
-    from klipper_rust_lookahead import install
-    stats = install(toolhead, library)
+    stats = None
+    if library is not None:
+        from klipper_rust_lookahead import install
+        stats = install(toolhead, library)
     sys.argv = [str(klippy), *args]
     try:
         runpy.run_path(str(klippy), run_name="__main__")
     finally:
-        print("RUST_LOOKAHEAD_STATS", json.dumps(stats, sort_keys=True), flush=True)
+        if stats is not None:
+            print("RUST_LOOKAHEAD_STATS", json.dumps(stats, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":
