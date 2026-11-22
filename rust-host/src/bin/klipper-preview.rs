@@ -8,11 +8,14 @@ use klipper_host_protocol::{
     step_clock::{Clock, Command},
     virtual_sd::Job as SdJob,
 };
-use serde_json::{json, Value};
+use serde::{
+    ser::{SerializeSeq, SerializeStruct},
+    Serialize, Serializer,
+};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{self, Read, Write},
+    io::{self, BufWriter, Read, Write},
     path::{Component, Path},
 };
 
@@ -81,15 +84,72 @@ fn temperatures(text: &str) -> Result<BTreeMap<u8, f64>, String> {
     Ok(out)
 }
 
-fn records(input: Vec<Command>) -> Vec<Value> {
-    input
-        .into_iter()
-        .map(|cmd| match cmd {
-            Command::SetDirection(positive) => json!({"kind":"direction", "positive":positive}),
-            Command::Steps(b) => json!({"kind":"steps","interval":b.interval,"count":b.count,
-                                      "add":b.add,"last_clock":b.last_clock}),
-        })
-        .collect()
+struct Records<'a>(&'a [Command]);
+
+impl Serialize for Records<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for entry in self.0 {
+            seq.serialize_element(&Record(entry))?;
+        }
+        seq.end()
+    }
+}
+
+struct Record<'a>(&'a Command);
+
+impl Serialize for Record<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Command::SetDirection(positive) => {
+                let mut row = serializer.serialize_struct("Direction", 2)?;
+                row.serialize_field("kind", "direction")?;
+                row.serialize_field("positive", positive)?;
+                row.end()
+            }
+            Command::Steps(block) => {
+                let mut row = serializer.serialize_struct("Steps", 5)?;
+                row.serialize_field("add", &block.add)?;
+                row.serialize_field("count", &block.count)?;
+                row.serialize_field("interval", &block.interval)?;
+                row.serialize_field("kind", "steps")?;
+                row.serialize_field("last_clock", &block.last_clock)?;
+                row.end()
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ToolOutput<'a> {
+    commands: Records<'a>,
+    extruder: &'a str,
+    step_distance_mm: f64,
+    tool: u8,
+}
+
+#[derive(Serialize)]
+struct SdOutput {
+    position: usize,
+    size: usize,
+}
+
+#[derive(Serialize)]
+struct PreviewOutput<'a> {
+    clock_hz: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extruder_lanes: Option<Vec<ToolOutput<'a>>>,
+    mode: &'static str,
+    motor_step_distances_mm: [f64; 3],
+    motors: [Records<'a>; 3],
+    planned_duration_seconds: f64,
+    schema: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    virtual_sd: Option<SdOutput>,
+    virtual_start_mm: [f64; 3],
+    virtual_start_time: f64,
 }
 
 fn run() -> Result<(), String> {
@@ -215,15 +275,7 @@ fn run() -> Result<(), String> {
                 [false; 3],
             )
             .map_err(|e| format!("preview: {e:?}"))?;
-        let tools = profiles
-            .iter()
-            .zip(trace.tools)
-            .map(|(p, (id, commands))| {
-                debug_assert_eq!(p.id, id);
-                json!({"tool":id, "extruder":p.section, "step_distance_mm":p.step_distance,
-                   "commands":records(commands)})
-            })
-            .collect::<Vec<_>>();
+        let tools = profiles.into_iter().zip(trace.tools).collect::<Vec<_>>();
         (trace.motors, trace.duration, Some(tools))
     } else {
         let trace = machine
@@ -231,21 +283,45 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("preview: {e:?}"))?;
         (trace.motors, trace.duration, None)
     };
-    let mut out = json!({
-        "schema":1, "mode":"offline", "virtual_start_mm":start, "virtual_start_time":2.0,
-        "clock_hz":hz, "planned_duration_seconds":duration, "motors":motors.map(records),
-        "motor_step_distances_mm":machine.step_distances(),
-    });
-    if let Some(tools) = tools {
-        out["tool_mode"] = json!("lane_selection_without_docking");
-        out["extruder_lanes"] = json!(tools);
-    }
-    if let Some(checkpoint) = sd {
-        out["virtual_sd"] = json!({"position":checkpoint.position, "size":checkpoint.size});
-    }
-    let mut stdout = io::stdout().lock();
+    let (tool_mode, extruder_lanes) = if let Some(tool_commands) = &tools {
+        let lanes = tool_commands
+            .iter()
+            .map(|(profile, (id, commands))| {
+                debug_assert_eq!(profile.id, *id);
+                ToolOutput {
+                    commands: Records(commands),
+                    extruder: &profile.section,
+                    step_distance_mm: profile.step_distance,
+                    tool: *id,
+                }
+            })
+            .collect();
+        (Some("lane_selection_without_docking"), Some(lanes))
+    } else {
+        (None, None)
+    };
+    let out = PreviewOutput {
+        clock_hz: hz,
+        extruder_lanes,
+        mode: "offline",
+        motor_step_distances_mm: machine.step_distances(),
+        motors: std::array::from_fn(|i| Records(&motors[i])),
+        planned_duration_seconds: duration,
+        schema: 1,
+        tool_mode,
+        virtual_sd: sd.map(|s| SdOutput {
+            position: s.position,
+            size: s.size,
+        }),
+        virtual_start_mm: start,
+        virtual_start_time: 2.0,
+    };
+    let mut stdout = BufWriter::new(io::stdout().lock());
     serde_json::to_writer(&mut stdout, &out).map_err(|e| e.to_string())?;
-    stdout.write_all(b"\n").map_err(|e| e.to_string())
+    stdout
+        .write_all(b"\n")
+        .and_then(|()| stdout.flush())
+        .map_err(|e| e.to_string())
 }
 
 fn main() {

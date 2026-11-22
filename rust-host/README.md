@@ -445,6 +445,21 @@ cargo run --locked --release --bin klipper-preview -- \
   examples/preview/sparse-tool.gcode 20000000 1 1 .2 printer.cfg rails.cfg
 ```
 
+The offline CLI writes the same JSON directly from the motion records,
+through a buffered writer, without building a second tree of per-record
+maps. For 2,500 synthetic CoreXY moves (16,379 records and 1,211,520
+output bytes), all 40 alternating runs preserved the output SHA-256.
+Median **whole CLI** CPU time was 34.864 → 6.905 ms and elapsed time
+35.136 → 7.100 ms (about 80% lower) versus the prior Rust CLI. These
+figures include launch, planning, serialization and writing the output
+to a local file; they are not a Rust-versus-Klippy or printer benchmark.
+
+```sh
+taskset -c 3 python3 bench/preview_cli_timing.py \
+  /path/to/baseline/klipper-preview target/release/klipper-preview \
+  --rounds 40 --moves 2500
+```
+
 ## Inert multiple-extruder coordinates
 
 Switching a virtual extruder now returns the pending profiles tagged for

@@ -11,7 +11,7 @@ crate-type = ["rlib", "cdylib"]
 [features]
 default = ["identify", "webhooks"]
 identify = ["dep:flate2", "dep:serde", "dep:serde_json"]
-webhooks = ["dep:serde_json"]
+webhooks = ["dep:serde", "dep:serde_json"]
 python-bridge = []
 
 [dependencies]
