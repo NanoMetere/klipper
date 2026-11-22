@@ -327,6 +327,29 @@ at 5,000 segment boundaries. Cases include direction changes, inactive
 axes, and separately flushed segment portions. This does not validate
 actual step pulses or compressed firmware commands.
 
+## Offline step command trace
+
+`step_clock::encode_trace` converts raw crossings to clock ticks, applies
+stock's sub-750 µs uncommitted reversal rollback, and batches same-direction
+runs through `step_compress`. Near-reversal commit markers can preserve a
+step. The trace yields direction changes and step block fields only; it
+does not emit frames, schedule I/O, handle far-future steps or expose a
+production streaming interface.
+
+```sh
+python3 bench/step_compress.py /path/to/pinned/klipper
+python3 bench/step_clock.py /path/to/pinned/klipper
+```
+
+The compression benchmark fixture matched 31,482 blocks exactly across
+1,801 runs / 278,249 clock inputs, including 32-bit rollover and a
+65,535-step constant-rate run. This fixture checks correctness only.
+Through the actual stock C step-clock/filter/compressor and decoded queue
+messages, the second fixture matched all 6,593 direction commands and
+51,878 step blocks across 641 traces, including direction inversion,
+half-tick rounding, and rollbacks at the reversal boundary. Nothing
+was sent to a device.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
