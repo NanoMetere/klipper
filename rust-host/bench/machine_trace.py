@@ -80,7 +80,14 @@ M400
 
 
 
-def traced(config_path, c, script, use_extruder, pressure):
+SHAPES = [
+    [(0.0, 1.0), (0.013, 0.8)],
+    [(0.0, 0.9), (0.010, 1.6), (0.020, 0.7)],
+    [(0.0, 1.0), (0.030, 0.6)],
+]
+
+
+def traced(config_path, c, script, use_extruder, pressure, shaped=False):
     from configfile import ConfigFileReader, ConfigWrapper
     from kinematics.cartesian import CartKinematics
     from kinematics.corexy import CoreXYKinematics
@@ -133,10 +140,21 @@ def traced(config_path, c, script, use_extruder, pressure):
     stock(script.splitlines(), False, settings=settings, emit_profiles=output,
           simulated_extruder=extruder)
     elapsed = time - 2.
+    shapes = SHAPES if shaped else None
+    if raw.has_section("input_shaper"):
+        from extras.input_shaper import InputShaperParams
+        shape_config = ConfigWrapper(None, raw, {}, "input_shaper")
+        shapes = []
+        for axis in "xyz":
+            _, amplitudes, times = InputShaperParams(axis, shape_config).get_shaper()
+            shapes.append(list(zip(times, amplitudes, strict=True)))
     python_ns = perf.process_time_ns() - started
+    if shapes:
+        rows.extend(("h", axis, len(shape), *(p for pair in shape for p in pair))
+                    for axis, shape in zip("xyz", shapes, strict=True))
     for axis, distance, invert in zip(("x", "y", "z") if cart else ("+", "-", "z"),
                                      distances, (0, 1, 0), strict=True):
-        rows.append(("s", axis, *start, distance, time + .01, 20e6, 20, invert))
+        rows.append(("s", axis, *start, distance, time + (.51 if shapes else .01), 20e6, 20, invert))
     if use_extruder:
         if pressure:
             rows.extend([("g", 0., .05, .04), ("g", 2.46, .075, .04)])
@@ -154,11 +172,13 @@ def main():
                    help="additional interleaved CPU timing rounds for the longer CoreXY fixture")
     p.add_argument("--baseline-rust", type=Path,
                    help="optional previous rust-host checkout using the same benchmark ABI")
+    p.add_argument("--shape-timing", action="store_true",
+                   help="also configure input shaping for the timed long CoreXY fixture")
     a = p.parse_args()
     if not 0 <= a.rounds <= 1000:
         p.error("--rounds must be between 0 and 1000")
-    if a.baseline_rust and not a.rounds:
-        p.error("--baseline-rust requires --rounds")
+    if a.baseline_rust and (not a.rounds or a.shape_timing):
+        p.error("--baseline-rust requires --rounds and an unshaped benchmark")
     upstream = a.upstream.resolve()
     sys.path.insert(0, str(upstream / "klippy"))
     h = upstream / "klippy/chelper"
@@ -167,7 +187,7 @@ def main():
         c, rust, lib = d / "stock", d / "rust", d / "libklipper_host_protocol.rlib"
         subprocess.run([os.environ.get("CC", "cc"), "-O3", "-I", h, ROOT / "bench/machine_trace.c",
                         *(h / (n+".c") for n in ("itersolve", "stepcompress", "trapq", "kin_cartesian",
-                                                 "kin_corexy", "kin_extruder", "pyhelper", "msgblock")), "-lm", "-o", c],
+                                                 "kin_corexy", "kin_extruder", "kin_shaper", "pyhelper", "msgblock")), "-lm", "-o", c],
                         check=True)
         subprocess.run(["rustc", "--edition=2021", "-O", "--crate-type=rlib",
                         "--crate-name=klipper_host_protocol", ROOT / "src/lib.rs", "-o", lib], check=True)
@@ -175,7 +195,7 @@ def main():
         subprocess.run([os.environ.get("CC", "cc"), "-O3", "-I", h,
                         "-DMACHINE_TRACE_CLOCK_ONLY", "-c", ROOT / "bench/machine_trace.c",
                         "-o", clock], check=True)
-        subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/machine_trace.rs",
+        subprocess.run(["rustc", "--edition=2021", "-O", "--cfg", "input_shaper_fixture", ROOT / "bench/machine_trace.rs",
                         "--extern", f"klipper_host_protocol={lib}", "-C", f"link-arg={clock}", "-o", rust], check=True)
         executables = {"rust": rust}
         if a.baseline_rust:
@@ -209,7 +229,43 @@ def main():
                 print(f"{kin}, {motor_count} motors, pressure={pressure}: {len(want)-motor_count} exact commands; "
                       f"{timeline:.9f} simulated seconds")
 
-        cfg.write_text(CONFIG.format(kinematics="corexy"))
+        for kin in ("cartesian", "corexy"):
+            cfg.write_text(CONFIG.format(kinematics=kin))
+            for extra in (False, True):
+                script = WITH_E if extra else GCODE
+                want, want_duration, _ = traced(cfg, c, script, extra, extra, shaped=True)
+                run = subprocess.run([rust, cfg, "--shape", *(["--pressure"] if extra else [])],
+                                     input=script, text=True, capture_output=True)
+                if run.returncode:
+                    raise RuntimeError(run.stderr)
+                got = run.stdout.splitlines()
+                duration = float(got.pop().split()[1])
+                assert math.isclose(want_duration, duration, abs_tol=1e-12, rel_tol=1e-12)
+                for i, (x, y) in enumerate(zip(want, got, strict=True)):
+                    assert x == y, ("shaped", kin, extra, i, x, y)
+                print(f"Shaped {kin}, pressure={extra}: {len(got) - 3 - extra} exact commands")
+        for kin in ("cartesian", "corexy"):
+            for kinds in (("mzv", "2hump_ei", "3hump_ei"), ("ei", "zvd", "zv")):
+                shape_cfg = "[input_shaper]\n" + "\n".join(
+                    f"shaper_type_{axis}: {kind}\nshaper_freq_{axis}: {freq}\ndamping_ratio_{axis}: {damp}"
+                    for axis, kind, freq, damp in zip("xyz", kinds,
+                                                       [53.4, 66.2, 41.3], [.13, .06, .17], strict=True))
+                cfg.write_text(CONFIG.format(kinematics=kin) + shape_cfg + "\n")
+                script = WITH_E
+                want, want_duration, _ = traced(cfg, c, script, True, True)
+                run = subprocess.run([rust, cfg, "--pressure"], input=script,
+                                     text=True, capture_output=True)
+                if run.returncode:
+                    raise RuntimeError(run.stderr)
+                got = run.stdout.splitlines()
+                duration = float(got.pop().split()[1])
+                assert math.isclose(want_duration, duration, abs_tol=1e-12, rel_tol=1e-12)
+                for i, (x, y) in enumerate(zip(want, got, strict=True)):
+                    assert x == y, ("configured shaper", kin, kinds, i, x, y)
+                print(f"Configured shaper {kin}, {kinds}: {len(got) - 4} exact commands")
+        benchmark_shape = ("[input_shaper]\nshaper_freq_x: 56.6\nshaper_type_y: ei\n"
+                           "shaper_freq_y: 48.4\n") if a.shape_timing else ""
+        cfg.write_text(CONFIG.format(kinematics="corexy") + benchmark_shape)
         reset = "G90\nM82\nM221 S100\nG1 X1 Y1 Z.2 F2400\nG92 E0\n"
         script = "\n".join([reset + WITH_E] * 12)
         labels = ["stock", *executables]
@@ -238,7 +294,7 @@ def main():
                     assert x == y, ("repeated CoreXY", iteration, label, i, x, y)
                 assert math.isclose(want_duration, got_duration, abs_tol=1e-12, rel_tol=1e-12)
         count = len(values["rust"][0]) - 4
-        print(f"Repeated CoreXY: {count} exact pressure-advanced commands; "
+        print(f"Repeated CoreXY (shaped={a.shape_timing}): {count} exact pressure-advanced commands; "
               f"{values['rust'][1]:.9f} simulated seconds")
         if a.rounds:
             for kind, series in programs.items():

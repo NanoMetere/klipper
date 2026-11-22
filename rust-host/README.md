@@ -425,6 +425,27 @@ its retract math is inline, so that harness does not call it separately.
 The virtual job integration test refuses a move before homing, then sends
 the validated preview through local virtual CAN peers without hardware.
 
+## Fixed offline input shaping
+
+The motion preview supports fixed X/Y/Z convolution from the stock
+`[input_shaper]` settings (plain ZV, ZVD, default MZV, EI, 2-hump EI and
+3-hump EI). The sampler uses both before/after phase windows, including
+lead-in and tail steps. Parameterized MZV, runtime `SET_INPUT_SHAPER`,
+accelerometer calibration, and hardware activation are not supported.
+
+The config-to-step comparator checks custom pulses and all six named
+shapers on both Cartesian and CoreXY. A separate 21-round run with
+CoreXY X=MZV, Y=EI and extruder pressure advance matched 6,835 directions
+and step commands including clocks. Simulated motion stayed at
+11.342102983 seconds on both paths, while CPU time for the timed offline
+section was 7.777 ms stock versus 5.481 ms Rust (30% lower). This uses
+the same timing boundaries as the unshaped experiment below.
+
+```sh
+taskset -c 2 python3 bench/machine_trace.py /path/to/pinned/klipper \
+  --rounds 21 --shape-timing
+```
+
 ## Config-to-step offline preview
 
 `machine_preview::Machine` combines supported printer and rail settings with

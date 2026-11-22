@@ -7,6 +7,8 @@ use crate::{
     extrusion::{self, Extruder},
     gcode::{self, Output, Preview},
     homing::{self, Kinematics, VirtualHoming},
+    input_shaper::Shaper,
+    input_shaper_defs,
     lookahead::{Limits, Profile},
     pressure_advance::Advance,
     step_clock::{self, Clock, Command},
@@ -46,6 +48,7 @@ pub struct Machine {
     z_velocity: f64,
     z_accel: f64,
     arc_resolution: Option<f64>,
+    fixed_shaper: Option<Shaper>,
 }
 
 fn config_error(section: &'static str, option: &'static str) -> Error {
@@ -164,6 +167,8 @@ impl Machine {
             z_velocity,
             z_accel,
             arc_resolution,
+            fixed_shaper: input_shaper_defs::from_config(config)
+                .map_err(|field| config_error("input_shaper", field))?,
         })
     }
 
@@ -176,6 +181,13 @@ impl Machine {
             .iter()
             .zip(pos)
             .all(|(&(lo, hi), x)| (lo..=hi).contains(x))
+    }
+
+    /// Apply an explicitly supplied, fixed offline shaper. No accelerometer,
+    /// config calibration, or dynamic SET_INPUT_SHAPER behavior is implied.
+    pub fn with_input_shaper(mut self, shaper: Shaper) -> Self {
+        self.fixed_shaper = Some(shaper);
+        self
     }
 
     fn homing_kinematics(&self) -> Kinematics {
@@ -315,15 +327,19 @@ impl Machine {
         })?;
         let mut commands = std::array::from_fn(|_| Vec::new());
         for (motor, output) in commands.iter_mut().enumerate() {
-            *output = step_lane(
-                &queue,
+            let (axis, dist, inv) = (
                 self.motor_axis[motor],
                 self.motor_step[motor],
-                start,
-                clock,
-                max_error,
                 invert[motor],
-            )?;
+            );
+            *output = if let Some(shaper) = &self.fixed_shaper {
+                let events = shaper
+                    .crossings(&queue, axis, dist, start)
+                    .map_err(Error::Solver)?;
+                step_clock::encode_trace(clock, &events, max_error, inv).map_err(Error::Clock)?
+            } else {
+                step_lane(&queue, axis, dist, start, clock, max_error, inv)?
+            };
         }
         let extruder = match (e_queue, extruder) {
             (Some(queue), Some(e)) => Some(if let Some(advance) = e.pressure_advance {

@@ -44,6 +44,8 @@ def main():
         runtime = "sh" if name.endswith(".sh") else sys.executable
         extra = ["--rounds", "0"] if name in ("lookahead.py", "gcode_preview.py") else []
         phases.append((name, [runtime, ROOT/"bench"/name, upstream, *extra]))
+    phases.append(("shaped_machine_trace", [sys.executable, ROOT/"bench/machine_trace.py",
+                                            upstream, "--shape-timing"]))
     if a.macro_reference:
         phases.append(("gcode_macros", [sys.executable, ROOT/"bench/gcode_macros.py", upstream]))
     phases.extend([

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#[cfg(input_shaper_fixture)]
+use klipper_host_protocol::input_shaper::{Pulses, Shaper};
 use klipper_host_protocol::{
     config,
     extrusion::{Extruder, Settings},
@@ -11,6 +13,7 @@ use std::{
     fs,
     io::{self, Read},
 };
+
 extern "C" {
     fn machine_trace_cpu_ns() -> u64;
 }
@@ -30,6 +33,18 @@ fn main() {
     )
     .unwrap();
     let machine = Machine::from_config(&cfg).unwrap();
+    let args: Vec<_> = std::env::args().skip(2).collect();
+    let has = |flag| args.iter().any(|v| v == flag);
+    #[cfg(input_shaper_fixture)]
+    let machine = if has("--shape") {
+        machine.with_input_shaper(Shaper::new([
+            Pulses::new(&[(0.0, 1.0), (0.013, 0.8)]).unwrap(),
+            Pulses::new(&[(0.0, 0.9), (0.010, 1.6), (0.020, 0.7)]).unwrap(),
+            Pulses::new(&[(0.0, 1.0), (0.030, 0.6)]).unwrap(),
+        ]))
+    } else {
+        machine
+    };
     let config_ns = cpu_ns() - started_config;
     let mut script = String::new();
     io::stdin().read_to_string(&mut script).unwrap();
@@ -45,13 +60,12 @@ fn main() {
     })
     .unwrap();
     let pressure = Advance::new(0.04, &[(0.0, 0.05), (2.46, 0.075)]).unwrap();
-    let flag = std::env::args().nth(2);
-    let extra = flag.as_ref().map(|value| SimulatedExtruder {
+    let extra = (has("--extruder") || has("--pressure")).then_some(SimulatedExtruder {
         geometry: &e,
         temperature: 210.0,
         step_distance: 0.004,
         inverse_direction: true,
-        pressure_advance: (value == "--pressure").then_some(&pressure),
+        pressure_advance: has("--pressure").then_some(&pressure),
     });
     let started = cpu_ns();
     let trace = machine

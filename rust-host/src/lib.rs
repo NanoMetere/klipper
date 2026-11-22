@@ -25,6 +25,8 @@ pub mod machine_preview;
 pub mod thermal;
 pub mod extrusion;
 pub mod pressure_advance;
+pub mod input_shaper;
+mod input_shaper_defs;
 pub mod bed_mesh;
 pub mod probe;
 pub mod homing;

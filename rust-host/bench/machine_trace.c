@@ -13,6 +13,9 @@
 
 struct stepper_kinematics *cartesian_stepper_alloc(char axis);
 struct stepper_kinematics *corexy_stepper_alloc(char axis);
+struct stepper_kinematics *input_shaper_alloc(void);
+int input_shaper_set_sk(struct stepper_kinematics *, struct stepper_kinematics *);
+int input_shaper_set_shaper_params(struct stepper_kinematics *, char, int, double[], double[]);
 
 struct stepper_kinematics *extruder_stepper_alloc(void);
 void extruder_stepper_free(struct stepper_kinematics *sk);
@@ -36,6 +39,8 @@ int main(void)
     int n_params = 0;
     uint64_t processing = 0;
     double params[8][3];
+    struct { int n; double a[10], t[10]; } shapes[3] = {0};
+    int shaped = 0;
     while (scanf(" %c", &op) == 1) {
         if (op == 'm' || op == 'e') {
             double at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel;
@@ -50,6 +55,17 @@ int main(void)
                                         &params[n_params][1], &params[n_params][2]) != 3)
                 return 2;
             n_params++;
+        } else if (op == 'h') {
+            char axis;
+            int n;
+            if (scanf(" %c %d", &axis, &n) != 2 || axis < 'x' || axis > 'z' || n < 0 || n > 10)
+                return 2;
+            int k = axis - 'x';
+            for (int j = 0; j < n; j++)
+                if (scanf("%lf %lf", &shapes[k].t[j], &shapes[k].a[j]) != 2)
+                    return 2;
+            shapes[k].n = n;
+            shaped = 1;
         } else if (op == 's') {
             double xpos, ypos, zpos, step, last, hz;
             unsigned err, invert;
@@ -60,6 +76,17 @@ int main(void)
             uint64_t started = machine_trace_cpu_ns();
             struct stepper_kinematics *sk = axis == 'e' ? extruder_stepper_alloc()
                 : axis == '+' || axis == '-' ? corexy_stepper_alloc(axis) : cartesian_stepper_alloc(axis);
+            struct stepper_kinematics *original = sk;
+            if (shaped && axis != 'e') {
+                sk = input_shaper_alloc();
+                if (input_shaper_set_sk(sk, original))
+                    return 5;
+                for (char a = 'x'; a <= 'z'; a++) {
+                    int k = a - 'x';
+                    if (input_shaper_set_shaper_params(sk, a, shapes[k].n, shapes[k].a, shapes[k].t))
+                        return 5;
+                }
+            }
             struct trapq *trajectory = axis == 'e' ? eq : q;
             struct list_head messages;
             list_init(&messages);
@@ -95,7 +122,11 @@ int main(void)
             }
             puts("end");
             if (axis == 'e') extruder_stepper_free(sk);
-            else free(sk);
+            else {
+                if (original != sk)
+                    free(original);
+                free(sk);
+            }
             stepcompress_free(sc);
             message_queue_free(&messages);
         } else
