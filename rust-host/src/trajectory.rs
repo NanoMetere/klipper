@@ -31,7 +31,7 @@ impl Segment {
         self.at + self.duration
     }
 
-    fn local(&self, offset: f64) -> [f64; 3] {
+    pub(crate) fn local(&self, offset: f64) -> [f64; 3] {
         let distance = (self.start_velocity + self.half_acceleration * offset) * offset;
         std::array::from_fn(|i| self.position[i] + self.direction[i] * distance)
     }

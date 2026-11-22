@@ -121,7 +121,13 @@ pub fn append_nominal(
         at,
         phase_sec: [p.accel_t, cruise, p.decel_t],
         start: [p.start[3], 0.0, 0.0],
-        direction: [1.0, 0.0, 0.0],
+        direction: [
+            1.0,
+            f64::from(u8::from(
+                r > 0.0 && (p.direction[0] != 0.0 || p.direction[1] != 0.0),
+            )),
+            0.0,
+        ],
         start_velocity: p.start_v * r,
         cruise_velocity: p.cruise_v * r,
         accel: p.accel * r,

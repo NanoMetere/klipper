@@ -547,6 +547,24 @@ taskset -c <CPU> python3 bench/step_compress.py /path/to/pinned/klipper \
   --rounds 9 --repeat 70 --baseline-source /tmp/prior-step-compress.rs
 ```
 
+## Offline pressure advance sampling
+
+`pressure_advance::Advance` samples a signed nominal E trajectory with
+stock's triangular smoothing, per-phase pressure eligibility, and an
+ordered gain-change timeline. Retraction and E-only travel are not
+pressure-advanced. It does not generate pressure-advanced step commands
+or change a printer's settings.
+
+```sh
+python3 bench/pressure_advance.py /path/to/pinned/klipper
+```
+
+17,832 queries matched the real stock C extruder position callback,
+including pressure gain changes, idle gaps, retracts, enabled and
+disabled phases, and sampling around phase boundaries. The maximum
+absolute difference was below 1e-12 mm on this run. No physical material
+flow was measured.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
