@@ -13,6 +13,10 @@ mod gpio_motion;
 mod gpio_dual;
 
 #[cfg(target_os = "linux")]
+#[path = "native_mcu/gpio_mixed.rs"]
+mod gpio_mixed;
+
+#[cfg(target_os = "linux")]
 mod linux {
     use klipper_host_protocol::{
         clock::{ClockMessages, Error as ClockError, Response},
@@ -527,9 +531,11 @@ mod linux {
             _ => 0,
         };
         let gpio_dock = arg == "--gpio-dock";
+        let gpio_shutdown = arg == "--gpio-mixed-shutdown";
+        let gpio_mixed = arg == "--gpio-mixed" || gpio_shutdown;
         let gpio_batched = arg == "--gpio-batched" || gpio_multitool != 0 || gpio_dock;
         let gpio_extrusion = arg == "--gpio-extrusion" || gpio_batched;
-        let gpio_fixture = arg == "--gpio-motion" || gpio_extrusion;
+        let gpio_fixture = arg == "--gpio-motion" || gpio_extrusion || gpio_mixed;
         let config_fixture = arg == "--config-fixture" || trigger || gpio_fixture;
         let number = if trace || pipe || config_fixture {
             argv.next().ok_or("missing trace size")?
@@ -598,6 +604,9 @@ mod linux {
             }
         }
         let dictionary = identify.dictionary().map_err(|e| format!("{e:?}"))?;
+        if gpio_mixed {
+            return crate::gpio_mixed::run(link, &dictionary, gpio_shutdown);
+        }
         if gpio_fixture {
             return crate::gpio_motion::run(
                 link,

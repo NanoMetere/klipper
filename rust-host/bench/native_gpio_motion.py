@@ -70,7 +70,7 @@ def main():
     upstream, binary = a.upstream.resolve(), a.binary.resolve()
     control = run(binary, upstream/"out/klipper.elf")
     assert control.returncode and "NotFixture" in control.stderr, control.stderr
-    for flag in ("--gpio-sparse", "--gpio-dock"):
+    for flag in ("--gpio-sparse", "--gpio-dock", "--gpio-mixed", "--gpio-mixed-shutdown"):
         check = run(binary, upstream/"out/klipper.elf", flag)
         assert check.returncode and "NotFixture" in check.stderr, check.stderr
     with tempfile.TemporaryDirectory(prefix="klipper-gpio-stub-") as folder:
@@ -118,6 +118,14 @@ def main():
         assert "motion frame" in details and "GPIO_FIXTURE" not in details, details
         print("Dropped a batched motion ACK: no extra host frame or virtual clock advance")
         check_dual(upstream, mcu, binary, a.dual_rounds)
+        for mode, expected in (
+            ("--gpio-mixed", "THERMAL_FIXTURE 13 13 560 -80 0 75"),
+            ("--gpio-mixed-shutdown", "THERMAL_FIXTURE_FAULT 13 0 240 240 0 25"),
+        ):
+            state = run(binary, mcu, mode)
+            assert state.returncode == 0 and state.stderr.strip() == expected, (mode, state.stderr)
+        print("Inert mixed heater runs: 13+13 motion commands; injected shutdown held phase two at zero")
+
     print("Plain Linux MCU refused before configuration/motion")
 
 

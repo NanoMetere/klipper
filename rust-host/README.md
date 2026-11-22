@@ -1153,6 +1153,13 @@ distinct queue and generation. A later phase cannot emit even a
 zero-release-tick command until its heater wait receives acceptable
 simulated evidence. Tests cover stale and wrong sources, multiple
 waits, large host-clock jumps, cancellation, and simulated shutdown.
+In the GPIO-free Linux firmware fixture, a two-phase mixed job sends
+13 commands in each accepted phase and reaches motor counters
+`[560, -80, 0, 75]`. With simulated heater shutdown at the second wait,
+the second phase sends zero commands and all four counters remain at
+the first-phase values. This fixture has no physical heat or sensors
+and refuses an ordinary Linux MCU dictionary.
+
 The CLI can display this staged plan without running it. This opt-in
 variant uses stock heater indices and a fixed initial extruder, not
 Toolchanger macro remapping. A modeled T0 temperature is mandatory

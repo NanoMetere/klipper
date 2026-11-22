@@ -8,6 +8,7 @@ use klipper_host_protocol::{
     extrusion::{Extruder, Settings},
     fixture_mcu::{Codec, Error as CodecError, ShutdownWatch},
     homing::Counter,
+    identify::Dictionary,
     machine_preview::{DockInput, Machine, MultiTrace, SimulatedExtruder, ToolLane},
     mcu_config::Messages,
     step_clock::{Clock, Command},
@@ -112,7 +113,7 @@ fn dock(hz: f64) -> Result<MultiTrace, String> {
         .map_err(err)
 }
 
-struct Peer {
+pub(super) struct Peer {
     link: Link,
     motion: Codec,
     config: Messages,
@@ -122,7 +123,20 @@ struct Peer {
 }
 
 impl Peer {
-    fn initial(&mut self) -> Result<(), String> {
+    pub(super) fn from_identified(mut link: Link, dictionary: &Dictionary) -> Result<Self, String> {
+        let motion = Codec::from_dictionary(dictionary).map_err(err)?;
+        link.shutdown_watch = ShutdownWatch::new(dictionary);
+        Ok(Self {
+            link,
+            motion,
+            config: Messages::from_dictionary(dictionary).map_err(err)?,
+            clock: ClockMessages::from_dictionary(dictionary).map_err(err)?,
+            start: 0,
+            crc: 0,
+        })
+    }
+
+    pub(super) fn initial(&mut self) -> Result<(), String> {
         let state = read_config(&mut self.link, &self.config)?;
         if state.configured || state.shutdown {
             return Err("multi-peer fixture requires fresh peers".into());
@@ -130,7 +144,7 @@ impl Peer {
         Ok(())
     }
 
-    fn send(&mut self, payload: &[u8]) -> Result<(), String> {
+    pub(super) fn send(&mut self, payload: &[u8]) -> Result<(), String> {
         let frame = encode(self.link.sequence, payload).map_err(err)?;
         fixture_ack(&mut self.link, &frame)
     }
@@ -143,7 +157,7 @@ impl Peer {
         Ok(result.move_count)
     }
 
-    fn configure(&mut self, count: u8, lead: u32, hz: f64) -> Result<u16, String> {
+    pub(super) fn configure(&mut self, count: u8, lead: u32, hz: f64) -> Result<u16, String> {
         let (crc, list) = self
             .motion
             .setup(count, (hz * 0.000_002).ceil() as u32)
@@ -153,6 +167,11 @@ impl Peer {
             self.send(&payload)?;
         }
         let capacity = self.ready()?;
+        self.reset_phase(count, lead)?;
+        Ok(capacity)
+    }
+
+    pub(super) fn reset_phase(&mut self, count: u8, lead: u32) -> Result<(), String> {
         let Response::Clock(now) = read_clock(&mut self.link, &self.clock, false)?.value else {
             return Err("missing virtual clock".into());
         };
@@ -164,10 +183,10 @@ impl Peer {
                 .map_err(err)?;
             fixture_ack(&mut self.link, &frame)?;
         }
-        Ok(capacity)
+        Ok(())
     }
 
-    fn advance(&mut self, relative: u64) -> Result<(), String> {
+    pub(super) fn advance(&mut self, relative: u64) -> Result<(), String> {
         let frame = self
             .motion
             .advance_time(self.link.sequence, self.start.wrapping_add(relative as u32))
@@ -177,7 +196,7 @@ impl Peer {
         Ok(())
     }
 
-    fn position(&mut self, oid: u8) -> Result<i32, String> {
+    pub(super) fn position(&mut self, oid: u8) -> Result<i32, String> {
         self.link
             .exchange(
                 |seq| self.motion.get_position(seq, oid).map_err(err),
@@ -197,16 +216,7 @@ pub(super) fn run(links: [Link; 2], batched: bool) -> Result<(), String> {
     // Identify and attest both peers before either receives a single config write.
     for mut link in links {
         let dictionary = identify_fixture(&mut link)?;
-        let motion = Codec::from_dictionary(&dictionary).map_err(err)?;
-        link.shutdown_watch = ShutdownWatch::new(&dictionary);
-        attested.push(Peer {
-            link,
-            motion,
-            config: Messages::from_dictionary(&dictionary).map_err(err)?,
-            clock: ClockMessages::from_dictionary(&dictionary).map_err(err)?,
-            start: 0,
-            crc: 0,
-        });
+        attested.push(Peer::from_identified(link, &dictionary)?);
         dictionaries.push(dictionary);
     }
     let hz = dictionaries[0]
