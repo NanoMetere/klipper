@@ -433,6 +433,31 @@ fixture changes offsets while preserving toolhead position, restores
 logical coordinates, and returns selected axes. It does not run the
 Toolchanger plugin.
 
+## Real Toolchanger stock baseline (no Rust host)
+
+The Klippain smoke runner uses stock Klippy debug output, a matching Linux
+MCU dictionary, and the real Toolchanger / LED Effect plugins. Tested
+Klippain `77ea66b1`, Toolchanger `94756dfd`, and LED Effect `266f1049`
+without changing their code or connecting a printer:
+
+| Stock Klipper | StealthChanger | TapChanger | Shared LED chain |
+| --- | --- | --- | --- |
+| Earlier working pin `644cda5e` | Pass | Pass | Pass |
+| Rust reference pin `c9559fa0` | Probe constructor incompatibility | Same | Same |
+
+At the Rust reference pin, stock's `ProbeEndstopWrapper` requires
+`probe_offsets` and `param_helper`; the pinned Toolchanger still calls the
+one-argument constructor. The cases fail during initialization in Python,
+before the smoke assertions. This is a baseline mismatch, not proof of a
+Rust regression, and not a hardware or Toolchanger compatibility claim.
+
+`python3 bench/toolchanger_baseline.py --help` lists the disposable stock and
+plugin checkouts plus their matching dictionaries. Prepare each stock tree
+with the four pinned Toolchanger modules and pinned LED Effect module in
+`klippy/extras` (copied or symlinked), and supply the usual Klippy Python
+requirements. The runner checks pins/module bytes and isolates debug
+artifacts. Use `--results` with a new empty directory to retain stock logs.
+
 ## Frame validation microbenchmark
 
 On Linux (AMD EPYC 9V74) with Python 3.12.14, Rust 1.100.0 and GCC 14.2.0, pinned to one
