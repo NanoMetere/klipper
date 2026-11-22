@@ -1153,6 +1153,17 @@ distinct queue and generation. A later phase cannot emit even a
 zero-release-tick command until its heater wait receives acceptable
 simulated evidence. Tests cover stale and wrong sources, multiple
 waits, large host-clock jumps, cancellation, and simulated shutdown.
+The CLI can display this staged plan without running it. This opt-in
+variant uses stock heater indices and a fixed initial extruder, not
+Toolchanger macro remapping. A modeled T0 temperature is mandatory
+for extrusion, and declared heater waits remain unresolved in JSON.
+
+```sh
+cargo run --locked --release --bin klipper-preview -- --mixed-plan --tool-temps 0:210 \
+  examples/preview mixed.cfg examples/preview/path_mixed.gcode \
+  20000000 1 1 .2 printer.cfg rails.cfg
+```
+
 
 
 

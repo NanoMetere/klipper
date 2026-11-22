@@ -4,8 +4,12 @@
 use klipper_host_protocol::{
     bed_mesh, config,
     gcode_macros::Registry,
-    machine_preview::{tool_profiles, Machine},
+    machine_preview::{mixed, tool_profiles, Machine},
     step_clock::{Clock, Command},
+    thermal::{
+        commands::{self, Source, Wait},
+        profile as thermal_profiles,
+    },
     virtual_sd::Job as SdJob,
 };
 use serde::{
@@ -22,7 +26,7 @@ use std::{
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 const HELP: &str =
-    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] [--mesh-profile NAME] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
+    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] [--mesh-profile NAME] [--mixed-plan] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
     ROOT contains config files; ENTRY and INCLUDE paths must be relative to it.\n\
     List every included file needed, including matches for wildcard includes.\n\
     XYZ is the explicit virtual starting position in millimeters.\n\
@@ -31,7 +35,8 @@ const HELP: &str =
     --tool-temps supplies one modeled temperature per tool ID (e.g. 0:210,2:215).\n\
     --initial-tool defaults to 0. Bare T lines only switch offline lanes; no docking.\n\
     --lane-workers sets 1–8 motion workers for long multi-tool previews (default 1).\n\
-    --mesh-profile uses a saved Klipper mesh for this offline preview.";
+    --mesh-profile uses a saved Klipper mesh for this offline preview.\n\
+    --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -156,6 +161,62 @@ struct PreviewOutput<'a> {
     virtual_start_time: f64,
 }
 
+#[derive(Serialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+enum Phase<'a> {
+    Motion {
+        first_line: usize,
+        motors: [Records<'a>; 3],
+        extruder: Option<Records<'a>>,
+        motion_seconds: f64,
+    },
+    Heater {
+        line: usize,
+        targets_c: &'a [f64],
+        wait: Option<WaitJson<'a>>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum WaitJson<'a> {
+    Controller {
+        heater_index: usize,
+        target_c: f64,
+    },
+    Sensor {
+        source: SensorJson<'a>,
+        minimum_c: Option<f64>,
+        maximum_c: Option<f64>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum SensorJson<'a> {
+    Heater { heater_index: usize },
+    Named { name: &'a str },
+}
+
+#[derive(Serialize)]
+struct MixedOutput<'a> {
+    mode: &'static str,
+    schema: u8,
+    clock_hz: f64,
+    final_position_mm: [f64; 4],
+    heater_names: Vec<&'a str>,
+    phases: Vec<Phase<'a>>,
+}
+
+fn emit(out: &impl Serialize) -> Result<(), String> {
+    let mut stdout = BufWriter::new(io::stdout().lock());
+    serde_json::to_writer(&mut stdout, out).map_err(|e| e.to_string())?;
+    stdout
+        .write_all(b"\n")
+        .and_then(|()| stdout.flush())
+        .map_err(|e| e.to_string())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.as_slice() == ["--help"] {
@@ -168,6 +229,7 @@ fn run() -> Result<(), String> {
     let mut initial_tool = None;
     let mut workers = None;
     let mut mesh_profile = None;
+    let mut mixed_plan = false;
     let mut args = args.as_slice();
     while let Some(flag) = args.first() {
         if flag == "--expand-macros" && !expand_macros {
@@ -195,6 +257,8 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "invalid worker count")?,
             );
             args = &args[1..];
+        } else if flag == "--mixed-plan" && !mixed_plan {
+            mixed_plan = true;
         } else if flag == "--mesh-profile" && mesh_profile.is_none() {
             mesh_profile = Some(args.get(1).ok_or("missing bed mesh profile name")?.as_str());
             args = &args[1..];
@@ -271,6 +335,109 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("mesh profile: {e:?}"))?;
         machine = machine.with_bed_mesh(transform);
     }
+    if mixed_plan {
+        if parsed.values("toolchanger").is_some() || workers.is_some() || initial_tool.is_some() {
+            return Err(
+                "--mixed-plan supports stock heater indexing and a fixed initial extruder".into(),
+            );
+        }
+        let catalog = thermal_profiles::Catalog::read(&parsed)
+            .map_err(|e| format!("heater profile: {e:?}"))?;
+        let bank = catalog
+            .bank(false)
+            .map_err(|e| format!("heater profile: {e:?}"))?;
+        let profiles;
+        let extruder = if let Some(dict) = tool_temps {
+            if dict.len() != 1 || !dict.contains_key(&0) {
+                return Err("--mixed-plan accepts only one modeled temperature, for T0".into());
+            }
+            profiles = tool_profiles::read(&parsed).map_err(|e| format!("tool profiles: {e:?}"))?;
+            let primary = profiles
+                .iter()
+                .find(|p| p.id == 0)
+                .ok_or("missing T0 extruder profile")?;
+            Some(
+                primary
+                    .lane(dict[&0], 0.)
+                    .map_err(|e| format!("tool profile: {e:?}"))?
+                    .extruder,
+            )
+        } else {
+            None
+        };
+        let plan = machine
+            .trace_mixed_at_virtual_origin(
+                start,
+                &bank,
+                mixed::Input {
+                    script,
+                    extruder,
+                    hz,
+                    max_error: 0,
+                    invert: [false; 3],
+                },
+            )
+            .map_err(|e| format!("mixed preview: {e:?}"))?;
+        let phases = plan
+            .phases
+            .iter()
+            .map(|phase| match phase {
+                mixed::Stage::Motion { first_line, trace } => Phase::Motion {
+                    first_line: *first_line,
+                    motors: std::array::from_fn(|i| Records(&trace.motors[i])),
+                    extruder: trace.extruder.as_ref().map(|v| Records(v)),
+                    motion_seconds: trace.duration,
+                },
+                mixed::Stage::Heater {
+                    line,
+                    outcome,
+                    targets,
+                } => {
+                    let condition = match outcome {
+                        commands::Output::Set { wait, .. } => *wait,
+                        commands::Output::Range(wait) => Some(*wait),
+                        _ => None,
+                    };
+                    let wait = condition.map(|w| match w {
+                        Wait::Controller { index, target } => WaitJson::Controller {
+                            heater_index: index,
+                            target_c: target,
+                        },
+                        Wait::Range {
+                            source,
+                            minimum,
+                            maximum,
+                        } => {
+                            let source = match source {
+                                Source::Heater(index) => SensorJson::Heater {
+                                    heater_index: index,
+                                },
+                                Source::Sensor(name) => SensorJson::Named { name },
+                            };
+                            WaitJson::Sensor {
+                                source,
+                                minimum_c: minimum.is_finite().then_some(minimum),
+                                maximum_c: maximum.is_finite().then_some(maximum),
+                            }
+                        }
+                    });
+                    Phase::Heater {
+                        line: *line,
+                        targets_c: targets,
+                        wait,
+                    }
+                }
+            })
+            .collect();
+        return emit(&MixedOutput {
+            mode: "offline_mixed_plan",
+            schema: 1,
+            clock_hz: plan.hz,
+            final_position_mm: plan.final_position,
+            heater_names: catalog.names().collect(),
+            phases,
+        });
+    }
     let clock = Clock {
         last_encoded: 0,
         time_origin: 0.,
@@ -344,12 +511,7 @@ fn run() -> Result<(), String> {
         virtual_start_mm: start,
         virtual_start_time: 2.0,
     };
-    let mut stdout = BufWriter::new(io::stdout().lock());
-    serde_json::to_writer(&mut stdout, &out).map_err(|e| e.to_string())?;
-    stdout
-        .write_all(b"\n")
-        .and_then(|()| stdout.flush())
-        .map_err(|e| e.to_string())
+    emit(&out)
 }
 
 fn main() {

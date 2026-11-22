@@ -5,6 +5,7 @@
 pub mod commands;
 mod commands_parse;
 pub mod planned;
+pub mod profile;
 pub mod script;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

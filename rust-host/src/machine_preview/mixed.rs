@@ -57,14 +57,25 @@ impl Machine {
         bank: &commands::Bank<'a>,
         input: Input<'_>,
     ) -> Result<MixedTrace<'a>, Error> {
+        let start = home
+            .ready_position_for(self.homing_kinematics(), self.motor_step)
+            .map_err(|e| Error::Geometry(MachineError::VirtualHoming(e)))?;
+        self.trace_mixed_at_virtual_origin(start, bank, input)
+    }
+
+    /// CLI variant with explicitly supplied virtual coordinates instead of
+    /// a simulated homing proof. Not a printer session.
+    pub fn trace_mixed_at_virtual_origin<'a>(
+        &self,
+        start: [f64; 3],
+        bank: &commands::Bank<'a>,
+        input: Input<'_>,
+    ) -> Result<MixedTrace<'a>, Error> {
         if !(1.0..=1e9).contains(&input.hz) {
             return Err(Error::Geometry(MachineError::Clock(
                 crate::step_clock::Error::InvalidTime,
             )));
         }
-        let start = home
-            .ready_position_for(self.homing_kinematics(), self.motor_step)
-            .map_err(|e| Error::Geometry(MachineError::VirtualHoming(e)))?;
         if !self.in_range(&start) {
             return Err(Error::Geometry(MachineError::InitialPosition));
         }

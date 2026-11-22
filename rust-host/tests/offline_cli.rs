@@ -169,3 +169,60 @@ fn explicit_sparse_tools_emit_separate_extrusion_lanes_from_config() {
         }
     }
 }
+
+#[test]
+fn mixed_cli_reports_explicit_unresolved_waits_and_never_assumes_a_hot_extruder() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/preview");
+    let execute = |flags: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_klipper-preview"))
+            .arg("--mixed-plan")
+            .args(flags)
+            .arg(&root)
+            .arg("mixed.cfg")
+            .arg(root.join("path_mixed.gcode"))
+            .args(["20000000", "1", "1", ".2", "printer.cfg", "rails.cfg"])
+            .output()
+            .unwrap()
+    };
+    let valid = execute(&["--tool-temps", "0:210"]);
+    assert!(
+        valid.status.success(),
+        "{}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+    let answer: serde_json::Value = serde_json::from_slice(&valid.stdout).unwrap();
+    assert_eq!(answer["mode"], "offline_mixed_plan");
+    assert_eq!(
+        answer["heater_names"],
+        serde_json::json!(["extruder", "heater_bed"])
+    );
+    let stages = answer["phases"].as_array().unwrap();
+    assert_eq!(stages.len(), 7);
+    assert_eq!(stages[0]["line"], 1);
+    assert_eq!(
+        stages[0]["wait"],
+        serde_json::json!({"kind":"controller","heater_index":0,"target_c":210.})
+    );
+    assert_eq!(stages[2]["wait"]["heater_index"], 1);
+    assert_eq!(
+        stages[4]["wait"]["source"]["name"],
+        "temperature_sensor chamber"
+    );
+    assert_eq!(stages[4]["wait"]["minimum_c"], 20.);
+    assert!(stages[4]["wait"]["maximum_c"].is_null());
+    assert_eq!(stages[6]["targets_c"], serde_json::json!([0., 0.]));
+    assert!(stages[6]["wait"].is_null());
+    for (flags, error) in [
+        (&[][..], "ExtruderRequired"),
+        (&["--tool-temps", "0:25"][..], "Cold"),
+        (
+            &["--tool-temps", "1:210"][..],
+            "only one modeled temperature",
+        ),
+    ] {
+        let result = execute(flags);
+        assert_eq!(result.status.code(), Some(2));
+        assert!(result.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&result.stderr).contains(error));
+    }
+}

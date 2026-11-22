@@ -41,7 +41,9 @@ x86-64 (AMD EPYC 9V74), not a Raspberry Pi. Use the runnable commands in
   fault injection, including two independent peers. No SocketCAN or
   real printer sessions are used.
 - State: virtual job/SD/control boundaries, read-only status snapshots
-  and connection-pair tests. Thermal waits consume only explicit
+  and connection-pair tests. The mixed preview provides separate
+  motion queues around typed heater boundaries and never infers that
+  a real heater is ready. Thermal waits consume only explicit
   simulation observations. No endpoints operate a real heater, probe,
   motor or tool dock.
 
