@@ -740,3 +740,118 @@ fn sparse_job_switch_status_follows_paused_virtual_clock_and_rebases_filament() 
         0
     );
 }
+
+#[test]
+fn checked_dock_applies_lane_geometry_to_staged_and_restore_moves() {
+    use klipper_host_protocol::{
+        extrusion::{Error as ExtrusionError, Extruder, Settings},
+        gcode,
+        machine_preview::{DockInput, Error as MachineError, SimulatedExtruder, ToolLane},
+        toolchange::{Catalog, Failure, Scripts, State as ChangerState},
+    };
+    let machine = Machine::from_config(&source()).unwrap();
+    let origin = [1., 1., 0.2];
+    let mut home = machine.virtual_homing(origin).unwrap();
+    for (axis, coordinate) in origin.into_iter().enumerate() {
+        let arm = home.arm(axis as u8, coordinate, true).unwrap();
+        let count = Some(Counter {
+            start: 10,
+            trigger: 9,
+            halt: 9,
+        });
+        home.complete(
+            arm,
+            if axis < 2 {
+                [count, count, None]
+            } else {
+                [None, None, count]
+            },
+            true,
+        )
+        .unwrap();
+    }
+    let geometry = Extruder::new(Settings {
+        nozzle: 0.4,
+        filament: 1.75,
+        max_area: 0.64,
+        retraction_distance: 1.0,
+        retraction_velocity: 20.,
+        retraction_accel: 300.,
+        corner_velocity: 1.,
+        min_simulated_temperature: 170.,
+    })
+    .unwrap();
+    let catalog = |offset| {
+        let cfg = config::parse(&BTreeMap::from([("dock.cfg".into(), format!(
+            "[toolchanger]\n[tool T0]\ntool_number:0\ndetection_pin:A\n[tool T2]\ntool_number:2\ndetection_pin:B\ngcode_x_offset:{offset}\n"
+        ))]), "dock.cfg").unwrap();
+        Catalog::from_config(&cfg).unwrap()
+    };
+    let trial = |catalog: &Catalog, temperature, dropoff, pickup| {
+        let lane = |id, parked_e, temperature| ToolLane {
+            id,
+            parked_e,
+            extruder: SimulatedExtruder {
+                geometry: &geometry,
+                temperature,
+                step_distance: 0.004,
+                inverse_direction: false,
+                pressure_advance: None,
+            },
+        };
+        let mut changer = catalog.build().unwrap();
+        changer.initialize_from_detection(Some(0)).unwrap();
+        let result = machine.preview_dock(
+            &home,
+            &mut changer,
+            DockInput {
+                catalog,
+                outgoing: lane(0, 0., 210.),
+                incoming: lane(2, 1.3, temperature),
+                scripts: Scripts {
+                    before: "M83\nG1 E-.1 F600",
+                    dropoff,
+                    pickup,
+                    after: "",
+                },
+                detected_after_pickup: Some(2),
+            },
+        );
+        (result, changer.state())
+    };
+    let reference = catalog(0.25);
+    let (ok, state) = trial(&reference, 210., "G0 X20 Y30 Z3 F1200", "M83\nG1 E.15 F600");
+    assert_eq!(state, ChangerState::Ready);
+    let out = ok.unwrap();
+    assert_eq!(
+        out.groups.iter().map(|g| g.tool).collect::<Vec<_>>(),
+        [0, 2]
+    );
+    let p = out.preview.physical_position();
+    assert!((p[0] - 1.25).abs() < 1e-12 && (p[3] - 1.45).abs() < 1e-12);
+    assert!(matches!(
+        trial(&reference, 30., "G0 X20", "M83\nG1 E.15 F600"),
+        (
+            Err(MachineError::Extrusion(ExtrusionError::Cold)),
+            ChangerState::Faulted
+        )
+    ));
+    assert!(matches!(
+        trial(&reference, 210., "G0 X201", ""),
+        (
+            Err(MachineError::Dock(Failure::Coordinates(
+                gcode::Error::MoveOutsidePreview
+            ))),
+            ChangerState::Faulted
+        )
+    ));
+    assert!(matches!(
+        trial(&catalog(200.), 210., "G0 X20 Y30 Z3 F1200", ""),
+        (
+            Err(MachineError::Dock(Failure::Coordinates(
+                gcode::Error::MoveOutsidePreview
+            ))),
+            ChangerState::Faulted
+        )
+    ));
+}

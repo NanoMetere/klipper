@@ -480,6 +480,11 @@ malformed synthetic script yields no partial profiles and faults the
 inert changer. The actual stock coordinate/configure handlers and
 GCodeMove activation matched 5,040 fields across 240 supplied cases.
 This does not run actual docking macros or prove a safe physical path.
+The machine-bound variant also checks virtual homing, XYZ travel, Z
+velocity/acceleration and the correct lane's modeled extrusion limits
+during every staged move, including automatic restore. Tests reject a
+cold incoming lane, out-of-bounds dock coordinates and an offset that
+would put restore travel outside the virtual envelope.
 
 ## Inert multiple-extruder coordinates
 

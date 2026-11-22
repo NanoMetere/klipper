@@ -5,7 +5,7 @@
 use crate::{
     config::Config,
     extrusion::{self, Extruder},
-    gcode::{self, Output, Preview},
+    gcode::{self, Output, Preview, TransformOwner},
     homing::{self, Kinematics, VirtualHoming},
     input_shaper::Shaper,
     input_shaper_defs,
@@ -13,7 +13,7 @@ use crate::{
     pressure_advance::Advance,
     step_clock::{self, Clock, Command},
     step_times::{self, Axis, Event, Solver},
-    toolchange::{split_tool_gcode, ExtruderPositions, SegmentError},
+    toolchange::{self, split_tool_gcode, ExtruderPositions, SegmentError},
     trajectory::{self, Trajectory},
 };
 
@@ -40,6 +40,7 @@ pub enum Error {
     Extrusion(extrusion::Error),
     ToolSegment,
     ToolDispatch(SegmentError),
+    Dock(toolchange::Failure),
     Trajectory(trajectory::Error),
     Solver(step_times::Error),
     Clock(step_clock::Error),
@@ -107,6 +108,16 @@ pub struct ToolLane<'a> {
     pub id: u8,
     pub parked_e: f64,
     pub extruder: SimulatedExtruder<'a>,
+}
+
+/// Two synthetic lanes and a scripted, proof-gated exchange. The observed
+/// ID and virtual homing evidence are simulation-only inputs.
+pub struct DockInput<'a> {
+    pub catalog: &'a toolchange::Catalog,
+    pub outgoing: ToolLane<'a>,
+    pub incoming: ToolLane<'a>,
+    pub scripts: toolchange::Scripts<'a>,
+    pub detected_after_pickup: Option<u8>,
 }
 
 /// Explicit tool phases, never an implicit T-command or docking macro.
@@ -282,6 +293,91 @@ impl Machine {
         invert: [bool; 3],
     ) -> Result<Trace, Error> {
         self.trace_with_extruder(script, start, at, clock, max_error, invert, None)
+    }
+
+    /// Preview one inert dock exchange with real preview geometry limits.
+    /// Validate every synthetic move (including generated restore travel)
+    /// during planning. No partial profiles escape a failed exchange.
+    pub fn preview_dock(
+        &self,
+        home: &VirtualHoming,
+        changer: &mut toolchange::Changer,
+        input: DockInput<'_>,
+    ) -> Result<toolchange::LanePreview, Error> {
+        let start = home
+            .ready_position_for(self.homing_kinematics(), self.motor_step)
+            .map_err(Error::VirtualHoming)?;
+        if !self.in_range(&start) || input.outgoing.id == input.incoming.id {
+            return Err(Error::ToolSegment);
+        }
+        let [outgoing, incoming] = [input.outgoing, input.incoming];
+        let offsets = input
+            .catalog
+            .numbered(outgoing.id)
+            .ok_or(Error::ToolSegment)?
+            .nozzle_offset;
+        let slots = ExtruderPositions::new(
+            &[
+                (outgoing.id, outgoing.parked_e),
+                (incoming.id, incoming.parked_e),
+            ],
+            outgoing.id,
+        )
+        .map_err(|_| Error::ToolSegment)?;
+        let owner = TransformOwner(1);
+        let prepare = |error| Error::Gcode { line: 0, error };
+        let mut preview = Preview::new_at(
+            self.limits,
+            4096,
+            Some(outgoing.extruder.geometry.corner_velocity()),
+            [start[0], start[1], start[2], outgoing.parked_e],
+        )
+        .map_err(prepare)?;
+        preview
+            .wrap_translation(owner, offsets, true)
+            .map_err(prepare)?;
+        preview.reset_last_position().map_err(prepare)?;
+        if let Some(resolution) = self.arc_resolution {
+            preview.enable_arcs(resolution).map_err(prepare)?;
+        }
+        let mut extruder_error = None;
+        let result = input.catalog.preview_change_lanes_checked(
+            changer,
+            preview,
+            owner,
+            toolchange::ChangeRequest {
+                target: Some(incoming.id),
+                homed_axes: 7,
+                detected_after_pickup: input.detected_after_pickup,
+                scripts: input.scripts,
+            },
+            slots,
+            Some(incoming.extruder.geometry.corner_velocity()),
+            |tool, previous, next| {
+                let end = next.end_position();
+                if !self.in_range(&end[..3]) {
+                    return Err(gcode::Error::MoveOutsidePreview);
+                }
+                if let Some(z) = next.z_ratio() {
+                    next.limit(z * self.z_velocity, z * self.z_accel)?;
+                }
+                if end[3] != previous[3] {
+                    let ext = if tool == outgoing.id {
+                        &outgoing.extruder
+                    } else {
+                        &incoming.extruder
+                    };
+                    ext.geometry
+                        .check_move(next, previous, ext.temperature)
+                        .map_err(|reason| {
+                            extruder_error = Some(reason);
+                            gcode::Error::MoveOutsidePreview
+                        })?;
+                }
+                Ok(())
+            },
+        );
+        result.map_err(|e| extruder_error.map_or(Error::Dock(e), Error::Extrusion))
     }
 
     /// Preview bare T selections as topology changes with no physical

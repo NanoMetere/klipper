@@ -3,7 +3,10 @@
 //! Adapted from viesturz/klipper-toolchanger extras/toolchanger.py.
 //! Upstream copyright (C) 2023 Viesturs Zarins.
 
-use crate::gcode::{self, Output, Preview, TransformOwner};
+use crate::{
+    gcode::{self, Output, Preview, TransformOwner},
+    lookahead::Move,
+};
 use std::fmt::Write;
 
 const SAVED: &str = "__rust_virtual_dock";
@@ -67,7 +70,15 @@ impl Dock {
 
     /// Preview caller-supplied synthetic docking lines. This consumes the
     /// dock object so a failed path cannot be re-armed with partial geometry.
-    pub fn preview_lines(mut self, instructions: &str) -> Result<Self, gcode::Error> {
+    pub fn preview_lines(self, instructions: &str) -> Result<Self, gcode::Error> {
+        self.checked_lines(instructions, |_, _| Ok(()))
+    }
+
+    pub(super) fn checked_lines(
+        mut self,
+        instructions: &str,
+        mut gate: impl FnMut([f64; 4], &mut Move) -> Result<(), gcode::Error>,
+    ) -> Result<Self, gcode::Error> {
         if instructions.len() > 128 * 1024 {
             return Err(gcode::Error::InvalidLine);
         }
@@ -76,7 +87,7 @@ impl Dock {
                 .lines_left
                 .checked_sub(1)
                 .ok_or(gcode::Error::InvalidLine)?;
-            let out = self.preview.line(line)?;
+            let out = self.preview.line_with(line, &mut gate)?;
             if !out.moves.is_empty() || out.dwell_seconds.is_some() {
                 self.outputs.push(out);
             }
@@ -110,7 +121,15 @@ impl Dock {
     /// Restore the paused nozzle coordinates only on explicitly named axes.
     /// Physical E is preserved, and its logical extrusion base is restored
     /// by the stock-compatible SAVE/RESTORE state engine.
-    pub fn finish(mut self, new_offset: [f64; 3]) -> Result<(Preview, Vec<Output>), gcode::Error> {
+    pub fn finish(self, new_offset: [f64; 3]) -> Result<(Preview, Vec<Output>), gcode::Error> {
+        self.finish_checked(new_offset, |_, _| Ok(()))
+    }
+
+    pub(super) fn finish_checked(
+        mut self,
+        new_offset: [f64; 3],
+        gate: impl FnMut([f64; 4], &mut Move) -> Result<(), gcode::Error>,
+    ) -> Result<(Preview, Vec<Output>), gcode::Error> {
         if !self.in_dock {
             return Err(gcode::Error::InvalidSession);
         }
@@ -127,7 +146,7 @@ impl Dock {
                     write!(&mut movement, " {axis}{:.17}", self.nozzle[i]).unwrap();
                 }
             }
-            self.outputs.push(self.preview.line(&movement)?);
+            self.outputs.push(self.preview.line_with(&movement, gate)?);
             self.preview.line(&restore)?;
             self.outputs.push(self.preview.line("M400")?);
         }

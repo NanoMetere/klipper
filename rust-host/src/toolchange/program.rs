@@ -4,7 +4,10 @@
 use super::{
     Action, Catalog, Changer, Completion, Dock, Error, ExtruderPositionError, ExtruderPositions,
 };
-use crate::gcode::{self, Output, Preview, TransformOwner};
+use crate::{
+    gcode::{self, Output, Preview, TransformOwner},
+    lookahead::Move,
+};
 
 #[derive(Debug)]
 pub enum Failure {
@@ -41,16 +44,19 @@ pub struct LanePreview {
     pub groups: Vec<LaneOutput>,
 }
 
-struct Handoff {
+type Gate<'a> = dyn FnMut(u8, [f64; 4], &mut Move) -> Result<(), gcode::Error> + 'a;
+
+struct Handoff<'a> {
     positions: ExtruderPositions,
     corner_velocity: Option<f64>,
     outgoing: Option<LaneOutput>,
+    gate: Option<&'a mut Gate<'a>>,
 }
 
-struct Exchange {
+struct Exchange<'a> {
     preview: Preview,
     phases: Vec<Output>,
-    handoff: Option<Handoff>,
+    handoff: Option<Handoff<'a>>,
 }
 
 impl Catalog {
@@ -82,6 +88,54 @@ impl Catalog {
         positions: ExtruderPositions,
         incoming_corner_velocity: Option<f64>,
     ) -> Result<LanePreview, Failure> {
+        self.checked_exchange(
+            changer,
+            preview,
+            owner,
+            change,
+            positions,
+            incoming_corner_velocity,
+            None,
+        )
+    }
+
+    /// As in preview_change_lanes, with a caller-bound geometry validator.
+    /// The validator covers profile inputs in the four synthetic phases and
+    /// the automatic coordinate restore, tagged by the correct tool lane.
+    /// Validate pure data only; this does not commit a physical action.
+    #[allow(clippy::too_many_arguments)]
+    pub fn preview_change_lanes_checked(
+        &self,
+        changer: &mut Changer,
+        preview: Preview,
+        owner: TransformOwner,
+        change: ChangeRequest<'_>,
+        positions: ExtruderPositions,
+        incoming_corner_velocity: Option<f64>,
+        mut gate: impl FnMut(u8, [f64; 4], &mut Move) -> Result<(), gcode::Error>,
+    ) -> Result<LanePreview, Failure> {
+        self.checked_exchange(
+            changer,
+            preview,
+            owner,
+            change,
+            positions,
+            incoming_corner_velocity,
+            Some(&mut gate),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn checked_exchange<'a>(
+        &self,
+        changer: &mut Changer,
+        preview: Preview,
+        owner: TransformOwner,
+        change: ChangeRequest<'_>,
+        positions: ExtruderPositions,
+        incoming_corner_velocity: Option<f64>,
+        gate: Option<&'a mut Gate<'a>>,
+    ) -> Result<LanePreview, Failure> {
         let target = change.target.ok_or(Failure::Change(Error::Tool))?;
         if changer.active() != Some(positions.active())
             || positions.observed_position(target, &preview).is_none()
@@ -97,6 +151,7 @@ impl Catalog {
                 positions,
                 corner_velocity: incoming_corner_velocity,
                 outgoing: None,
+                gate,
             }),
         )?;
         let Handoff {
@@ -118,14 +173,14 @@ impl Catalog {
         })
     }
 
-    fn exchange(
+    fn exchange<'a>(
         &self,
         changer: &mut Changer,
         preview: Preview,
         owner: TransformOwner,
         change: ChangeRequest<'_>,
-        mut handoff: Option<Handoff>,
-    ) -> Result<Exchange, Failure> {
+        mut handoff: Option<Handoff<'a>>,
+    ) -> Result<Exchange<'a>, Failure> {
         let to = change
             .target
             .map(|target| self.numbered(target).ok_or(Failure::Change(Error::Tool)))
@@ -157,6 +212,14 @@ impl Catalog {
                     result.map(Some).map_err(Failure::Coordinates)
                 };
                 let missing = Failure::Change(Error::State);
+                let mut accept = |previous, movement: &mut Move| {
+                    if let Some(state) = &mut handoff {
+                        if let Some(validate) = state.gate.as_deref_mut() {
+                            return validate(state.positions.active(), previous, movement);
+                        }
+                    }
+                    Ok(())
+                };
                 match req.action {
                     Action::Save => {
                         draft = coord(Dock::prepare(saved.take().ok_or(missing)?, owner, axes))?;
@@ -166,7 +229,7 @@ impl Catalog {
                             draft
                                 .take()
                                 .ok_or(missing)?
-                                .preview_lines(change.scripts.before),
+                                .checked_lines(change.scripts.before, &mut accept),
                         )?;
                     }
                     Action::SelectDockTransform => {
@@ -177,7 +240,7 @@ impl Catalog {
                             draft
                                 .take()
                                 .ok_or(missing)?
-                                .preview_lines(change.scripts.dropoff),
+                                .checked_lines(change.scripts.dropoff, &mut accept),
                         )?;
                     }
                     Action::Pickup(_) => {
@@ -185,7 +248,7 @@ impl Catalog {
                             draft
                                 .take()
                                 .ok_or(missing)?
-                                .preview_lines(change.scripts.pickup),
+                                .checked_lines(change.scripts.pickup, &mut accept),
                         )?;
                     }
                     Action::Verify(_) => {
@@ -196,7 +259,7 @@ impl Catalog {
                             draft
                                 .take()
                                 .ok_or(missing)?
-                                .preview_lines(change.scripts.after),
+                                .checked_lines(change.scripts.after, &mut accept),
                         )?;
                     }
                     Action::Restore => {
@@ -204,7 +267,7 @@ impl Catalog {
                             draft
                                 .take()
                                 .ok_or(missing)?
-                                .finish(offset)
+                                .finish_checked(offset, &mut accept)
                                 .map_err(Failure::Coordinates)?,
                         );
                     }
