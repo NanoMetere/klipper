@@ -173,12 +173,10 @@ impl Advance {
                 .filter(|n| *n > 0)
                 .ok_or(step_times::Error::EventLimit)?;
             let seg = pick(segs, &head, &tail, idx as isize);
-            let got = solver.solve_range(seg, start.max(0.0), end, room, |t| {
+            solver.solve_range_into(seg, start.max(0.0)..end, room, &mut out, |t| {
                 self.sample_relative(segs, &head, &tail, idx as isize, t)
                     .map_err(|_| step_times::Error::Invalid)
-            })?;
-            out.extend(got);
-            Ok(())
+            })
         };
         let mut force_until = self.half;
         let mut skipped = None;

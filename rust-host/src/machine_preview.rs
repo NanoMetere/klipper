@@ -336,10 +336,9 @@ fn step_lane(
             .checked_sub(events.len())
             .filter(|n| *n > 0)
             .ok_or(Error::Solver(step_times::Error::EventLimit))?;
-        let more = solver
-            .crossing_events(seg, seg.at, seg.end(), room)
+        solver
+            .crossing_events_into(seg, seg.at..seg.end(), room, &mut events)
             .map_err(Error::Solver)?;
-        events.extend(more);
     }
     step_clock::encode_trace(clock, &events, max_error, invert).map_err(Error::Clock)
 }

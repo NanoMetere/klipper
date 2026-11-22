@@ -426,6 +426,17 @@ and the fixture's cross-process text adapter. The C section also includes
 internal message staging; Rust returns typed commands. This is one offline
 host-side scenario, not full Klippy integration or elapsed printing speed.
 
+The Rust step solver can now append into one buffer per motor instead of
+allocating a temporary buffer for each motion phase. A separate 30-round
+run, rotating the order with the previous Rust source (commit
+`49da0dc898237bda872bdee9b54b601c7ba0204a`), measured 4.824 ms stock,
+3.735 ms previous Rust, and 3.209 ms with reuse (14% less CPU than
+previous Rust, 33% less than stock). All three produced the same 5,796
+commands and modeled duration in every round. The two Rust libraries use
+the same benchmark driver. To reproduce, add
+`--rounds 30 --baseline-rust /path/to/baseline/rust-host` to
+`bench/machine_trace.py`.
+
 These are deterministic traces in memory with no peripherals or hardware.
 
 ## Offline read-only Klippy requests

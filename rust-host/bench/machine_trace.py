@@ -152,9 +152,13 @@ def main():
     p.add_argument("upstream", type=Path, help=f"checkout at {PIN}")
     p.add_argument("--rounds", type=int, default=0,
                    help="additional interleaved CPU timing rounds for the longer CoreXY fixture")
+    p.add_argument("--baseline-rust", type=Path,
+                   help="optional previous rust-host checkout using the same benchmark ABI")
     a = p.parse_args()
     if not 0 <= a.rounds <= 1000:
         p.error("--rounds must be between 0 and 1000")
+    if a.baseline_rust and not a.rounds:
+        p.error("--baseline-rust requires --rounds")
     upstream = a.upstream.resolve()
     sys.path.insert(0, str(upstream / "klippy"))
     h = upstream / "klippy/chelper"
@@ -173,6 +177,21 @@ def main():
                         "-o", clock], check=True)
         subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/machine_trace.rs",
                         "--extern", f"klipper_host_protocol={lib}", "-C", f"link-arg={clock}", "-o", rust], check=True)
+        executables = {"rust": rust}
+        if a.baseline_rust:
+            baseline = a.baseline_rust.resolve()
+            lib_dir = d / "baseline"
+            lib_dir.mkdir()
+            lib = lib_dir / lib.name
+            binary = lib_dir / "rust"
+            subprocess.run(["rustc", "--edition=2021", "-O", "--crate-type=rlib",
+                            "--crate-name=klipper_host_protocol", baseline / "src/lib.rs", "-o", lib],
+                           check=True)
+            # Use the exact same driver and timing clock for both libraries.
+            subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/machine_trace.rs",
+                            "--extern", f"klipper_host_protocol={lib}", "-C", f"link-arg={clock}",
+                            "-o", binary], check=True)
+            executables["baseline rust"] = binary
         cfg = d / "machine.cfg"
         for kin in ("cartesian", "corexy"):
             cfg.write_text(CONFIG.format(kinematics=kin))
@@ -193,14 +212,16 @@ def main():
         cfg.write_text(CONFIG.format(kinematics="corexy"))
         reset = "G90\nM82\nM221 S100\nG1 X1 Y1 Z.2 F2400\nG92 E0\n"
         script = "\n".join([reset + WITH_E] * 12)
-        programs = {"stock": [], "rust": []}
+        labels = ["stock", *executables]
+        programs = {label: [] for label in labels}
         for iteration in range(a.rounds + 1):
             values = {}
-            for label in tuple(programs)[::(-1 if iteration % 2 else 1)]:
+            offset = iteration % len(labels)
+            for label in labels[offset:] + labels[:offset]:
                 if label == "stock":
                     trace, estimated, ns = traced(cfg, c, script, True, True)
                 else:
-                    run = subprocess.run([rust, cfg, "--pressure"], input=script,
+                    run = subprocess.run([executables[label], cfg, "--pressure"], input=script,
                                          text=True, capture_output=True)
                     if run.returncode:
                         raise RuntimeError(run.stderr)
@@ -210,9 +231,12 @@ def main():
                 values[label] = (trace, estimated)
                 if iteration:  # First parity check warms the reference paths.
                     programs[label].append(ns)
-            for i, (x, y) in enumerate(zip(values["stock"][0], values["rust"][0], strict=True)):
-                assert x == y, ("repeated CoreXY", iteration, i, x, y)
-            assert math.isclose(values["stock"][1], values["rust"][1], abs_tol=1e-12, rel_tol=1e-12)
+            for label in executables:
+                want, want_duration = values["stock"]
+                got, got_duration = values[label]
+                for i, (x, y) in enumerate(zip(want, got, strict=True)):
+                    assert x == y, ("repeated CoreXY", iteration, label, i, x, y)
+                assert math.isclose(want_duration, got_duration, abs_tol=1e-12, rel_tol=1e-12)
         count = len(values["rust"][0]) - 4
         print(f"Repeated CoreXY: {count} exact pressure-advanced commands; "
               f"{values['rust'][1]:.9f} simulated seconds")

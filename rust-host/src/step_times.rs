@@ -4,6 +4,7 @@
 //! This is before clock conversion, compression, and rapid-reversal rollback.
 
 use crate::trajectory::Segment;
+use std::ops::Range;
 
 const SEEK: f64 = 0.000100;
 const MAX_EVENTS: usize = 65_536;
@@ -96,23 +97,55 @@ impl Solver {
         abs_end: f64,
         cap: usize,
     ) -> Result<Vec<Event>, Error> {
-        let axis = self.axis;
-        if !axis.active(m.direction) {
-            return Ok(Vec::new());
-        }
-        self.solve_range(m, abs_start, abs_end, cap, |next| {
-            Ok(axis.position(m.local(next)))
-        })
+        let mut out = Vec::new();
+        self.crossing_events_into(m, abs_start..abs_end, cap, &mut out)?;
+        Ok(out)
     }
 
-    pub(crate) fn solve_range(
+    /// Append to the caller's buffer. On error its prior events and solver
+    /// position are preserved, even if the range produced partial crossings.
+    pub(crate) fn crossing_events_into(
         &mut self,
         m: &Segment,
-        abs_start: f64,
-        abs_end: f64,
+        times: Range<f64>,
         cap: usize,
+        out: &mut Vec<Event>,
+    ) -> Result<(), Error> {
+        let axis = self.axis;
+        if !axis.active(m.direction) {
+            return Ok(());
+        }
+        self.solve_range_into(m, times, cap, out, |next| Ok(axis.position(m.local(next))))
+    }
+
+    pub(crate) fn solve_range_into(
+        &mut self,
+        m: &Segment,
+        times: Range<f64>,
+        cap: usize,
+        out: &mut Vec<Event>,
+        position: impl FnMut(f64) -> Result<f64, Error>,
+    ) -> Result<(), Error> {
+        let initial = out.len();
+        let result = self.solve_range(m, times, cap, out, position);
+        if result.is_err() {
+            out.truncate(initial);
+        }
+        result
+    }
+
+    fn solve_range(
+        &mut self,
+        m: &Segment,
+        times: Range<f64>,
+        cap: usize,
+        out: &mut Vec<Event>,
         mut position: impl FnMut(f64) -> Result<f64, Error>,
-    ) -> Result<Vec<Event>, Error> {
+    ) -> Result<(), Error> {
+        let Range {
+            start: abs_start,
+            end: abs_end,
+        } = times;
         if !(1..=MAX_EVENTS).contains(&cap)
             || !abs_start.is_finite()
             || !abs_end.is_finite()
@@ -131,15 +164,15 @@ impl Solver {
         }
         let start = (abs_start - m.at).max(0.0);
         let end = (abs_end - m.at).min(m.duration);
-        let mut events = Vec::new();
         if start >= end {
-            return Ok(events);
+            return Ok(());
         }
+        let initial = out.len();
         let mut push = |event| {
-            if events.len() == cap {
+            if out.len() - initial == cap {
                 return Err(Error::EventLimit);
             }
-            events.push(event);
+            out.push(event);
             Ok(())
         };
         let half = 0.5 * self.dist;
@@ -159,7 +192,7 @@ impl Solver {
                 } else if guess.0 >= end {
                     self.pos = target - if positive { half } else { -half };
                     self.positive = positive;
-                    return Ok(events);
+                    return Ok(());
                 } else {
                     next = high;
                     high = (2.0 * high - last).min(end);
@@ -249,6 +282,13 @@ mod tests {
             solve.crossing_events(&fwd, 1.0, 2.0, 1),
             Err(Error::EventLimit)
         );
+        assert_eq!(solve.commanded_position(), 0.0);
+        let mut prior = vec![Event::Commit];
+        assert_eq!(
+            solve.crossing_events_into(&fwd, 1.0..2.0, 1, &mut prior),
+            Err(Error::EventLimit),
+        );
+        assert_eq!(prior, [Event::Commit]);
         assert_eq!(solve.commanded_position(), 0.0);
         let events = solve.crossing_events(&fwd, 1.0, 2.0, 2048).unwrap();
         assert_eq!(
