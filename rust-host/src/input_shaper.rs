@@ -91,7 +91,11 @@ impl Pulses {
         time: f64,
         axis: usize,
     ) -> Result<f64, Error> {
-        let nominal = |i, t| phases.pick(i).local(t)[axis];
+        let nominal = |i, t| {
+            let segment = phases.pick(i);
+            let distance = (segment.start_velocity + segment.half_acceleration * t) * t;
+            segment.position[axis] + segment.direction[axis] * distance
+        };
         if self.len == 0 {
             return Ok(nominal(index, time));
         }
@@ -173,6 +177,10 @@ pub struct Shaper {
 impl Shaper {
     pub fn new(axes: [Pulses; 3]) -> Self {
         Self { axes }
+    }
+
+    pub fn is_enabled_for(&self, lane: Axis) -> bool {
+        selected(lane).iter().any(|&axis| self.axes[axis].len != 0)
     }
 
     /// Look-ahead and history windows for a motor lane.

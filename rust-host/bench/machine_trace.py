@@ -177,8 +177,10 @@ def main():
     a = p.parse_args()
     if not 0 <= a.rounds <= 1000:
         p.error("--rounds must be between 0 and 1000")
-    if a.baseline_rust and (not a.rounds or a.shape_timing):
-        p.error("--baseline-rust requires --rounds and an unshaped benchmark")
+    if a.baseline_rust and not a.rounds:
+        p.error("--baseline-rust requires --rounds")
+    if a.baseline_rust and a.shape_timing and not (a.baseline_rust/"src/input_shaper.rs").is_file():
+        p.error("a shaped baseline must include the fixed input-shaper module")
     upstream = a.upstream.resolve()
     sys.path.insert(0, str(upstream / "klippy"))
     h = upstream / "klippy/chelper"
@@ -208,8 +210,9 @@ def main():
                             "--crate-name=klipper_host_protocol", baseline / "src/lib.rs", "-o", lib],
                            check=True)
             # Use the exact same driver and timing clock for both libraries.
-            subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/machine_trace.rs",
-                            "--extern", f"klipper_host_protocol={lib}", "-C", f"link-arg={clock}",
+            subprocess.run(["rustc", "--edition=2021", "-O",
+                            *(["--cfg", "input_shaper_fixture"] if a.shape_timing else []),
+                            ROOT / "bench/machine_trace.rs", "--extern", f"klipper_host_protocol={lib}", "-C", f"link-arg={clock}",
                             "-o", binary], check=True)
             executables["baseline rust"] = binary
         cfg = d / "machine.cfg"

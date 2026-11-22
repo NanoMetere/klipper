@@ -347,7 +347,11 @@ impl Machine {
                 self.motor_step[motor],
                 invert[motor],
             );
-            *output = if let Some(shaper) = &self.fixed_shaper {
+            *output = if let Some(shaper) = self
+                .fixed_shaper
+                .as_ref()
+                .filter(|s| s.is_enabled_for(axis))
+            {
                 let events = shaper
                     .crossings(&queue, axis, dist, start)
                     .map_err(Error::Solver)?;

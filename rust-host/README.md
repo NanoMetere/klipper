@@ -605,9 +605,17 @@ and step commands including clocks. Simulated motion stayed at
 section was 7.777 ms stock versus 5.481 ms Rust (30% lower). This uses
 the same timing boundaries as the unshaped experiment below.
 
+The convolution now evaluates only the requested axis and bypasses the
+shaper for motor lanes whose shaping is disabled. In a 30-round
+rotating-order comparison with the previous Rust source (commit
+`c48674d70343d6ebf537652b572441d876c158d0`), the same 6,835 records and
+simulated duration matched each round. Median process CPU time was
+7.742 ms stock, 5.332 ms previous Rust, and 4.842 ms optimized Rust
+(9% less than previous Rust, 37% less than stock).
+
 ```sh
 taskset -c 2 python3 bench/machine_trace.py /path/to/pinned/klipper \
-  --rounds 21 --shape-timing
+  --rounds 30 --shape-timing --baseline-rust /path/to/baseline/rust-host
 ```
 
 ## Config-to-step offline preview
