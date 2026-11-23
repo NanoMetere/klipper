@@ -1376,6 +1376,35 @@ such as G-code execution and emergency stop are deliberately absent.
 Moonraker's initial G-code output subscription receives the expected
 unsupported-endpoint error; the test does not fake support for it.
 
+### Status polling A/B
+
+The read-only subscription update compares the borrowed current values
+with the previous sent fields. It clones only changed fields and
+advances the cache after a frame successfully serializes, not when an
+oversize frame is rejected. Initially unresolved objects still bind
+their field list on the first nonempty observation.
+
+The fixture runs 12,000 polls for eight mixed full/field-filtered
+subscriptions with mostly unchanged data. Across two 30-pair CPU
+runs, previous Rust changed from 394.226 to 84.094 ms and from
+392.586 to 81.125 ms (about 79% lower). The 3,432 ETX-delimited result
+frames were byte-identical (399,216 bytes). The change is limited to
+this sparse status workload, not Moonraker or whole-host latency.
+
+Build the same `examples/status_update_timing.rs` in the old and new
+crate checkouts, then compare both binaries:
+
+```sh
+cargo build --locked --release --example status_update_timing
+taskset -c 2 python3 bench/status_update_timing.py \
+  "$baseline/target/release/examples/status_update_timing" \
+  target/release/examples/status_update_timing --rounds 30 --json status-timing.json
+```
+
+The checker verifies byte-for-byte output separately. Timed fresh
+processes construct the response frames but do not write them onto
+a physical socket or console.
+
 ## Virtual job lifecycle
 
 `virtual_job::Job` preflights a simulated trace, releases inert command

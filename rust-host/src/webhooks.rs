@@ -199,32 +199,50 @@ impl Session {
         if !eventtime.is_finite() {
             return false;
         }
-        let current = selections(source, &mut s.selection);
         let mut changes = Dict::new();
-        for (key, fields) in &current {
-            let fields = fields.as_object().unwrap();
-            let old = s.previous.get(key).and_then(Value::as_object);
-            let fields: Dict = fields
-                .iter()
-                .filter(|(k, v)| **v != *old.and_then(|o| o.get(*k)).unwrap_or(&Value::Null))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+        for (object, keys) in &mut s.selection {
+            let existing = source.get_object(object);
+            let old = s.previous.get(object).and_then(Value::as_object);
+            let mut fields = Dict::new();
+            for key in selected_fields(keys, existing) {
+                let value = existing.and_then(|v| v.get(key)).unwrap_or(&Value::Null);
+                let previous = old.and_then(|v| v.get(key)).unwrap_or(&Value::Null);
+                if value != previous {
+                    fields.insert(key.clone(), value.clone());
+                }
+            }
             if !fields.is_empty() {
-                changes.insert(key.clone(), Value::Object(fields));
+                changes.insert(object.clone(), Value::Object(fields));
             }
         }
         if changes.is_empty() {
             return false;
         }
+        let mut params = Dict::new();
+        params.insert("eventtime".into(), Value::from(eventtime));
+        params.insert("status".into(), Value::Object(changes));
         let mut response = s.template.clone();
-        response.insert(
-            "params".into(),
-            json!({"eventtime": eventtime, "status": changes}),
-        );
-        if !wire(&Value::Object(response), &mut send) {
+        response.insert("params".into(), Value::Object(params));
+        let mut response = Value::Object(response);
+        if !wire(&response, &mut send) {
             return false;
         }
-        s.previous = current;
+        // Update only the fields that were serialized successfully. A missing
+        // field and an explicit null compare equally, as in a fresh snapshot.
+        if let Value::Object(changes) = response["params"]["status"].take() {
+            for (object, fields) in changes {
+                if let Value::Object(fields) = fields {
+                    let entry = s
+                        .previous
+                        .entry(object)
+                        .or_insert_with(|| Value::Object(Dict::new()));
+                    entry
+                        .as_object_mut()
+                        .expect("subscription cache is object-valued")
+                        .extend(fields);
+                }
+            }
+        }
         true
     }
 }
@@ -267,18 +285,23 @@ fn parse_selection(params: &Dict) -> Result<Selection, String> {
     Ok(result)
 }
 
+/// Stock resolves a whole-object subscription's field names on its first
+/// non-empty observation. Missing fields remain selected and report null.
+fn selected_fields<'a>(keys: &'a mut Option<Vec<String>>, existing: Option<&Dict>) -> &'a [String] {
+    if keys.is_none() {
+        if let Some(found) = existing.filter(|o| !o.is_empty()) {
+            *keys = Some(found.keys().cloned().collect());
+        }
+    }
+    keys.as_deref().unwrap_or_default()
+}
+
 fn selections(source: &Snapshot, selection: &mut Selection) -> Dict {
     let mut status = Dict::new();
     for (object, keys) in selection {
         let existing = source.get_object(object);
-        if keys.is_none() {
-            if let Some(found) = existing.filter(|o| !o.is_empty()) {
-                *keys = Some(found.keys().cloned().collect());
-            }
-        }
-        let values: Dict = keys
+        let values: Dict = selected_fields(keys, existing)
             .iter()
-            .flatten()
             .map(|key| {
                 (
                     key.clone(),
@@ -334,6 +357,49 @@ mod tests {
             output[1],
             json!({"key":1,"params":{"eventtime":1.5,"status":{"toolhead":{"position":[4,0,0]}}}})
         );
+    }
+
+    #[test]
+    fn resolves_initially_missing_objects_and_keeps_the_selected_fields() {
+        let mut session = Session::default();
+        let mut snapshot = Snapshot::default();
+        let request = b"{\"id\":1,\"method\":\"objects/subscribe\",\"params\":{\"objects\":{\"future\":null}}}\x03";
+        session.feed(request, &snapshot, 0., |_| {});
+        assert!(!session.update(&snapshot, 1., |_| panic!()));
+        snapshot.set_object("future".into(), json!({"x":1}).as_object().unwrap().clone());
+        assert!(session.update(&snapshot, 2., |frame| {
+            assert_eq!(value(frame)["params"]["status"], json!({"future":{"x":1}}));
+        }));
+        snapshot.set_object(
+            "future".into(),
+            json!({"x":1,"y":2}).as_object().unwrap().clone(),
+        );
+        assert!(!session.update(&snapshot, 3., |_| panic!()));
+        snapshot.set_object("future".into(), Dict::new());
+        assert!(session.update(&snapshot, 4., |frame| {
+            assert_eq!(
+                value(frame)["params"]["status"],
+                json!({"future":{"x":null}})
+            );
+        }));
+        assert!(!session.update(&snapshot, 5., |_| panic!()));
+    }
+
+    #[test]
+    fn rejected_frame_leaves_small_changes_pending() {
+        let mut session = Session::default();
+        let mut snapshot = Snapshot::default();
+        let fields = |x, label: &str| json!({"x":x,"label":label}).as_object().unwrap().clone();
+        snapshot.set_object("test".into(), fields(1, "short"));
+        let request = b"{\"id\":1,\"method\":\"objects/subscribe\",\"params\":{\"objects\":{\"test\":null}}}\x03";
+        session.feed(request, &snapshot, 0., |_| {});
+        snapshot.set_object("test".into(), fields(2, &"x".repeat(MAX_FRAME)));
+        assert!(!session.update(&snapshot, 1., |_| panic!()));
+        snapshot.set_object("test".into(), fields(2, "short"));
+        assert!(session.update(&snapshot, 2., |frame| {
+            assert_eq!(value(frame)["params"]["status"], json!({"test":{"x":2}}));
+        }));
+        assert!(!session.update(&snapshot, 3., |_| panic!()));
     }
 
     #[test]

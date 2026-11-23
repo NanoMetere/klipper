@@ -70,3 +70,7 @@ required-features = ["identify"]
 [[example]]
 name = "moonraker_status_fixture"
 required-features = ["webhooks"]
+
+[[example]]
+name = "status_update_timing"
+required-features = ["webhooks"]
