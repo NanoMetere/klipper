@@ -78,7 +78,8 @@ but cannot measure printer I/O or physical print duration.
   a real heater is ready. The GPIO-free firmware exercise additionally
   checks that both temperature evidence and prior motion completion
   are required before the next phase. A separate static multi-tool
-  preflight maps sparse virtual selectors to explicit heater roles.
+  preflight maps sparse virtual selectors to explicit heater roles;
+  the offline CLI exposes this with explicit startup tool and temperatures.
   The signed final positions of all six lanes in 41 shaped and
   pressure-advanced jobs matched stock at deliberate stops. The
   GPIO-free T2/T5/T2 path then verified 13+13+13 commands on the

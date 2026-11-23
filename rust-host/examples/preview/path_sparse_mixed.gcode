@@ -1,0 +1,15 @@
+; Offline synthetic XYZ/extruder phase input; not a printer job.
+G90
+M83
+M104 T2 S200
+M109 S210
+G1 X4 E.1 F800
+T2
+M109 S215
+G1 Y5 E.2 F800
+T6
+M109 S220
+G1 X5 E.04 F800
+T0
+G1 X6 E.02 F800
+TURN_OFF_HEATERS

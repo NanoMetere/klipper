@@ -58,6 +58,15 @@ impl<'a> Catalog<'a> {
         self.heaters.iter().map(|p| p.name)
     }
 
+    /// Numeric G-code heater role of an explicitly named extruder.
+    /// This is distinct from both the physical selector and the result-table index.
+    pub fn extruder_index(&self, name: &str) -> Option<u32> {
+        self.heaters.iter().find_map(|p| match p.role {
+            Role::Extruder(index) if p.name == name => Some(index),
+            _ => None,
+        })
+    }
+
     pub fn bank(&self, debug: bool) -> Result<Bank<'_>, Error> {
         let active = self
             .heaters

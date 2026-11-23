@@ -36,7 +36,9 @@ const HELP: &str =
     --initial-tool defaults to 0. Bare T lines only switch offline lanes; no docking.\n\
     --lane-workers sets 1–8 motion workers for long multi-tool previews (default 1).\n\
     --mesh-profile uses a saved Klipper mesh for this offline preview.\n\
-    --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.";
+    --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.
+\
+    A multi-tool mixed plan requires --initial-tool and every modeled tool temperature.";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -166,14 +168,23 @@ struct PreviewOutput<'a> {
 enum Phase<'a> {
     Motion {
         first_line: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool: Option<u8>,
         motors: [Records<'a>; 3],
         extruder: Option<Records<'a>>,
         motion_seconds: f64,
     },
     Heater {
         line: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active_tool: Option<u8>,
         targets_c: &'a [f64],
         wait: Option<WaitJson<'a>>,
+    },
+    Select {
+        line: usize,
+        from: u8,
+        to: u8,
     },
 }
 
@@ -204,8 +215,57 @@ struct MixedOutput<'a> {
     schema: u8,
     clock_hz: f64,
     final_position_mm: [f64; 4],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_tool: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_extruders_mm: Option<&'a [(u8, f64)]>,
     heater_names: Vec<&'a str>,
     phases: Vec<Phase<'a>>,
+}
+
+fn wait_json<'a>(outcome: &commands::Output<'a>) -> Option<WaitJson<'a>> {
+    let condition = match outcome {
+        commands::Output::Set { wait, .. } => *wait,
+        commands::Output::Range(wait) => Some(*wait),
+        _ => None,
+    }?;
+    Some(match condition {
+        Wait::Controller { index, target } => WaitJson::Controller {
+            heater_index: index,
+            target_c: target,
+        },
+        Wait::Range {
+            source,
+            minimum,
+            maximum,
+        } => {
+            let source = match source {
+                Source::Heater(index) => SensorJson::Heater {
+                    heater_index: index,
+                },
+                Source::Sensor(name) => SensorJson::Named { name },
+            };
+            WaitJson::Sensor {
+                source,
+                minimum_c: minimum.is_finite().then_some(minimum),
+                maximum_c: maximum.is_finite().then_some(maximum),
+            }
+        }
+    })
+}
+
+fn motion_phase(
+    first_line: usize,
+    tool: Option<u8>,
+    trace: &klipper_host_protocol::machine_preview::Trace,
+) -> Phase<'_> {
+    Phase::Motion {
+        first_line,
+        tool,
+        motors: std::array::from_fn(|i| Records(&trace.motors[i])),
+        extruder: trace.extruder.as_ref().map(|v| Records(v)),
+        motion_seconds: trace.duration,
+    }
 }
 
 fn emit(out: &impl Serialize) -> Result<(), String> {
@@ -336,16 +396,96 @@ fn run() -> Result<(), String> {
         machine = machine.with_bed_mesh(transform);
     }
     if mixed_plan {
-        if parsed.values("toolchanger").is_some() || workers.is_some() || initial_tool.is_some() {
-            return Err(
-                "--mixed-plan supports stock heater indexing and a fixed initial extruder".into(),
-            );
+        if workers.is_some() {
+            return Err("--mixed-plan uses one phase-local lane worker".into());
         }
         let catalog = thermal_profiles::Catalog::read(&parsed)
             .map_err(|e| format!("heater profile: {e:?}"))?;
         let bank = catalog
             .bank(false)
             .map_err(|e| format!("heater profile: {e:?}"))?;
+        let multi = parsed.values("toolchanger").is_some()
+            || tool_temps.as_ref().is_some_and(|temps| temps.len() > 1)
+            || initial_tool.is_some();
+        if multi {
+            let initial = initial_tool.ok_or("multi-tool --mixed-plan requires --initial-tool")?;
+            let temps = tool_temps
+                .ok_or("multi-tool --mixed-plan requires one modeled temperature per tool")?;
+            let profiles =
+                tool_profiles::read(&parsed).map_err(|e| format!("tool profiles: {e:?}"))?;
+            if profiles.len() != temps.len() {
+                return Err("supply one modeled temperature for every configured tool".into());
+            }
+            let slots = profiles
+                .iter()
+                .map(|p| {
+                    let temperature = temps
+                        .get(&p.id)
+                        .ok_or_else(|| format!("missing modeled temperature for T{}", p.id))?;
+                    let heater = catalog
+                        .extruder_index(&p.section)
+                        .ok_or_else(|| format!("no stock heater role for {:?}", p.section))?;
+                    let lane = p
+                        .lane(*temperature, 0.)
+                        .map_err(|e| format!("tool profile: {e:?}"))?;
+                    Ok(mixed::ToolSlot { lane, heater })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            if !slots.iter().any(|t| t.lane.id == initial) {
+                return Err(format!("initial tool T{initial} is not configured"));
+            }
+            let plan = machine
+                .trace_mixed_tools_at_virtual_origin(
+                    start,
+                    &bank,
+                    mixed::ToolInput {
+                        script,
+                        slots: &slots,
+                        initial_tool: initial,
+                        hz,
+                        max_error: 0,
+                        invert: [false; 3],
+                    },
+                )
+                .map_err(|e| format!("mixed preview: {e:?}"))?;
+            let phases = plan
+                .phases
+                .iter()
+                .map(|p| match p {
+                    mixed::ToolStage::Motion {
+                        first_line,
+                        tool,
+                        trace,
+                    } => motion_phase(*first_line, Some(*tool), trace),
+                    mixed::ToolStage::Heater {
+                        line,
+                        active_tool,
+                        outcome,
+                        targets,
+                    } => Phase::Heater {
+                        line: *line,
+                        active_tool: Some(*active_tool),
+                        targets_c: targets,
+                        wait: wait_json(outcome),
+                    },
+                    mixed::ToolStage::Select { line, from, to } => Phase::Select {
+                        line: *line,
+                        from: *from,
+                        to: *to,
+                    },
+                })
+                .collect();
+            return emit(&MixedOutput {
+                mode: "offline_mixed_plan",
+                schema: 1,
+                clock_hz: plan.hz,
+                final_position_mm: plan.final_position,
+                initial_tool: Some(plan.initial_tool),
+                final_extruders_mm: Some(&plan.final_extruders),
+                heater_names: catalog.names().collect(),
+                phases,
+            });
+        }
         let profiles;
         let extruder = if let Some(dict) = tool_temps {
             if dict.len() != 1 || !dict.contains_key(&0) {
@@ -382,51 +522,19 @@ fn run() -> Result<(), String> {
             .phases
             .iter()
             .map(|phase| match phase {
-                mixed::Stage::Motion { first_line, trace } => Phase::Motion {
-                    first_line: *first_line,
-                    motors: std::array::from_fn(|i| Records(&trace.motors[i])),
-                    extruder: trace.extruder.as_ref().map(|v| Records(v)),
-                    motion_seconds: trace.duration,
-                },
+                mixed::Stage::Motion { first_line, trace } => {
+                    motion_phase(*first_line, None, trace)
+                }
                 mixed::Stage::Heater {
                     line,
                     outcome,
                     targets,
-                } => {
-                    let condition = match outcome {
-                        commands::Output::Set { wait, .. } => *wait,
-                        commands::Output::Range(wait) => Some(*wait),
-                        _ => None,
-                    };
-                    let wait = condition.map(|w| match w {
-                        Wait::Controller { index, target } => WaitJson::Controller {
-                            heater_index: index,
-                            target_c: target,
-                        },
-                        Wait::Range {
-                            source,
-                            minimum,
-                            maximum,
-                        } => {
-                            let source = match source {
-                                Source::Heater(index) => SensorJson::Heater {
-                                    heater_index: index,
-                                },
-                                Source::Sensor(name) => SensorJson::Named { name },
-                            };
-                            WaitJson::Sensor {
-                                source,
-                                minimum_c: minimum.is_finite().then_some(minimum),
-                                maximum_c: maximum.is_finite().then_some(maximum),
-                            }
-                        }
-                    });
-                    Phase::Heater {
-                        line: *line,
-                        targets_c: targets,
-                        wait,
-                    }
-                }
+                } => Phase::Heater {
+                    line: *line,
+                    active_tool: None,
+                    targets_c: targets,
+                    wait: wait_json(outcome),
+                },
             })
             .collect();
         return emit(&MixedOutput {
@@ -434,6 +542,8 @@ fn run() -> Result<(), String> {
             schema: 1,
             clock_hz: plan.hz,
             final_position_mm: plan.final_position,
+            initial_tool: None,
+            final_extruders_mm: None,
             heater_names: catalog.names().collect(),
             phases,
         });

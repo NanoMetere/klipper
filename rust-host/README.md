@@ -1363,6 +1363,19 @@ still use the stock heater role, without changing the active tool.
 Every motion or heater boundary is a conservative stop in this
 preview; targets do not stand in for observations.
 
+To see the same typed stages in the preview JSON, specify the starting
+tool and one modeled temperature for every configured tool. The output
+identifies which extruder lane supplies each motion and which heater
+table entry a wait refers to. It does not clear any wait or run a tool
+macro.
+
+```sh
+cargo build --locked --release
+target/release/klipper-preview --mixed-plan --initial-tool 0 \
+  --tool-temps 0:210,2:215,6:220 examples/preview sparse-tool.cfg \
+  examples/preview/path_sparse_mixed.gcode 20000000 1 1 .2 printer.cfg rails.cfg
+```
+
 The phase-local step compiler preserves cumulative signed steps at
 each boundary, with separate extruder grids. In 41 generated
 CoreXY jobs with input shaping, pressure advance, and returning

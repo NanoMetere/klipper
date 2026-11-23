@@ -226,3 +226,92 @@ fn mixed_cli_reports_explicit_unresolved_waits_and_never_assumes_a_hot_extruder(
         assert!(String::from_utf8_lossy(&result.stderr).contains(error));
     }
 }
+
+#[test]
+fn sparse_mixed_cli_distinguishes_tool_ids_from_heater_roles() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/preview");
+    let execute = |flags: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_klipper-preview"))
+            .arg("--mixed-plan")
+            .args(flags)
+            .arg(&root)
+            .arg("sparse-tool.cfg")
+            .arg(root.join("path_sparse_mixed.gcode"))
+            .args(["20000000", "1", "1", ".2", "printer.cfg", "rails.cfg"])
+            .output()
+            .unwrap()
+    };
+    let valid = execute(&["--initial-tool", "0", "--tool-temps", "0:210,2:215,6:220"]);
+    assert!(
+        valid.status.success(),
+        "{}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&valid.stdout).unwrap();
+    assert_eq!(result["mode"], "offline_mixed_plan");
+    assert_eq!(result["initial_tool"], 0);
+    assert_eq!(
+        result["heater_names"],
+        serde_json::json!(["extruder", "extruder1", "extruder2"])
+    );
+    let phases = result["phases"].as_array().unwrap();
+    let selects: Vec<_> = phases
+        .iter()
+        .filter(|p| p["stage"] == "select")
+        .map(|p| {
+            (
+                p["line"].as_u64().unwrap(),
+                p["from"].as_u64().unwrap(),
+                p["to"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(selects, [(7, 0, 2), (10, 2, 6), (13, 6, 0)]);
+    let heaters: Vec<_> = phases.iter().filter(|p| p["stage"] == "heater").collect();
+    assert_eq!(heaters[0]["line"], 4);
+    assert_eq!(heaters[0]["active_tool"], 0);
+    assert_eq!(heaters[0]["targets_c"], serde_json::json!([0., 0., 200.]));
+    assert!(heaters[0]["wait"].is_null());
+    for (row, (tool, heater)) in heaters[1..4].iter().zip([(0, 0), (2, 1), (6, 2)]) {
+        assert_eq!(row["active_tool"], tool);
+        assert_eq!(row["wait"]["heater_index"], heater);
+    }
+    assert_eq!(heaters[4]["targets_c"], serde_json::json!([0., 0., 0.]));
+    let ext = result["final_extruders_mm"].as_array().unwrap();
+    for (r, (tool, e)) in ext.iter().zip([(0, 0.12), (2, 0.2), (6, 0.04)]) {
+        assert_eq!(r[0], tool);
+        assert!((r[1].as_f64().unwrap() - e).abs() < 1e-12);
+    }
+    let emitting: Vec<_> = phases
+        .iter()
+        .filter(|p| {
+            p["stage"] == "motion" && p["extruder"].as_array().is_some_and(|r| !r.is_empty())
+        })
+        .map(|p| p["tool"].as_u64().unwrap())
+        .collect();
+    assert_eq!(emitting, [0, 2, 6, 0]);
+    for (flags, err) in [
+        (
+            &["--tool-temps", "0:210,2:215,6:220"][..],
+            "requires --initial-tool",
+        ),
+        (
+            &["--initial-tool", "5", "--tool-temps", "0:210,2:215,6:220"][..],
+            "T5 is not configured",
+        ),
+        (
+            &["--initial-tool", "0", "--tool-temps", "0:210,2:215"][..],
+            "temperature for every configured tool",
+        ),
+        (
+            &["--initial-tool", "0", "--tool-temps", "0:210,2:25,6:220"][..],
+            "Cold",
+        ),
+    ] {
+        let failure = execute(flags);
+        assert_eq!(failure.status.code(), Some(2));
+        assert!(failure.stdout.is_empty());
+        let log = String::from_utf8_lossy(&failure.stderr);
+        assert!(log.contains(err), "{log}");
+    }
+}
