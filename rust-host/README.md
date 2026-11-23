@@ -1433,6 +1433,22 @@ such as G-code execution and emergency stop are deliberately absent.
 Moonraker's initial G-code output subscription receives the expected
 unsupported-endpoint error; the test does not fake support for it.
 
+The separate `--moonraker-http` option (58 phases with all other
+flags) starts the pinned real Moonraker application on an ephemeral
+`127.0.0.1` port with temporary data and an ephemeral test key. It
+uses the same explicitly injected Klippy dial. The fixture verifies
+unauthenticated rejection, authenticated HTTP readiness and query,
+WebSocket status differences, shutdown/disconnect notifications, and
+a fresh subscription after reconnection. It requires Moonraker's
+stock Python dependencies. It does not create a real Klippy socket,
+test native named-socket dialing, expose a server on the network, or
+execute printer commands.
+
+```sh
+python3 bench/moonraker_frontend.py "$moonraker" \
+  target/release/examples/moonraker_status_fixture
+```
+
 ### Status polling A/B
 
 The read-only subscription update compares the borrowed current values

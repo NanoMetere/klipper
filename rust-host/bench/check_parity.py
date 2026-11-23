@@ -33,7 +33,11 @@ def main():
     p.add_argument("--modern-bridge", type=Path, help="optional compiled Rust debug bridge for PR #174")
     p.add_argument("--moonraker", type=Path,
                    help="run the optional pinned Moonraker read-only socketpair fixture")
+    p.add_argument("--moonraker-http", action="store_true",
+                   help="also run pinned Moonraker's read-only loopback HTTP/WebSocket server")
     a = p.parse_args()
+    if a.moonraker_http and not a.moonraker:
+        p.error("--moonraker-http requires --moonraker")
     modern = [a.modern_toolchanger, a.klippain, a.led_effect]
     if (any(modern) or a.modern_bridge) and not all(modern):
         p.error("--modern-toolchanger, --klippain and --led-effect must be supplied together")
@@ -100,6 +104,10 @@ def main():
         phases.append(("moonraker_status_client", [sys.executable, ROOT/"bench/moonraker_connection.py",
                                                   a.moonraker.resolve(),
                                                   examples/"moonraker_status_fixture"]))
+    if a.moonraker_http:
+        phases.append(("moonraker_status_frontend", [sys.executable, ROOT/"bench/moonraker_frontend.py",
+                                                    a.moonraker.resolve(),
+                                                    examples/"moonraker_status_fixture"]))
     if a.toolchanger_reference:
         phases.append(("toolchange_order", [sys.executable, ROOT/"bench/toolchange_order.py",
                                            a.legacy_klippy.resolve(), a.toolchanger_reference.resolve(),

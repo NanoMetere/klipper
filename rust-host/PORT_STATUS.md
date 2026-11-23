@@ -72,8 +72,11 @@ but cannot measure printer I/O or physical print duration.
 - State: virtual job/SD/control boundaries, read-only status snapshots
   and connection-pair tests. Pinned Moonraker client components
   additionally verify the read-only status lifecycle, shutdown and
-  reconnection through a socket pair. No server process or frontend
-  transport is claimed. The mixed preview provides separate
+  reconnection through a socket pair. Pinned Moonraker also serves
+  authenticated read-only HTTP/JSON-RPC and WebSocket status over
+  an ephemeral loopback port with the Klippy dial injected. Named
+  Klippy socket dialing, command execution and a real frontend
+  installation are not verified. The mixed preview provides separate
   motion queues around typed heater boundaries and never infers that
   a real heater is ready. The GPIO-free firmware exercise additionally
   checks that both temperature evidence and prior motion completion
