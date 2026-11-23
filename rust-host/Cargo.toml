@@ -74,3 +74,6 @@ required-features = ["webhooks"]
 [[example]]
 name = "status_update_timing"
 required-features = ["webhooks"]
+
+[[example]]
+name = "mixed_tool_steps"

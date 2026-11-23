@@ -1349,9 +1349,33 @@ The stock pin is `c9559fa04ec6b11fb1a9a1610903546319fcf310`; legacy
 Klippy is `644cda5ecaa39d0dcf797624c19d5425cb8121ec`; legacy Toolchanger
 is `94756dfde9b729fd69f9b8780067821c5c99a528`. The modern candidate,
 Klippain and LED Effect commits are listed under the PR #174 debug
-tests below. Check for all 54 named phases and do not infer coverage
+tests below. Check for all 55 named phases and do not infer coverage
 from a short invocation. The optional `--moonraker "$moonraker"`
-adds the client fixture below (55 total).
+adds the client fixture below (56 total).
+
+### Mixed sparse tools
+
+The offline tool/thermal preflight requires an explicit mapping from
+physical tool IDs (e.g. T0/T2/T6) to configured stock heater indices.
+A bare selector changes the modeled active tool and preserves each
+parked E coordinate. Explicit heater parameters such as `M104 T1`
+still use the stock heater role, without changing the active tool.
+Every motion or heater boundary is a conservative stop in this
+preview; targets do not stand in for observations.
+
+The phase-local step compiler preserves cumulative signed steps at
+each boundary, with separate extruder grids. In 41 generated
+CoreXY jobs with input shaping, pressure advance, and returning
+sparse tools, all six final signed motor positions matched pinned
+stock Python+C. The comparator explicitly stops and allows filter
+history to settle at the same boundaries. It does not assert equal
+global firmware clocks or real docking motion.
+
+```sh
+cargo build --locked --release --example mixed_tool_steps
+python3 bench/mixed_tool_steps.py "$stock_klipper" \
+  --binary target/release/examples/mixed_tool_steps
+```
 
 ### Read-only Moonraker client fixture
 

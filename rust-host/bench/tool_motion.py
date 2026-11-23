@@ -16,7 +16,7 @@ from planner import PIN, ROOT
 from preview_cli_timing import gcode as long_gcode
 
 
-def reference(upstream, executable, sparse, long_script=None):
+def reference(upstream, executable, sparse, long_script=None, parked=None):
     sys.path.insert(0, str(upstream / "klippy"))
     from kinematics.corexy import CoreXYKinematics
     from kinematics.extruder import PrinterExtruder
@@ -33,6 +33,9 @@ def reference(upstream, executable, sparse, long_script=None):
     e.max_e_dist, e.max_e_velocity, e.max_e_accel = 15.,20.,300.
     e.trapq = None
     start = (0., 0., 0.) if long_script else (0., 1.3, 2.1) if sparse else (0., 1.3)
+    if parked is not None:
+        assert long_script and len(parked) == len(start)
+        start = parked
     e_rows = [[] for _ in start]
     xyz_rows = []
     clock = 2.

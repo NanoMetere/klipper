@@ -85,6 +85,8 @@ def main():
                           "--binary", examples/"mixed_preflight"]),
         ("mixed_step_grid", [sys.executable, ROOT/"bench/mixed_step_grid.py", upstream,
                              "--binary", examples/"mixed_step_grid"]),
+        ("mixed_tool_steps", [sys.executable, ROOT/"bench/mixed_tool_steps.py", upstream,
+                              "--binary", examples/"mixed_tool_steps"]),
         ("thermal_commands", [sys.executable, ROOT/"bench/thermal_commands.py", upstream,
                               "--binary", examples/"thermal_command_replay"]),
         ("verify_heater", [sys.executable, ROOT/"bench/verify_heater.py", upstream,

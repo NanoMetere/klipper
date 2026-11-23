@@ -20,6 +20,7 @@ mod extruders;
 pub use extruders::{Error as ExtruderPositionError, ExtruderPositions};
 #[path = "toolchange/segments.rs"]
 mod segments;
+pub(crate) use segments::selector as tool_selector;
 pub use segments::{split as split_tool_gcode, Error as SegmentError};
 
 const MAX_TOOLS: usize = 64;

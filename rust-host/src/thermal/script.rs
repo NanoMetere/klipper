@@ -6,6 +6,7 @@ use super::commands::{parse_gcode, Command, Error};
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CHECKPOINTS: usize = 512;
+const MAX_TOOL_SELECTORS: usize = 127;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Chunk<'a> {
@@ -60,6 +61,63 @@ pub fn split_mixed(script: &str) -> Result<Vec<Chunk<'_>>, SplitError> {
         });
     }
     Ok(chunks)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ToolChunk<'a> {
+    Chunk(Chunk<'a>),
+    Select { line: usize, tool: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSplitError {
+    Mixed(SplitError),
+    Selector(crate::toolchange::SegmentError),
+    Bounds,
+}
+
+/// Preserve source order for heater commands and bare tool selectors.
+/// This variant neither resolves tool IDs nor runs tool macros. An explicit
+/// heater target such as `M104 T5` never becomes a tool selector.
+pub fn split_tool_mixed(script: &str) -> Result<Vec<ToolChunk<'_>>, ToolSplitError> {
+    let mut selectors = 0;
+    let mut ordered = Vec::new();
+    for chunk in split_mixed(script).map_err(ToolSplitError::Mixed)? {
+        let Chunk::Motion { first_line, text } = chunk else {
+            ordered.push(ToolChunk::Chunk(chunk));
+            continue;
+        };
+        let (mut start, mut offset, mut first) = (0, 0, first_line);
+        for (i, raw) in text.split_inclusive('\n').enumerate() {
+            let line = first_line + i;
+            let end = offset + raw.len();
+            if let Some(tool) =
+                crate::toolchange::tool_selector(raw, line).map_err(ToolSplitError::Selector)?
+            {
+                selectors += 1;
+                if selectors > MAX_TOOL_SELECTORS {
+                    return Err(ToolSplitError::Bounds);
+                }
+                if start < offset {
+                    ordered.push(ToolChunk::Chunk(Chunk::Motion {
+                        first_line: first,
+                        text: &text[start..offset],
+                    }));
+                }
+                ordered.push(ToolChunk::Select { line, tool });
+                start = end;
+                first = line + 1;
+            }
+            offset = end;
+        }
+        if start < text.len() {
+            ordered.push(ToolChunk::Chunk(Chunk::Motion {
+                first_line: first,
+                text: &text[start..],
+            }));
+        }
+    }
+    Ok(ordered)
 }
 
 #[cfg(test)]
@@ -121,6 +179,57 @@ mod tests {
                 first_line: 1,
                 text: &nonheater
             }]
+        );
+    }
+
+    #[test]
+    fn keeps_sparse_switches_and_explicit_heater_selection_separate() {
+        let raw = "G90 ; comment\r\nT2\r\nM104 T5 S190\r\nG1 X15\r\nT5\r\nM109 S215\r\nG1 E.2";
+        let result = split_tool_mixed(raw).unwrap();
+        assert!(matches!(
+            result.as_slice(),
+            [
+                ToolChunk::Chunk(Chunk::Motion {
+                    first_line: 1,
+                    text: "G90 ; comment\r\n"
+                }),
+                ToolChunk::Select { line: 2, tool: 2 },
+                ToolChunk::Chunk(Chunk::Heater {
+                    line: 3,
+                    command: Command::Set {
+                        heater: Heater::Extruder(Some(5)),
+                        target: 190.,
+                        wait: false
+                    }
+                }),
+                ToolChunk::Chunk(Chunk::Motion {
+                    first_line: 4,
+                    text: "G1 X15\r\n"
+                }),
+                ToolChunk::Select { line: 5, tool: 5 },
+                ToolChunk::Chunk(Chunk::Heater {
+                    line: 6,
+                    command: Command::Set {
+                        heater: Heater::Extruder(None),
+                        target: 215.,
+                        wait: true
+                    }
+                }),
+                ToolChunk::Chunk(Chunk::Motion {
+                    first_line: 7,
+                    text: "G1 E.2"
+                }),
+            ]
+        ));
+        assert!(matches!(
+            split_tool_mixed("M109 S200\nG90\nT02"),
+            Err(ToolSplitError::Selector(
+                crate::toolchange::SegmentError::BadTool { line: 3 }
+            ))
+        ));
+        assert_eq!(
+            split_tool_mixed(&"T5\n".repeat(128)),
+            Err(ToolSplitError::Bounds)
         );
     }
 }

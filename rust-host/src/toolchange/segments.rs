@@ -25,19 +25,7 @@ pub fn split(script: &str, initial: u8) -> Result<Vec<ToolSegment<'_>>, Error> {
     let mut offset = 0;
     for (index, line) in script.split_inclusive('\n').enumerate() {
         let end = offset + line.len();
-        let head = line.split(';').next().unwrap().trim();
-        if matches!(head.as_bytes().first(), Some(b't' | b'T'))
-            && head.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
-        {
-            let digits = &head[1..];
-            let next = digits
-                .parse::<u8>()
-                .ok()
-                .filter(|_| {
-                    digits.bytes().all(|v| v.is_ascii_digit())
-                        && !(digits.len() > 1 && digits.starts_with('0'))
-                })
-                .ok_or(Error::BadTool { line: index + 1 })?;
+        if let Some(next) = selector(line, index + 1)? {
             push(
                 &mut parts,
                 ToolSegment {
@@ -58,6 +46,26 @@ pub fn split(script: &str, initial: u8) -> Result<Vec<ToolSegment<'_>>, Error> {
         },
     )?;
     Ok(parts)
+}
+
+/// Apply the same strict selector grammar when a heater planner splits the script.
+pub(crate) fn selector(raw: &str, line: usize) -> Result<Option<u8>, Error> {
+    let head = raw.split(';').next().unwrap_or_default().trim();
+    if !matches!(head.as_bytes().first(), Some(b't' | b'T'))
+        || !head.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+    {
+        return Ok(None);
+    }
+    let digits = &head[1..];
+    digits
+        .parse::<u8>()
+        .ok()
+        .filter(|_| {
+            digits.bytes().all(|v| v.is_ascii_digit())
+                && !(digits.len() > 1 && digits.starts_with('0'))
+        })
+        .map(Some)
+        .ok_or(Error::BadTool { line })
 }
 
 fn push<'a>(parts: &mut Vec<ToolSegment<'a>>, part: ToolSegment<'a>) -> Result<(), Error> {

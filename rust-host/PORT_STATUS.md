@@ -77,7 +77,10 @@ but cannot measure printer I/O or physical print duration.
   motion queues around typed heater boundaries and never infers that
   a real heater is ready. The GPIO-free firmware exercise additionally
   checks that both temperature evidence and prior motion completion
-  are required before the next phase. Thermal waits consume only
+  are required before the next phase. A separate static multi-tool
+  preflight maps sparse virtual selectors to explicit heater roles.
+  The signed final positions of all six lanes in 41 shaped and
+  pressure-advanced jobs matched stock at deliberate stops. Thermal waits consume only
   explicit simulation observations. No endpoints operate a real heater, probe,
   motor or tool dock.
 
