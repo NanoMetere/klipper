@@ -155,34 +155,85 @@ def check_dual(upstream, mcu, binary, rounds=1):
     print("Lost secondary motion ACK in either mode: no retry, later writes, or clock advances")
 
 
-def check_mixed_tool_proofs(upstream, mcu, binary):
-    """Require per-peer evidence before the final virtual tool phase."""
+def check_mixed_tool_proofs(upstream, mcu, binary, rounds=1):
+    """Compare ACK batching and require truly separate mixed-tool peer proofs."""
     sys.path.insert(0, str(upstream / "klippy"))
     from msgproto import MessageParser
+
+    plain, packed, omit = ("--gpio-dual-tool-mixed", "--gpio-dual-tool-packed",
+                           "--gpio-dual-tool-missing-proof")
 
     def proc(a, b, mode):
         fd = b if isinstance(b, int) else b.fileno()
         return subprocess.run([binary, mode, str(fd)], stdin=a, stdout=a,
                               pass_fds=(fd,), stderr=subprocess.PIPE, text=True, timeout=12)
 
+    def summary(result):
+        assert result.returncode == 0, result.stderr
+        info, timing = result.stderr.strip().splitlines()
+        assert info == "TOOL_PEERS 13 0 10 3 13 0 640 0 0 35 50", info
+        kind, a, b, nanos = timing.split()
+        assert kind == "TOOL_ENQUEUE" and int(nanos) > 0
+        return (int(a), int(b)), int(nanos)
+
     parser = MessageParser()
     parser.process_identify((mcu.parent / "klipper.dict").read_bytes(), decompress=False)
     tags = lambda *names: tuple(bytes(parser.messages_by_name[n].msgid_bytes) for n in names)
     motion = tags("queue_step", "set_next_step_dir")
-    for mode, wanted, counts in (
-        ("--gpio-dual-tool-mixed", "TOOL_PEERS 13 0 10 3 13 0 640 0 0 35 50", (36, 3)),
-        ("--gpio-dual-tool-missing-proof", "TOOL_PEER_WAIT 13 0 10 3 0", (23, 3)),
-    ):
+    advance, = tags("rust_fixture_advance")
+
+    def decoded(events):
+        rows = []
+        for kind, peer, data in events:
+            if kind != "send" or not data.startswith(motion):
+                continue
+            frame = bytes([len(data)+5,16,*data,0,0,126])
+            for command in parser.dump(frame)[1:]:
+                assert command.split()[0] in {"queue_step", "set_next_step_dir"}
+                rows.append((peer,command))
+        return rows
+
+    outputs = {}
+    timing = {plain: [], packed: []}
+    scopes = {}
+    for i in range(rounds+1):
+        for mode in (plain,packed)[::1 if i%2==0 else -1]:
+            with fresh(mcu) as a, fresh(mcu) as b:
+                frames,nanos = summary(proc(a,b,mode))
+            assert scopes.setdefault(mode,frames) == frames
+            if i:
+                timing[mode].append(nanos)
+    for mode in (plain,packed,omit):
         events = []
-        with observed_peer(mcu, 0, events) as a, observed_peer(mcu, 1, events) as b:
-            run = proc(a, b, mode)
-        assert run.returncode == 0 and run.stderr.strip() == wanted, (mode, run.stderr)
-        assert tuple(sum(kind == "send" and board == target and data.startswith(motion)
-                         for kind, board, data in events) for target in (0, 1)) == counts
+        with observed_peer(mcu,0,events) as a, observed_peer(mcu,1,events) as b:
+            run = proc(a,b,mode)
+        if mode == omit:
+            assert run.returncode == 0 and run.stderr.strip()=="TOOL_PEER_WAIT 13 0 10 3 0",run.stderr
+        else:
+            assert summary(run)[0]==scopes[mode]
+        outputs[mode]=decoded(events)
+    assert outputs[plain]==outputs[packed]
+    assert len(outputs[plain])==39 and len(outputs[omit])==26
+    assert outputs[omit]==outputs[plain][:26]
+    assert scopes[plain]==(36,3) and sum(scopes[packed])<sum(scopes[plain])
+
     events = []
     with observed_peer(mcu, 0, events) as a, fresh(upstream/"out/klipper.elf") as unmarked:
-        refused = proc(a, unmarked, "--gpio-dual-tool-mixed")
+        refused = proc(a, unmarked, packed)
     assert refused.returncode and "NotFixture" in refused.stderr, refused.stderr
     forbidden = tags("allocate_oids", "config_stepper", "queue_step", "set_next_step_dir")
-    assert not any(kind == "send" and payload.startswith(forbidden) for kind, _, payload in events)
-    print("Two mixed-tool MCU peers: 39 commands matched; withholding the second peer's receipt blocked all 13 later commands")
+    assert not any(kind=="send" and data.startswith(forbidden) for kind,_,data in events)
+
+    events = []
+    with observed_peer(mcu,0,events) as a, observed_peer(mcu,1,events,lambda p:p.startswith(motion)) as b:
+        fault=proc(a,b,packed)
+    assert fault.returncode and "peer 1 motion" in fault.stderr,fault.stderr
+    assert sum(kind=="lost" for kind,_,_ in events)==1
+    clocks=[peer for kind,peer,data in events if kind=="send" and data.startswith(advance)]
+    assert clocks==[0],clocks
+    before,after=[statistics.median(timing[k])*1e-6 for k in (plain,packed)]
+    print(f"Two mixed-tool MCU peers: 39 exact commands in {sum(scopes[plain])} vs "
+          f"{sum(scopes[packed])} frames; {rounds} paired enqueue medians "
+          f"{before:.3f} → {after:.3f} ms")
+    print("A missing receipt held the last 13 commands; a dropped secondary frame ACK "
+          "caused no second-stage clock advance")

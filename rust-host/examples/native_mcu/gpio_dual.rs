@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Two disposable no-GPIO peers: one independent event clock per PTY.
 
-use crate::linux::{fixture_ack, identify_fixture, read_clock, read_config, Link};
+use crate::{
+    linux::{fixture_ack, identify_fixture, read_clock, read_config, Link},
+    routed_batch::Batch,
+};
 use klipper_host_protocol::{
     clock::{ClockMessages, Response},
     config, encode,
@@ -16,7 +19,6 @@ use klipper_host_protocol::{
     toolchange::{Catalog, Scripts},
     virtual_job::{Job, RoutedLane, State},
     virtual_stepper::Stepper,
-    MAX_PAYLOAD,
 };
 use std::{collections::BTreeMap, time::Instant};
 
@@ -286,44 +288,29 @@ pub(super) fn run(links: [Link; 2], batched: bool) -> Result<(), String> {
     let mut sent = [0, 0];
     let mut frames = [0, 0];
     let began = Instant::now();
-    let mut submit = |board: usize, payload: &[u8]| -> Result<(), String> {
+    let mut submit = |board: usize, payload: &[u8], _count: usize| -> Result<(), String> {
         attested[board]
             .send(payload)
             .map_err(|e| format!("peer {board} motion: {e}"))?;
         frames[board] += 1;
         Ok(())
     };
-    let mut frame = [0; MAX_PAYLOAD];
-    let mut used = 0;
-    let mut owner = 0;
+    let mut batch = Batch::default();
     while job.snapshot().state != State::Finished {
         for item in job.poll(end, 256).map_err(err)? {
             let lane = item.lane;
             let (board, _) = ROUTE[lane];
             let bytes = item.command.bytes.as_slice();
             motors[lane].accept_payload(&wire, bytes).map_err(err)?;
-            if bytes.is_empty() || bytes.len() > MAX_PAYLOAD {
-                return Err("invalid local fixture command size".into());
-            }
             if batched {
-                // Flush at every peer change. This preserves the global
-                // planned order, not just each board's local wire order.
-                if used > 0 && (owner != board || used + bytes.len() > MAX_PAYLOAD) {
-                    submit(owner, &frame[..used])?;
-                    used = 0;
-                }
-                owner = board;
-                frame[used..used + bytes.len()].copy_from_slice(bytes);
-                used += bytes.len();
+                batch.push(board, bytes, &mut submit)?;
             } else {
-                submit(board, bytes)?;
+                submit(board, bytes, 1)?;
             }
             sent[board] += 1;
         }
     }
-    if used > 0 {
-        submit(owner, &frame[..used])?;
-    }
+    batch.flush(&mut submit)?;
     let enqueue_ns = began.elapsed().as_nanos();
     let lead = (hz * 2.) as u64;
     let mut final_pos = [0; 5];

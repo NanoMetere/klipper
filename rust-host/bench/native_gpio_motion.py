@@ -64,9 +64,10 @@ def main():
     p.add_argument("--binary", type=Path, default=ROOT/"target/release/examples/native_mcu")
     p.add_argument("--rounds", type=int, default=1)
     p.add_argument("--dual-rounds", type=int, default=1)
+    p.add_argument("--mixed-rounds", type=int, default=1)
     a = p.parse_args()
-    if not 1 <= a.rounds <= 99 or not 1 <= a.dual_rounds <= 99:
-        p.error("--rounds and --dual-rounds must be between 1 and 99")
+    if not all(1 <= r <= 99 for r in (a.rounds,a.dual_rounds,a.mixed_rounds)):
+        p.error("round counts must be between 1 and 99")
     upstream, binary = a.upstream.resolve(), a.binary.resolve()
     control = run(binary, upstream/"out/klipper.elf")
     assert control.returncode and "NotFixture" in control.stderr, control.stderr
@@ -119,7 +120,7 @@ def main():
         assert "motion frame" in details and "GPIO_FIXTURE" not in details, details
         print("Dropped a batched motion ACK: no extra host frame or virtual clock advance")
         check_dual(upstream, mcu, binary, a.dual_rounds)
-        check_mixed_tool_proofs(upstream, mcu, binary)
+        check_mixed_tool_proofs(upstream, mcu, binary, a.mixed_rounds)
         for mode, expected in (
             ("--gpio-mixed", "THERMAL_FIXTURE 13 13 560 -80 0 75"),
             ("--gpio-mixed-shutdown", "THERMAL_FIXTURE_FAULT 13 0 240 240 0 25"),

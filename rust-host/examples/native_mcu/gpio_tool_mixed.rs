@@ -3,6 +3,7 @@
 use crate::{
     gpio_dual::Peer,
     linux::{identify_fixture, Link},
+    routed_batch::Batch,
 };
 use klipper_host_protocol::{
     config,
@@ -16,7 +17,7 @@ use klipper_host_protocol::{
     step_wire::{Message, StepMessages},
     thermal::commands::{Bank, Gate, Observation, Profile, Role, Source},
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Instant};
 
 const EXPECTED: [[i32; 5]; 3] = [
     [240, 240, 0, 25, 0],
@@ -249,7 +250,11 @@ fn prepare(hz: f64, codec: &StepMessages, routed: bool) -> Result<Program, Strin
     }
 }
 
-pub(super) fn run_dual(links: [Link; 2], omit_secondary: bool) -> Result<(), String> {
+pub(super) fn run_dual(
+    links: [Link; 2],
+    omit_secondary: bool,
+    batched: bool,
+) -> Result<(), String> {
     let mut peers = Vec::new();
     let mut dictionaries = Vec::new();
     for mut link in links {
@@ -290,6 +295,8 @@ pub(super) fn run_dual(links: [Link; 2], omit_secondary: bool) -> Result<(), Str
     };
     program.start(0).map_err(err)?;
     let mut sent = [[0usize; 2]; 3];
+    let mut frames = [0usize; 2];
+    let mut enqueue_ns = 0;
     for (phase, temp) in [Some(210.), Some(220.), None].into_iter().enumerate() {
         let wall = 16. * phase as f64;
         if let Some(temp) = temp {
@@ -314,6 +321,19 @@ pub(super) fn run_dual(links: [Link; 2], omit_secondary: bool) -> Result<(), Str
                 peer.reset_phase(stepper_counts[board], lead)?;
             }
         }
+        let began = Instant::now();
+        let mut batch = Batch::default();
+        let mut submit = |board: usize, payload: &[u8], count: usize| -> Result<(), String> {
+            if sent[phase][board] + count > capacities[board] {
+                return Err("mixed software peer capacity exceeded".into());
+            }
+            peers[board]
+                .send(payload)
+                .map_err(|e| format!("peer {board} motion: {e}"))?;
+            sent[phase][board] += count;
+            frames[board] += 1;
+            Ok(())
+        };
         for _ in 0..16 {
             if program.state() != State::Running {
                 break;
@@ -326,13 +346,15 @@ pub(super) fn run_dual(links: [Link; 2], omit_secondary: bool) -> Result<(), Str
                 if oid != record.route.oid || oid >= stepper_counts[board] {
                     return Err("mixed phase dispatched to a wrong peer route".into());
                 }
-                sent[phase][board] += 1;
-                if sent[phase][board] > capacities[board] {
-                    return Err("mixed software peer capacity exceeded".into());
+                if batched {
+                    batch.push(board, &record.item.command.bytes, &mut submit)?;
+                } else {
+                    submit(board, &record.item.command.bytes, 1)?;
                 }
-                peers[board].send(&record.item.command.bytes)?;
             }
         }
+        batch.flush(&mut submit)?;
+        enqueue_ns += began.elapsed().as_nanos();
         let (generation, required) = program.pending_peer_commit().ok_or("missing peer proofs")?;
         let mut actual = Vec::new();
         for requirement in required {
@@ -390,5 +412,6 @@ pub(super) fn run_dual(links: [Link; 2], omit_secondary: bool) -> Result<(), Str
         "TOOL_PEERS {} {} {} {} {} {} 640 0 0 35 50",
         sent[0][0], sent[0][1], sent[1][0], sent[1][1], sent[2][0], sent[2][1]
     );
+    eprintln!("TOOL_ENQUEUE {} {} {enqueue_ns}", frames[0], frames[1]);
     Ok(())
 }

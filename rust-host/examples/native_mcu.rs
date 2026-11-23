@@ -21,6 +21,10 @@ mod gpio_mixed;
 mod gpio_tool_mixed;
 
 #[cfg(target_os = "linux")]
+#[path = "native_mcu/routed_batch.rs"]
+mod routed_batch;
+
+#[cfg(target_os = "linux")]
 mod linux {
     use klipper_host_protocol::{
         clock::{ClockMessages, Error as ClockError, Response},
@@ -514,6 +518,7 @@ mod linux {
             "--gpio-dual"
                 | "--gpio-dual-packed"
                 | "--gpio-dual-tool-mixed"
+                | "--gpio-dual-tool-packed"
                 | "--gpio-dual-tool-missing-proof"
         ) {
             let fd = argv
@@ -531,11 +536,14 @@ mod linux {
             }
             if matches!(
                 arg.as_str(),
-                "--gpio-dual-tool-mixed" | "--gpio-dual-tool-missing-proof"
+                "--gpio-dual-tool-mixed"
+                    | "--gpio-dual-tool-packed"
+                    | "--gpio-dual-tool-missing-proof"
             ) {
                 return crate::gpio_tool_mixed::run_dual(
                     [primary, secondary],
                     arg == "--gpio-dual-tool-missing-proof",
+                    arg != "--gpio-dual-tool-mixed",
                 );
             }
             return crate::gpio_dual::run([primary, secondary], arg == "--gpio-dual-packed");

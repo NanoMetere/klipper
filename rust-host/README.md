@@ -1401,8 +1401,19 @@ software MCU peers, using separate OID namespaces, phase-local clocks
 and one common wire dictionary. It sends 39 commands, verifies all
 five final counters, and withholds one peer receipt after the second
 phase to prove that the final 13 commands stay unissued. An aggregate
-ACK count is not accepted for routed stages. This is not a SocketCAN
-or hardware driver.
+ACK count is not accepted for routed stages. Batching only contiguous
+commands to the same peer preserves all 39 commands and reduces wire
+frames from 39 to 9. Thirty alternating fresh pairs measured summed
+phase enqueue through ACK at 0.967 → 0.278 ms; a separate single-CPU
+repeat measured 0.232 → 0.062 ms. Temperature waits, motion execution
+and clock/position checks are not timed. A missing secondary receipt
+blocks all final commands; deliberately dropping one secondary ACK
+also prevents a second-stage virtual clock advance. This is not a
+SocketCAN or hardware driver.
+
+```sh
+python3 bench/native_gpio_motion.py "$stock_klipper" --mixed-rounds 30
+```
 
 ```sh
 cargo build --locked --release --example mixed_tool_steps
