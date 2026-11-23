@@ -71,6 +71,9 @@ enum Pending {
         wait: Option<HeatWait>,
         targets: Vec<f64>,
     },
+    Fan {
+        demand: f64,
+    },
     Select {
         tool: u8,
     },
@@ -90,6 +93,7 @@ pub struct Program {
     active_tool: Option<u8>,
     routed: bool,
     active_routes: Option<ActiveRoutes>,
+    fan_demand: Option<f64>,
 }
 
 pub struct ToolOids<'a> {
@@ -240,6 +244,17 @@ impl Program {
                     active = to;
                     build.stages.push_back(Pending::Select { tool: to });
                 }
+                ToolStage::Fan {
+                    line,
+                    active_tool,
+                    demand,
+                } => {
+                    build.line(line)?;
+                    if active_tool != active || !demand.is_finite() || demand < 0. {
+                        return Err(Error::InputLimit);
+                    }
+                    build.stages.push_back(Pending::Fan { demand });
+                }
                 ToolStage::Heater {
                     line,
                     active_tool,
@@ -316,6 +331,10 @@ impl Program {
     pub fn active_tool(&self) -> Option<u8> {
         self.active_tool
     }
+    /// Last inert print-fan demand, not scheduled PWM or measured speed.
+    pub fn fan_demand(&self) -> Option<f64> {
+        self.fan_demand
+    }
     pub fn line(&self) -> Option<usize> {
         self.line
     }
@@ -366,6 +385,9 @@ impl Program {
                     })
                 },
             );
+        }
+        if self.active_tool.is_some() {
+            data["print_fan_demand"] = serde_json::json!(self.fan_demand);
         }
         snapshot.set_object(
             "virtual_mixed_job".into(),
@@ -529,6 +551,7 @@ impl Program {
         while let Some(stage) = self.stages.pop_front() {
             match stage {
                 Pending::Select { tool } => self.active_tool = Some(tool),
+                Pending::Fan { demand } => self.fan_demand = Some(demand),
                 Pending::Motion {
                     line,
                     mut job,
@@ -751,6 +774,7 @@ impl<'a> StageBuilder<'a> {
             active_tool,
             routed,
             active_routes: None,
+            fan_demand: None,
         }
     }
 }

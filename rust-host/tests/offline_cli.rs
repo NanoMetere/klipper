@@ -315,3 +315,48 @@ fn sparse_mixed_cli_distinguishes_tool_ids_from_heater_roles() {
         assert!(log.contains(err), "{log}");
     }
 }
+
+#[test]
+fn sparse_fan_demands_are_only_previewed_with_a_configured_print_fan() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/preview");
+    let run = |config: &str, included: Option<&str>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_klipper-preview"));
+        cmd.args([
+            "--mixed-plan",
+            "--initial-tool",
+            "0",
+            "--tool-temps",
+            "0:210,2:215,6:220",
+        ])
+        .arg(&root)
+        .arg(config)
+        .arg(root.join("path_sparse_fan.gcode"))
+        .args(["20000000", "1", "1", ".2", "printer.cfg", "rails.cfg"]);
+        if let Some(extra) = included {
+            cmd.arg(extra);
+        }
+        cmd.output().unwrap()
+    };
+    let result = run("sparse-fan.cfg", Some("sparse-tool.cfg"));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let fan: Vec<_> = report["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["stage"] == "fan")
+        .collect();
+    assert_eq!(fan.len(), 2);
+    assert_eq!(fan[0]["active_tool"], 0);
+    assert_eq!(fan[0]["demand"], 0.5);
+    assert_eq!(fan[1]["active_tool"], 2);
+    assert_eq!(fan[1]["demand"], 0.);
+    let invalid = run("sparse-tool.cfg", None);
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(invalid.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("FanNotConfigured"));
+}

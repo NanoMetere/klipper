@@ -1349,9 +1349,9 @@ The stock pin is `c9559fa04ec6b11fb1a9a1610903546319fcf310`; legacy
 Klippy is `644cda5ecaa39d0dcf797624c19d5425cb8121ec`; legacy Toolchanger
 is `94756dfde9b729fd69f9b8780067821c5c99a528`. The modern candidate,
 Klippain and LED Effect commits are listed under the PR #174 debug
-tests below. Check for all 55 named phases and do not infer coverage
+tests below. Check for all 56 named phases and do not infer coverage
 from a short invocation. The optional `--moonraker "$moonraker"`
-adds the client fixture below (56 total).
+adds the client fixture below (57 total).
 
 ### Mixed sparse tools
 
@@ -1367,7 +1367,11 @@ To see the same typed stages in the preview JSON, specify the starting
 tool and one modeled temperature for every configured tool. The output
 identifies which extruder lane supplies each motion and which heater
 table entry a wait refers to. It does not clear any wait or run a tool
-macro.
+macro. An explicitly present stock `[fan]` also enables bounded M106
+and M107 demand stages in this multi-tool preview. Fan demand advances
+only after the preceding phase is committed; it is not scheduled PWM
+or a physical fan speed. Named or indexed fan macros are unsupported.
+The stock parser/handler differential covers 253 bounded fan requests.
 
 ```sh
 cargo build --locked --release

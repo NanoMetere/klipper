@@ -67,12 +67,17 @@ pub fn split_mixed(script: &str) -> Result<Vec<Chunk<'_>>, SplitError> {
 pub enum ToolChunk<'a> {
     Chunk(Chunk<'a>),
     Select { line: usize, tool: u8 },
+    Fan { line: usize, demand: f64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSplitError {
     Mixed(SplitError),
     Selector(crate::toolchange::SegmentError),
+    Fan {
+        line: usize,
+        error: crate::fan::Error,
+    },
     Bounds,
 }
 
@@ -91,11 +96,21 @@ pub fn split_tool_mixed(script: &str) -> Result<Vec<ToolChunk<'_>>, ToolSplitErr
         for (i, raw) in text.split_inclusive('\n').enumerate() {
             let line = first_line + i;
             let end = offset + raw.len();
-            if let Some(tool) =
-                crate::toolchange::tool_selector(raw, line).map_err(ToolSplitError::Selector)?
-            {
+            let selector =
+                crate::toolchange::tool_selector(raw, line).map_err(ToolSplitError::Selector)?;
+            let stage = if let Some(tool) = selector {
                 selectors += 1;
                 if selectors > MAX_TOOL_SELECTORS {
+                    return Err(ToolSplitError::Bounds);
+                }
+                Some(ToolChunk::Select { line, tool })
+            } else {
+                crate::fan::command::print_demand(raw)
+                    .map_err(|error| ToolSplitError::Fan { line, error })?
+                    .map(|demand| ToolChunk::Fan { line, demand })
+            };
+            if let Some(stage) = stage {
+                if ordered.len() >= MAX_CHECKPOINTS * 2 + 256 {
                     return Err(ToolSplitError::Bounds);
                 }
                 if start < offset {
@@ -104,7 +119,7 @@ pub fn split_tool_mixed(script: &str) -> Result<Vec<ToolChunk<'_>>, ToolSplitErr
                         text: &text[start..offset],
                     }));
                 }
-                ordered.push(ToolChunk::Select { line, tool });
+                ordered.push(stage);
                 start = end;
                 first = line + 1;
             }
@@ -116,6 +131,9 @@ pub fn split_tool_mixed(script: &str) -> Result<Vec<ToolChunk<'_>>, ToolSplitErr
                 text: &text[start..],
             }));
         }
+    }
+    if ordered.len() > MAX_CHECKPOINTS * 2 + 257 {
+        return Err(ToolSplitError::Bounds);
     }
     Ok(ordered)
 }

@@ -5,6 +5,7 @@
 //! Outputs are inert data; no pins, PWM, or firmware access.
 
 use std::collections::VecDeque;
+pub mod command;
 
 const MAX_PENDING: usize = 4096;
 

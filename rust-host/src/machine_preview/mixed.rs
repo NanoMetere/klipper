@@ -19,6 +19,7 @@ pub enum Error {
     Geometry(MachineError),
     ExtruderRequired,
     Tools(planned::ToolError),
+    FanNotConfigured { line: usize },
 }
 
 pub struct Input<'a> {
@@ -59,6 +60,7 @@ pub struct ToolInput<'a> {
     pub script: &'a str,
     pub slots: &'a [ToolSlot<'a>],
     pub initial_tool: u8,
+    pub print_fan: bool,
     pub hz: f64,
     pub max_error: u32,
     pub invert: [bool; 3],
@@ -75,6 +77,11 @@ pub enum ToolStage<'a> {
         active_tool: u8,
         outcome: commands::Output<'a>,
         targets: Vec<f64>,
+    },
+    Fan {
+        line: usize,
+        active_tool: u8,
+        demand: f64,
     },
     Select {
         line: usize,
@@ -360,6 +367,20 @@ impl Machine {
                     outcome,
                     targets,
                 },
+                planned::ToolStage::Fan {
+                    line,
+                    active_tool,
+                    demand,
+                } => {
+                    if !input.print_fan {
+                        return Err(Error::FanNotConfigured { line });
+                    }
+                    ToolStage::Fan {
+                        line,
+                        active_tool,
+                        demand,
+                    }
+                }
                 planned::ToolStage::Select { line, from, to } => {
                     ToolStage::Select { line, from, to }
                 }

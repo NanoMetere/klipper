@@ -181,6 +181,11 @@ enum Phase<'a> {
         targets_c: &'a [f64],
         wait: Option<WaitJson<'a>>,
     },
+    Fan {
+        line: usize,
+        active_tool: u8,
+        demand: f64,
+    },
     Select {
         line: usize,
         from: u8,
@@ -442,6 +447,7 @@ fn run() -> Result<(), String> {
                         script,
                         slots: &slots,
                         initial_tool: initial,
+                        print_fan: parsed.values("fan").is_some(),
                         hz,
                         max_error: 0,
                         invert: [false; 3],
@@ -467,6 +473,15 @@ fn run() -> Result<(), String> {
                         active_tool: Some(*active_tool),
                         targets_c: targets,
                         wait: wait_json(outcome),
+                    },
+                    mixed::ToolStage::Fan {
+                        line,
+                        active_tool,
+                        demand,
+                    } => Phase::Fan {
+                        line: *line,
+                        active_tool: *active_tool,
+                        demand: *demand,
                     },
                     mixed::ToolStage::Select { line, from, to } => Phase::Select {
                         line: *line,

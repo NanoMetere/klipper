@@ -219,7 +219,7 @@ fn prepare(hz: f64, codec: &StepMessages, routed: bool) -> Result<Program, Strin
     let slots = [slot(2, 0), slot(5, 1)];
     let trace = machine.trace_mixed_tools_at_virtual_origin([1.,1.,0.2],&bank,ToolInput {
         script:"M109 S210\nG90\nM83\nG1 X4 E.1 F800\nT5\nM109 S220\nG1 Y5 E.2 F800\nT2\nG1 X5 E.04 F800\nTURN_OFF_HEATERS\n",
-        slots:&slots,initial_tool:2,hz,max_error:20,invert:[false;3],
+        slots:&slots,initial_tool:2,print_fan:false,hz,max_error:20,invert:[false;3],
     }).map_err(err)?;
     let route = |peer, oid| Route { peer, oid };
     if routed {

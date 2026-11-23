@@ -1469,7 +1469,7 @@ fn sparse_mixed_program_requires_a_commit_before_selecting_a_new_tool() {
     let bank = Bank::new(&profiles, &[], Some(0), false).unwrap();
     let hz = 20e6;
     let tick = |sec: f64| (sec * hz) as u64;
-    let text = "M109 S210\nG90\nM83\nG1 X4 E.1 F800\nT5\nM109 S220\nG1 Y5 E.2 F800\nT2\nG1 X5 E.04 F800\nTURN_OFF_HEATERS";
+    let text = "M109 S210\nG90\nM83\nG1 X4 E.1 F800\nM106 S127.5\nT5\nM109 S220\nG1 Y5 E.2 F800\nT2\nG1 X5 E.04 F800\nM107\nTURN_OFF_HEATERS";
     let trace = || {
         machine
             .trace_mixed_tools_at_virtual_origin(
@@ -1479,6 +1479,7 @@ fn sparse_mixed_program_requires_a_commit_before_selecting_a_new_tool() {
                     script: text,
                     slots: &slots,
                     initial_tool: 2,
+                    print_fan: true,
                     hz,
                     max_error: 20,
                     invert: [false; 3],
@@ -1538,6 +1539,7 @@ fn sparse_mixed_program_requires_a_commit_before_selecting_a_new_tool() {
     assert!(first.contains(&8) && !first.contains(&9));
     assert_eq!(run.state(), ProgramState::AwaitingMotionCommit);
     assert_eq!(run.active_tool(), Some(2));
+    assert_eq!(run.fan_demand(), None);
     let proof = run.pending_motion_commit().unwrap();
     assert!(run
         .commit_motion(
@@ -1552,6 +1554,7 @@ fn sparse_mixed_program_requires_a_commit_before_selecting_a_new_tool() {
     assert_eq!(run.active_tool(), Some(2));
     run.commit_motion(tick(12.), proof).unwrap();
     assert_eq!(run.active_tool(), Some(5));
+    assert_eq!(run.fan_demand(), Some(0.5));
     assert_eq!(run.targets(), [210., 220.]);
     assert_eq!(run.state(), ProgramState::Waiting);
     assert!(run
@@ -1585,6 +1588,7 @@ fn sparse_mixed_program_requires_a_commit_before_selecting_a_new_tool() {
     run.commit_motion(tick(36.), run.pending_motion_commit().unwrap())
         .unwrap();
     assert_eq!(run.state(), ProgramState::Finished);
+    assert_eq!(run.fan_demand(), Some(0.));
     assert_eq!(run.targets(), [0., 0.]);
 
     // Routed simulation permits the same wire OID on different peers, but

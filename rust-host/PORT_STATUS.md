@@ -86,7 +86,10 @@ but cannot measure printer I/O or physical print duration.
   intended lanes, while the synthetic shutdown released 13+0+0.
   Two software peers also preserve cumulative positions and block
   the final 13 commands if the second peer's receipt is absent.
-  Thermal waits consume only explicit simulation observations. No endpoints operate a real heater, probe,
+  Thermal waits consume only explicit simulation observations.
+  Stock print-fan M106/M107 can produce read-only mixed-tool demand
+  stages with an explicit fan configuration; this does not schedule
+  PWM or imply measured RPM. No endpoints operate a real heater, probe,
   motor or tool dock.
 
 ## Remaining integration work

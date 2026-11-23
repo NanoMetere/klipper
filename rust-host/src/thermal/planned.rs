@@ -163,6 +163,11 @@ pub enum ToolStage<'a> {
         outcome: commands::Output<'a>,
         targets: Vec<f64>,
     },
+    Fan {
+        line: usize,
+        active_tool: u8,
+        demand: f64,
+    },
     /// Inert selection metadata; no dock, probe, transport or motion.
     Select { line: usize, from: u8, to: u8 },
 }
@@ -257,6 +262,11 @@ pub fn preflight_tools<'a>(
                     targets: staged.targets().to_vec(),
                 });
             }
+            ToolChunk::Fan { line, demand } => stages.push(ToolStage::Fan {
+                line,
+                active_tool,
+                demand,
+            }),
             ToolChunk::Select { line, tool } => {
                 let next = tools
                     .iter()

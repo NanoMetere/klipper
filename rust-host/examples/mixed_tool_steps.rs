@@ -78,6 +78,7 @@ fn main() {
                     script: code,
                     slots: &slots,
                     initial_tool: 0,
+                    print_fan: false,
                     hz: 20e6,
                     max_error: 0,
                     invert: [false; 3],
@@ -92,6 +93,12 @@ fn main() {
                 ToolStage::Select { line, from, to } => {
                     assert_eq!(from, active);
                     active = to;
+                    line
+                }
+                ToolStage::Fan {
+                    line, active_tool, ..
+                } => {
+                    assert_eq!(active_tool, active);
                     line
                 }
                 ToolStage::Heater {
