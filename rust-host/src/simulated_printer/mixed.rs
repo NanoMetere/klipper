@@ -5,7 +5,10 @@
 
 use super::{job_end, Error, HeatWait};
 use crate::{
-    machine_preview::mixed::{MixedTrace, Stage},
+    machine_preview::{
+        mixed::{MixedTrace, Stage, ToolStage, ToolTrace},
+        Trace,
+    },
     step_wire::StepMessages,
     thermal::commands::{Gate, Observation, Output, Source, Wait},
     virtual_job::{self, Issued, Job, State as JobState},
@@ -42,6 +45,9 @@ enum Pending {
         wait: Option<HeatWait>,
         targets: Vec<f64>,
     },
+    Select {
+        tool: u8,
+    },
 }
 
 pub struct Program {
@@ -55,6 +61,13 @@ pub struct Program {
     clock: u64,
     require_commit: bool,
     pending_commit: Option<MotionProof>,
+    active_tool: Option<u8>,
+}
+
+pub struct ToolOids<'a> {
+    pub xyz: [u8; 3],
+    /// Pairs of virtual selector ID and distinct discovered stepper OID.
+    pub extruders: &'a [(u8, u8)],
 }
 
 impl Program {
@@ -68,98 +81,112 @@ impl Program {
         initial_targets: &[f64],
         max_sample_age: f64,
     ) -> Result<Self, Error> {
-        if !(1.0..=1e9).contains(&trace.hz) {
-            return Err(Error::Clock);
-        }
-        if !valid_targets(initial_targets) || trace.phases.len() > 1025 {
+        if trace.phases.len() > 1025 {
             return Err(Error::InputLimit);
         }
-        let mut stages = VecDeque::with_capacity(trace.phases.len());
-        let mut total = 0;
-        let mut prior = 0;
+        let mut build = StageBuilder::new(
+            codec,
+            trace.hz,
+            initial_targets,
+            max_sample_age,
+            trace.phases.len(),
+        )?;
         for (i, stage) in trace.phases.into_iter().enumerate() {
-            let line = match &stage {
-                Stage::Motion { first_line, .. } => *first_line,
-                Stage::Heater { line, .. } => *line,
-            };
-            if line <= prior {
-                return Err(Error::InputLimit);
-            }
-            prior = line;
             match stage {
                 Stage::Heater {
                     line,
                     outcome,
                     targets,
-                } => {
-                    if targets.len() != initial_targets.len() || !valid_targets(&targets) {
-                        return Err(Error::ThermalGate);
-                    }
-                    let wait = match outcome {
-                        Output::Set { wait, .. } => wait,
-                        Output::Range(wait) => Some(wait),
-                        _ => None,
-                    };
-                    if wait.is_some_and(|w| match w {
-                        Wait::Controller { index, target } => targets.get(index) != Some(&target),
-                        Wait::Range {
-                            source: Source::Heater(index),
-                            ..
-                        } => index >= targets.len(),
-                        Wait::Range { .. } => false,
-                    }) {
-                        return Err(Error::ThermalGate);
-                    }
-                    let wait = wait.map(|w| HeatWait::new(w, max_sample_age)).transpose()?;
-                    stages.push_back(Pending::Heater {
-                        line,
-                        wait,
-                        targets,
-                    });
-                }
-                Stage::Motion {
-                    first_line,
-                    trace: t,
-                } => {
-                    if !t.duration.is_finite() || t.duration < 0. {
-                        return Err(Error::Clock);
-                    }
-                    let tracks = t
-                        .motors
-                        .iter()
-                        .chain(t.extruder.iter())
-                        .map(Vec::as_slice)
-                        .collect::<Vec<_>>();
-                    let count = tracks.iter().map(|lane| lane.len()).sum::<usize>();
-                    total += count;
-                    if total > 196_000 {
+                } => build.heater(line, outcome, targets)?,
+                Stage::Motion { first_line, trace } => build.motion(first_line, i, trace, oids)?,
+            }
+        }
+        Ok(build.program(initial_targets, None))
+    }
+
+    /// Compile a software-only program for sparse virtual tool lanes. An
+    /// independently supplied motion commit is required between phases.
+    /// No tool selection actuates a motor, fan, heater, dock or probe.
+    pub fn new_tools(
+        trace: ToolTrace<'_>,
+        codec: &StepMessages,
+        oids: ToolOids<'_>,
+        initial_targets: &[f64],
+        max_sample_age: f64,
+    ) -> Result<Self, Error> {
+        if !(1..=8).contains(&oids.extruders.len()) {
+            return Err(Error::InputLimit);
+        }
+        let mut seen = [false; 256];
+        for oid in oids
+            .xyz
+            .into_iter()
+            .chain(oids.extruders.iter().map(|p| p.1))
+        {
+            if std::mem::replace(&mut seen[oid as usize], true) {
+                return Err(Error::InputLimit);
+            }
+        }
+        if oids
+            .extruders
+            .iter()
+            .enumerate()
+            .any(|(i, (id, _))| oids.extruders[..i].iter().any(|(prior, _)| prior == id))
+        {
+            return Err(Error::InputLimit);
+        }
+        let lookup = |tool| {
+            oids.extruders
+                .iter()
+                .find(|(id, _)| *id == tool)
+                .map(|(_, oid)| *oid)
+                .ok_or(Error::InputLimit)
+        };
+        lookup(trace.initial_tool)?;
+        let mut build = StageBuilder::new(
+            codec,
+            trace.hz,
+            initial_targets,
+            max_sample_age,
+            trace.phases.len(),
+        )?;
+        let mut active = trace.initial_tool;
+        for (i, stage) in trace.phases.into_iter().enumerate() {
+            match stage {
+                ToolStage::Select { line, from, to } => {
+                    build.line(line)?;
+                    if from != active || to == from {
                         return Err(Error::InputLimit);
                     }
-                    if count == 0 && t.duration == 0. {
-                        continue;
+                    lookup(to)?;
+                    active = to;
+                    build.stages.push_back(Pending::Select { tool: to });
+                }
+                ToolStage::Heater {
+                    line,
+                    active_tool,
+                    outcome,
+                    targets,
+                } => {
+                    if active_tool != active {
+                        return Err(Error::InputLimit);
                     }
-                    let end = job_end(t.duration, trace.hz, &tracks)?;
-                    let job = Job::for_lanes(codec, &tracks, oids, 0, end, i as u64 + 1)
-                        .map_err(Error::Job)?;
-                    stages.push_back(Pending::Motion {
-                        line: first_line,
-                        job,
-                    });
+                    build.heater(line, outcome, targets)?;
+                }
+                ToolStage::Motion {
+                    first_line,
+                    tool,
+                    trace,
+                } => {
+                    if tool != active || trace.extruder.is_none() {
+                        return Err(Error::InputLimit);
+                    }
+                    let [x, y, z] = oids.xyz;
+                    build.motion(first_line, i, trace, &[x, y, z, lookup(tool)?])?;
                 }
             }
         }
-        Ok(Self {
-            stages,
-            running: None,
-            waiting: None,
-            state: State::Ready,
-            line: None,
-            targets: initial_targets.to_vec(),
-            hz: trace.hz,
-            clock: 0,
-            require_commit: false,
-            pending_commit: None,
-        })
+        Ok(build.program(initial_targets, Some(trace.initial_tool)))
     }
 
     /// Require the caller to supply inert phase completion evidence before
@@ -178,6 +205,9 @@ impl Program {
 
     pub fn state(&self) -> State {
         self.state
+    }
+    pub fn active_tool(&self) -> Option<u8> {
+        self.active_tool
     }
     pub fn line(&self) -> Option<usize> {
         self.line
@@ -205,7 +235,7 @@ impl Program {
                 "simulated_tick": p.simulated_tick,
             })
         });
-        let data = serde_json::json!({
+        let mut data = serde_json::json!({
             "mode": "simulation",
             "state": state,
             "line": self.line,
@@ -213,6 +243,9 @@ impl Program {
             "motion_proof": pending,
             "pending_stages": self.stages.len(),
         });
+        if let Some(tool) = self.active_tool {
+            data["active_tool"] = tool.into();
+        }
         snapshot.set_object(
             "virtual_mixed_job".into(),
             data.as_object().unwrap().clone(),
@@ -312,6 +345,7 @@ impl Program {
     fn load(&mut self, clock: u64) -> Result<(), Error> {
         while let Some(stage) = self.stages.pop_front() {
             match stage {
+                Pending::Select { tool } => self.active_tool = Some(tool),
                 Pending::Motion { line, mut job } => {
                     job.start(clock).map_err(Error::Job)?;
                     self.line = Some(line);
@@ -354,6 +388,129 @@ impl Program {
         self.waiting = None;
         self.state = state;
         self.line = None;
+    }
+}
+
+struct StageBuilder<'a> {
+    codec: &'a StepMessages,
+    hz: f64,
+    stages: VecDeque<Pending>,
+    heater_count: usize,
+    max_sample_age: f64,
+    records: usize,
+    prior_line: usize,
+}
+
+impl<'a> StageBuilder<'a> {
+    fn new(
+        codec: &'a StepMessages,
+        hz: f64,
+        targets: &[f64],
+        max_sample_age: f64,
+        phases: usize,
+    ) -> Result<Self, Error> {
+        if !(1.0..=1e9).contains(&hz) {
+            return Err(Error::Clock);
+        }
+        if !valid_targets(targets) || phases > 1281 {
+            return Err(Error::InputLimit);
+        }
+        Ok(Self {
+            codec,
+            hz,
+            stages: VecDeque::with_capacity(phases),
+            heater_count: targets.len(),
+            max_sample_age,
+            records: 0,
+            prior_line: 0,
+        })
+    }
+
+    fn line(&mut self, line: usize) -> Result<(), Error> {
+        if line <= self.prior_line {
+            return Err(Error::InputLimit);
+        }
+        self.prior_line = line;
+        Ok(())
+    }
+
+    fn heater(&mut self, line: usize, outcome: Output<'_>, targets: Vec<f64>) -> Result<(), Error> {
+        self.line(line)?;
+        if targets.len() != self.heater_count || !valid_targets(&targets) {
+            return Err(Error::ThermalGate);
+        }
+        let wait = match outcome {
+            Output::Set { wait, .. } => wait,
+            Output::Range(wait) => Some(wait),
+            _ => None,
+        };
+        if wait.is_some_and(|w| match w {
+            Wait::Controller { index, target } => targets.get(index) != Some(&target),
+            Wait::Range {
+                source: Source::Heater(index),
+                ..
+            } => index >= targets.len(),
+            Wait::Range { .. } => false,
+        }) {
+            return Err(Error::ThermalGate);
+        }
+        let wait = wait
+            .map(|w| HeatWait::new(w, self.max_sample_age))
+            .transpose()?;
+        self.stages.push_back(Pending::Heater {
+            line,
+            wait,
+            targets,
+        });
+        Ok(())
+    }
+
+    fn motion(
+        &mut self,
+        line: usize,
+        index: usize,
+        trace: Trace,
+        oids: &[u8],
+    ) -> Result<(), Error> {
+        self.line(line)?;
+        if !trace.duration.is_finite() || trace.duration < 0. {
+            return Err(Error::Clock);
+        }
+        let tracks: Vec<_> = trace
+            .motors
+            .iter()
+            .chain(trace.extruder.iter())
+            .map(Vec::as_slice)
+            .collect();
+        let count = tracks.iter().map(|lane| lane.len()).sum::<usize>();
+        self.records = self.records.saturating_add(count);
+        if self.records > 196_000 {
+            return Err(Error::InputLimit);
+        }
+        if count == 0 && trace.duration == 0. {
+            return Ok(());
+        }
+        let end = job_end(trace.duration, self.hz, &tracks)?;
+        let job = Job::for_lanes(self.codec, &tracks, oids, 0, end, index as u64 + 1)
+            .map_err(Error::Job)?;
+        self.stages.push_back(Pending::Motion { line, job });
+        Ok(())
+    }
+
+    fn program(self, targets: &[f64], active_tool: Option<u8>) -> Program {
+        Program {
+            stages: self.stages,
+            running: None,
+            waiting: None,
+            state: State::Ready,
+            line: None,
+            targets: targets.to_vec(),
+            hz: self.hz,
+            clock: 0,
+            require_commit: active_tool.is_some(),
+            pending_commit: None,
+            active_tool,
+        }
     }
 }
 

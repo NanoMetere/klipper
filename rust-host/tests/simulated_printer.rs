@@ -1412,3 +1412,178 @@ fn phase_queue_never_releases_the_next_jobs_zero_tick_behind_a_heater_wait() {
     assert_eq!(body["state"], "waiting_for_temperature");
     assert!(body["motion_proof"].is_null());
 }
+
+#[test]
+fn sparse_mixed_program_requires_a_commit_before_selecting_a_new_tool() {
+    use klipper_host_protocol::{
+        extrusion::{Extruder, Settings},
+        machine_preview::{
+            mixed::{ToolInput, ToolSlot},
+            SimulatedExtruder, ToolLane,
+        },
+        simulated_printer::mixed::{Program, State as ProgramState, ToolOids},
+        step_wire::Message,
+        thermal::commands::{Bank, Gate, Observation, Profile, Role, Source},
+    };
+    let machine = Machine::from_config(&source()).unwrap();
+    let geometry = Extruder::new(Settings {
+        nozzle: 0.4,
+        filament: 1.75,
+        max_area: 0.64,
+        retraction_distance: 15.,
+        retraction_velocity: 20.,
+        retraction_accel: 300.,
+        corner_velocity: 1.,
+        min_simulated_temperature: 170.,
+    })
+    .unwrap();
+    let slot = |id, heater| ToolSlot {
+        lane: ToolLane {
+            id,
+            parked_e: 0.,
+            extruder: SimulatedExtruder {
+                geometry: &geometry,
+                temperature: 210.,
+                step_distance: 0.004,
+                inverse_direction: false,
+                pressure_advance: None,
+            },
+        },
+        heater,
+    };
+    let slots = [slot(2, 0), slot(5, 1)];
+    let profiles = [
+        Profile {
+            name: "extruder",
+            role: Role::Extruder(0),
+            minimum: 0.,
+            maximum: 300.,
+        },
+        Profile {
+            name: "extruder1",
+            role: Role::Extruder(1),
+            minimum: 0.,
+            maximum: 300.,
+        },
+    ];
+    let bank = Bank::new(&profiles, &[], Some(0), false).unwrap();
+    let hz = 20e6;
+    let tick = |sec: f64| (sec * hz) as u64;
+    let text = "M109 S210\nG90\nM83\nG1 X4 E.1 F800\nT5\nM109 S220\nG1 Y5 E.2 F800\nT2\nG1 X5 E.04 F800\nTURN_OFF_HEATERS";
+    let trace = || {
+        machine
+            .trace_mixed_tools_at_virtual_origin(
+                [1., 1., 0.2],
+                &bank,
+                ToolInput {
+                    script: text,
+                    slots: &slots,
+                    initial_tool: 2,
+                    hz,
+                    max_error: 20,
+                    invert: [false; 3],
+                },
+            )
+            .unwrap()
+    };
+    let codec = codec();
+    assert!(Program::new_tools(
+        trace(),
+        &codec,
+        ToolOids {
+            xyz: [2, 3, 4],
+            extruders: &[(2, 8), (5, 8)]
+        },
+        bank.targets(),
+        0.5
+    )
+    .is_err());
+    let mut run = Program::new_tools(
+        trace(),
+        &codec,
+        ToolOids {
+            xyz: [2, 3, 4],
+            extruders: &[(2, 8), (5, 9)],
+        },
+        bank.targets(),
+        0.5,
+    )
+    .unwrap();
+    run.start(0).unwrap();
+    assert_eq!(run.state(), ProgramState::Waiting);
+    assert_eq!(run.active_tool(), Some(2));
+    let reading = |index, at, value| Observation {
+        source: Source::Heater(index),
+        sampled_at: at,
+        temperature: value,
+        controller_busy: false,
+    };
+    assert_eq!(
+        run.temperature(tick(1.), Some(reading(0, 1., 210.)), false)
+            .unwrap(),
+        Gate::Ready
+    );
+    let lane_oid = |item: klipper_host_protocol::virtual_job::Issued| match codec
+        .decode(&item.command.bytes)
+        .unwrap()
+    {
+        Message::NextDirection { oid, .. } | Message::Block { oid, .. } => oid,
+    };
+    let first: BTreeSet<_> = run
+        .advance(tick(9.), 256)
+        .unwrap()
+        .into_iter()
+        .map(lane_oid)
+        .collect();
+    assert!(first.contains(&8) && !first.contains(&9));
+    assert_eq!(run.state(), ProgramState::AwaitingMotionCommit);
+    assert_eq!(run.active_tool(), Some(2));
+    let proof = run.pending_motion_commit().unwrap();
+    assert!(run
+        .commit_motion(
+            tick(10.),
+            klipper_host_protocol::simulated_printer::mixed::MotionProof {
+                generation: proof.generation + 1,
+                ..proof
+            }
+        )
+        .is_err());
+    assert!(run.advance(tick(11.), 256).unwrap().is_empty());
+    assert_eq!(run.active_tool(), Some(2));
+    run.commit_motion(tick(12.), proof).unwrap();
+    assert_eq!(run.active_tool(), Some(5));
+    assert_eq!(run.targets(), [210., 220.]);
+    assert_eq!(run.state(), ProgramState::Waiting);
+    assert!(run
+        .temperature(tick(13.), Some(reading(0, 13., 220.)), false)
+        .is_err());
+    assert!(run.advance(tick(14.), 256).unwrap().is_empty());
+    assert_eq!(
+        run.temperature(tick(15.), Some(reading(1, 15., 220.)), false)
+            .unwrap(),
+        Gate::Ready
+    );
+    let second: BTreeSet<_> = run
+        .advance(tick(25.), 256)
+        .unwrap()
+        .into_iter()
+        .map(lane_oid)
+        .collect();
+    assert!(second.contains(&9) && !second.contains(&8));
+    assert_eq!(run.active_tool(), Some(5));
+    let next = run.pending_motion_commit().unwrap();
+    assert!(next.generation > proof.generation);
+    run.commit_motion(tick(26.), next).unwrap();
+    assert_eq!(run.active_tool(), Some(2));
+    let third: BTreeSet<_> = run
+        .advance(tick(35.), 256)
+        .unwrap()
+        .into_iter()
+        .map(lane_oid)
+        .collect();
+    assert!(third.contains(&8) && !third.contains(&9));
+    run.commit_motion(tick(36.), run.pending_motion_commit().unwrap())
+        .unwrap();
+    assert_eq!(run.state(), ProgramState::Finished);
+    assert_eq!(run.targets(), [0., 0.]);
+}

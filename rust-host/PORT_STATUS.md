@@ -80,8 +80,10 @@ but cannot measure printer I/O or physical print duration.
   are required before the next phase. A separate static multi-tool
   preflight maps sparse virtual selectors to explicit heater roles.
   The signed final positions of all six lanes in 41 shaped and
-  pressure-advanced jobs matched stock at deliberate stops. Thermal waits consume only
-  explicit simulation observations. No endpoints operate a real heater, probe,
+  pressure-advanced jobs matched stock at deliberate stops. The
+  GPIO-free T2/T5/T2 path then verified 13+13+13 commands on the
+  intended lanes, while the synthetic shutdown released 13+0+0.
+  Thermal waits consume only explicit simulation observations. No endpoints operate a real heater, probe,
   motor or tool dock.
 
 ## Remaining integration work

@@ -1371,6 +1371,14 @@ stock Python+C. The comparator explicitly stops and allows filter
 history to settle at the same boundaries. It does not assert equal
 global firmware clocks or real docking motion.
 
+The software-only program also requires motion completion evidence
+before arming a new tool or heater phase. The GPIO-free firmware test
+sends 13+13+13 records in a T2/T5/T2 path, checks all five cumulative
+motor counters, and verifies that an injected shutdown during the
+second wait leaves only the first 13 records issued. Unsupported
+non-fixture firmware must reject both modes before configuring any
+simulated motion. The runtime uses no physical dock or heater.
+
 ```sh
 cargo build --locked --release --example mixed_tool_steps
 python3 bench/mixed_tool_steps.py "$stock_klipper" \
