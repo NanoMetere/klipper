@@ -854,20 +854,34 @@ taskset -c 2 python3 bench/hybrid_lookahead_timing.py /path/to/pinned/klipper \
   --baseline-adapter /path/to/baseline/klipper_rust_lookahead.py
 ```
 
-A separate whole-process A/B runs the same 12,000 moves on the same
-pinned Klippy and times launch, input parsing, scheduling and writing
-the MCU debug files. It matched 43,033 motor records in every round.
-Runs of 9 and 15 paired repetitions did **not** demonstrate a whole-host
-speedup from the bridge: paired median CPU changes were +1.17% and
-+0.79%, and elapsed changes were +1.48% and +1.28%, respectively. This
-does not negate the isolated look-ahead reduction; that stage is only
-part of the process. The output files are simulated, not printer I/O.
+The whole-process A/B runs the same program in two fresh instances of
+pinned Klippy. It times launch, parsing, scheduling and writing simulated
+MCU debug files, not printer I/O. It checks every timed motor record
+and requires complete bridge planning with zero fallbacks. The prior
+12,000-move runs could not reproduce the isolated look-ahead speedup;
+the expanded 1,200–40,000 move matrix in [PORT_STATUS.md](PORT_STATUS.md)
+also does not establish a reliable whole-host speedup.
+
+The default `xyz` workload has three moving axes. The
+`shaped-extrusion` profile additionally exercises MZV/EI shaping,
+pressure advance, and relative extrusion on a fourth motor with
+proportional extrusion per move. `--wait-interval 0` removes
+intermediate waits for that comparison. Each test still performs a
+final `M400`. The generated configuration is only valid for the
+disposable debug-output fixture.
 
 ```sh
-taskset -c 3 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
+taskset -c 2 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
   /path/to/pinned/klipper/out/klipper.dict \
-  target/release/libklipper_host_protocol.so --rounds 15 --moves 12000
+  target/release/libklipper_host_protocol.so --rounds 15 --moves 40000 \
+  --profile shaped-extrusion --wait-interval 80 --json timing.json
 ```
+
+Use `--baseline-library /path/to/old/libklipper_host_protocol.so` to
+test two Rust library builds with the same Python adapter. Both sides
+must then report zero fallbacks. The JSON report retains each pair,
+bridge coverage and library SHA-256. Hashing, verification and report
+writing are all outside the measured child-process interval.
 
 Step timing now retains the clock epoch until compression advances it,
 rather than revalidating and recomputing it on every crossing. Two
@@ -1315,11 +1329,52 @@ python3 bench/check_parity.py --upstream /path/to/pinned/klipper
 python3 bench/check_parity.py --upstream /path/to/pinned/klipper --native-pty
 ```
 
-The runner checks the pin and reports each independent test matrix;
-it does not install anything or start a real printer service. The full
-local run passed 25/25 phases, including debug/release/no-default unit
-tests and disposable native MCU PTY fault cases. The Toolchanger legacy
-probe baseline remains a separate multi-checkout test.
+The runner checks the pin and reports each named phase; it does not
+install anything or start a real printer service. The short commands
+above intentionally omit optional phases. To reproduce the complete
+stock and Toolchanger matrix, pass its pinned checkouts and the
+matching Linux firmware dictionary explicitly:
+
+```sh
+cargo build --locked --release --features python-bridge
+python3 bench/check_parity.py --upstream "$stock_klipper" \
+  --dictionary "$stock_klipper/out/klipper.dict" \
+  --macro-reference --native-pty --native-gpio \
+  --legacy-klippy "$legacy_klippy" --toolchanger-reference "$legacy_toolchanger" \
+  --modern-toolchanger "$modern_candidate" --klippain "$klippain" \
+  --led-effect "$led_effect" --modern-bridge target/release/libklipper_host_protocol.so
+```
+
+The stock pin is `c9559fa04ec6b11fb1a9a1610903546319fcf310`; legacy
+Klippy is `644cda5ecaa39d0dcf797624c19d5425cb8121ec`; legacy Toolchanger
+is `94756dfde9b729fd69f9b8780067821c5c99a528`. The modern candidate,
+Klippain and LED Effect commits are listed under the PR #174 debug
+tests below. Check for all 54 named phases and do not infer coverage
+from a short invocation. The optional `--moonraker "$moonraker"`
+adds the client fixture below (55 total).
+
+### Read-only Moonraker client fixture
+
+Use an unmodified Moonraker checkout at
+`b559b9a81161f958a43c2f527b6ad96f73310d5d`. The fixture uses the
+pinned `KlippyConnection` and `KlippyAPI` classes and injects only the
+dial with a connected Unix socket pair. It verifies unavailable,
+startup, ready, simulated shutdown and reconnection; a status query
+and subscription diff; old subscriptions cleared and a newly
+installed subscription receiving updates. The rest of Moonraker is
+not started; no named socket or HTTP/WebSocket frontend is tested.
+
+```sh
+cargo build --locked --release --example moonraker_status_fixture
+python3 bench/moonraker_connection.py "$moonraker" \
+  target/release/examples/moonraker_status_fixture
+```
+
+Use the pinned Moonraker Python dependencies (fixture tested with
+`importlib-metadata 8.7.0` and `tornado 6.5.8`). Unsupported endpoints
+such as G-code execution and emergency stop are deliberately absent.
+Moonraker's initial G-code output subscription receives the expected
+unsupported-endpoint error; the test does not fake support for it.
 
 ## Virtual job lifecycle
 

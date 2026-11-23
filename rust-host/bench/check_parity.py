@@ -31,6 +31,8 @@ def main():
     p.add_argument("--klippain", type=Path, help="pinned Klippain smoke source")
     p.add_argument("--led-effect", type=Path, help="pinned LED Effect source")
     p.add_argument("--modern-bridge", type=Path, help="optional compiled Rust debug bridge for PR #174")
+    p.add_argument("--moonraker", type=Path,
+                   help="run the optional pinned Moonraker read-only socketpair fixture")
     a = p.parse_args()
     modern = [a.modern_toolchanger, a.klippain, a.led_effect]
     if (any(modern) or a.modern_bridge) and not all(modern):
@@ -90,6 +92,10 @@ def main():
         ("virtual_stepper", [sys.executable, ROOT/"bench/virtual_stepper.py",
                              "--binary", examples/"virtual_stepper_replay"]),
     ])
+    if a.moonraker:
+        phases.append(("moonraker_status_client", [sys.executable, ROOT/"bench/moonraker_connection.py",
+                                                  a.moonraker.resolve(),
+                                                  examples/"moonraker_status_fixture"]))
     if a.toolchanger_reference:
         phases.append(("toolchange_order", [sys.executable, ROOT/"bench/toolchange_order.py",
                                            a.legacy_klippy.resolve(), a.toolchanger_reference.resolve(),

@@ -15,7 +15,7 @@ them as changes in the elapsed time of a real print.
 | --- | --- | --- |
 | Shaped CoreXY + pressure advance, 6,835 exact records | Stock Python+C 7.789 ms → Rust 4.750 ms median CPU; repeat 7.699 → 4.772 ms | 38–39% less CPU for the offline config-to-step kernel |
 | Klippy move look-ahead, 25,836 moves including Python/Rust conversions | Stock 48.309 → bridge 44.712 ms and stock 46.044 → bridge 42.003 ms median CPU | 7–9% less CPU in the captured queue flush seam |
-| Whole pinned Klippy process, 12,000 moves, 43,033 identical motor records | Paired elapsed changes +1.48% and +1.28% in two runs | No end-to-end speedup demonstrated from the optional bridge |
+| Whole pinned Klippy process, XYZ or shaped extrusion | 1,200 to 40,000 moves, every timed motor record equal; run-level paired elapsed changes vary in direction | No repeatable end-to-end speedup demonstrated from the optional bridge |
 | Offline Rust CLI, 2,500 CoreXY moves | Prior Rust CLI 35.136 → 7.100 ms median elapsed | About 80% less elapsed time after streaming identical JSON to a file |
 | Offline Rust CLI, three tools, 2,500 moves, 21,683 exact records | Same motion kernel, prior JSON 67.097 → 29.173 ms; separately, one lane worker 29.213 → four workers 16.201 ms (repeat 32.366 → 20.667 ms) | Serialization and concurrency were measured in independent A/B tests |
 | Two GPIO-free software MCUs | 168 → 24 frames, 3.464 → 0.533 ms median enqueue through last software ACK | Same order, same five motor counters; this is Rust before/after framing, not physical transport or stock Klippy |
@@ -24,6 +24,34 @@ All figures use the checked-in test fixtures, the same host for both
 sides within a run, and no printing hardware. The platform is Linux
 x86-64 (AMD EPYC 9V74), not a Raspberry Pi. Use the runnable commands in
 [README](README.md) to reproduce the individual measurements.
+
+### Expanded whole-process comparison
+
+Each cell is the median elapsed change in 15 alternating stock/bridge
+pairs, excluding one initial warmup pair. Negative means faster.
+All moves were planned by the bridge with zero fallbacks and all
+three or four motors were verified. The 40,000-move XYZ repeat
+changed sign relative to the first set (+1.51% vs −2.80%).
+Do not infer a stable gain or a fixed startup cost from this variation.
+
+| Profile | Moves | Middle waits | Exact timed records | Median elapsed (bridge minus stock) |
+| --- | ---: | ---: | ---: | ---: |
+| XYZ | 1,200 | every 80 | 4,299 | +3.57% (+6.142 ms) |
+| XYZ | 12,000 | every 80 | 43,033 | +6.47% (+21.265 ms) |
+| XYZ | 40,000 | every 80 | 143,538 | −2.80% (−21.198 ms) |
+| Shaped extrusion | 1,200 | every 80 | 5,908 | +1.95% (+3.714 ms) |
+| Shaped extrusion | 12,000 | every 80 | 57,245 | +2.16% (+9.960 ms) |
+| Shaped extrusion | 40,000 | every 80 | 190,390 | −2.20% (−26.997 ms) |
+| Shaped extrusion | 40,000 | none | 186,972 | −3.42% (−46.607 ms) |
+
+These runs compare stock against the published B94 bridge build,
+not a new optimized build. A reusable junction-scratch experiment
+reduced the isolated flush median by less than 1% on two cores,
+but the process results varied in direction. It was not carried
+forward. Python profiling is diagnostic only: in the long XYZ fixture the step generation
+flush and G-code dispatch both consume more time than the Rust
+replacement seam covers. The benchmark writes a real debug file,
+but cannot measure printer I/O or physical print duration.
 
 ## Verified scope
 
@@ -41,7 +69,10 @@ x86-64 (AMD EPYC 9V74), not a Raspberry Pi. Use the runnable commands in
   fault injection, including two independent peers. No SocketCAN or
   real printer sessions are used.
 - State: virtual job/SD/control boundaries, read-only status snapshots
-  and connection-pair tests. The mixed preview provides separate
+  and connection-pair tests. Pinned Moonraker client components
+  additionally verify the read-only status lifecycle, shutdown and
+  reconnection through a socket pair. No server process or frontend
+  transport is claimed. The mixed preview provides separate
   motion queues around typed heater boundaries and never infers that
   a real heater is ready. The GPIO-free firmware exercise additionally
   checks that both temperature evidence and prior motion completion

@@ -27,6 +27,8 @@ def main():
     p.add_argument("library", type=Path)
     p.add_argument("--rounds", type=int, default=30)
     p.add_argument("--baseline-adapter", type=Path)
+    p.add_argument("--baseline-library", type=Path,
+                   help="test this adapter with a previous Rust library as well")
     a = p.parse_args()
     if not 1 <= a.rounds <= 200:
         p.error("--rounds must be between 1 and 200")
@@ -52,12 +54,16 @@ def main():
         queue_type.flush = original
 
     fns, stats = {"stock": original}, {}
-    versions = {"adapter": ROOT / "python/klipper_rust_lookahead.py"}
+    adapter = ROOT / "python/klipper_rust_lookahead.py"
+    library = a.library.resolve()
+    versions = {"adapter": (adapter, library)}
     if a.baseline_adapter:
-        versions["baseline adapter"] = a.baseline_adapter.resolve()
-    for label, path in versions.items():
+        versions["baseline adapter"] = (a.baseline_adapter.resolve(), library)
+    if a.baseline_library:
+        versions["baseline library"] = (adapter, a.baseline_library.resolve())
+    for label, (path, lib) in versions.items():
         try:
-            stats[label] = load_adapter(path).install(toolhead, a.library.resolve())
+            stats[label] = load_adapter(path).install(toolhead, lib)
             fns[label] = queue_type.flush
         finally:
             queue_type.flush = original

@@ -66,3 +66,7 @@ required-features = ["identify"]
 [[example]]
 name = "virtual_job_timing"
 required-features = ["identify"]
+
+[[example]]
+name = "moonraker_status_fixture"
+required-features = ["webhooks"]
