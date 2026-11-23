@@ -76,7 +76,10 @@ but cannot measure printer I/O or physical print duration.
   authenticated read-only HTTP/JSON-RPC and WebSocket status over
   an ephemeral loopback port with the Klippy dial injected. Named
   Klippy socket dialing, command execution and a real frontend
-  installation are not verified. The mixed preview provides separate
+  installation are not verified. The same loopback fixture can stream
+  a real simulated Rust program's read-only proof, tool, fan demand and
+  temperature gate; the driver supplies only synthetic observations
+  and exposes no control endpoint. The mixed preview provides separate
   motion queues around typed heater boundaries and never infers that
   a real heater is ready. The GPIO-free firmware exercise additionally
   checks that both temperature evidence and prior motion completion

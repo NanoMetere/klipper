@@ -21,13 +21,14 @@ import uuid
 from moonraker_connection import PIN
 
 
-async def exercise(root, fixture):
+async def exercise(root, fixture, with_program=False):
     from moonraker.server import Server
     from moonraker.eventloop import EventLoop
     from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest
     from tornado.websocket import websocket_connect
 
     state = root/"state"
+    control = root/"program-control"
     marker = root/"dial-marker"
     cfg = root/"moonraker.conf"
     cfg.write_text(f"""
@@ -67,11 +68,19 @@ enable_object_processing: False
 
     def set_state(kind, x):
         tmp=root/"next"; tmp.write_text(f"{kind} {x}\n"); tmp.replace(state)
+    def set_program(step):
+        tmp = root/"next-program"
+        tmp.write_text(f"{step}\n")
+        tmp.replace(control)
+
     async def launch(kind, x):
         set_state(kind,x)
+        if with_program:
+            set_program(0)
         left,right=socket.socketpair()
         try:
-            child=await asyncio.create_subprocess_exec(fixture,state,stdin=right,
+            child=await asyncio.create_subprocess_exec(
+                fixture,state,*([control] if with_program else []),stdin=right,
                                                        stdout=asyncio.subprocess.DEVNULL)
         except BaseException:
             left.close()
@@ -126,7 +135,10 @@ enable_object_processing: False
         else:
             raise AssertionError("stock endpoint was never registered")
         assert ans["status"]=={"toolhead":{"position":[10,2,3,0]}},ans
-        assert set((await get("/printer/objects/list"))["objects"]) == {"webhooks", "toolhead"}
+        objects = {"webhooks", "toolhead"}
+        if with_program:
+            objects.update(("virtual_mixed_job", "virtual_fixture"))
+        assert set((await get("/printer/objects/list"))["objects"]) == objects
         ws=await websocket_connect(HTTPRequest(base.replace("http:","ws:")+"/websocket",headers=headers))
         async def receive(predicate):
             for _ in range(40):
@@ -150,6 +162,46 @@ enable_object_processing: False
                                 v.get("params") and v["params"][0].get("toolhead")==
                                 {"position":[position,2,3,0]})
             assert "position" in frame["params"][0]["toolhead"]
+        if with_program:
+            await ws.write_message(json.dumps({
+                "jsonrpc":"2.0","id":100,"method":"printer.objects.subscribe",
+                "params":{"objects":{"virtual_mixed_job":None,"virtual_fixture":None}},
+            }))
+            subscribed=await receive(lambda v:v.get("id")==100)
+            initial=subscribed["result"]["status"]["virtual_mixed_job"]
+            assert initial["mode"]=="simulation" and initial["state"]=="ready"
+            assert initial["active_tool"]==2 and initial["peer_proof"] is None
+            for step in (1,2,3,4,5):
+                set_program(step)
+                pushed=await receive(lambda v: v.get("method")=="notify_status_update" and
+                                    v.get("params") and v["params"][0].get("virtual_fixture",{})
+                                    .get("fixture_step")==step)
+                diff = pushed["params"][0].get("virtual_mixed_job",{})
+                if step==3:
+                    assert diff["state"]=="waiting_for_motion_proof"
+                    assert [r["peer"] for r in diff["peer_proof"]["requirements"]]==[0,1]
+                elif step==4:
+                    assert not diff
+                elif step==5:
+                    assert diff["active_tool"]==5 and diff["print_fan_demand"]==0.5
+                    assert diff["state"]=="waiting_for_temperature" and diff["peer_proof"] is None
+                row=await get("/printer/objects/query?virtual_mixed_job")
+                job=row["status"]["virtual_mixed_job"]
+                if step in (1,5):
+                    assert job["state"]=="waiting_for_temperature"
+                elif step==2:
+                    assert job["state"]=="running"
+                else:
+                    assert job["state"]=="waiting_for_motion_proof"
+                    requirements=job["peer_proof"]["requirements"]
+                    assert [(p["peer"],p["accepted_commands"]) for p in requirements]==[(0,10),(1,3)]
+                if step<5:
+                    assert job["active_tool"]==2 and job["print_fan_demand"] is None
+                else:
+                    assert job["active_tool"]==5 and job["print_fan_demand"]==0.5
+                    assert job["heater_targets_c"]==[210.,220.] and job["peer_proof"] is None
+            print("Moonraker streamed real virtual Program states; held partial proof, "
+                  "then updated tool, cached fan demand and heater target",flush=True)
         await subscribe(1,10)
         set_state("ready",11)
         await updated(11)
@@ -196,6 +248,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("moonraker", type=lambda s: Path(s).resolve())
     parser.add_argument("fixture", type=lambda s: Path(s).resolve())
+    parser.add_argument("--program",action="store_true",help="also stream the routed virtual job state")
     args = parser.parse_args()
     pin = subprocess.check_output(["git","-C",args.moonraker,"rev-parse","HEAD"],text=True).strip()
     if pin != PIN:
@@ -203,7 +256,7 @@ def main():
     subprocess.run(["git","-C",args.moonraker,"diff","--quiet","HEAD","--"],check=True)
     sys.path.insert(0,str(args.moonraker))
     with tempfile.TemporaryDirectory(prefix="klipper-moonraker-frontend-") as d:
-        asyncio.run(asyncio.wait_for(exercise(Path(d),args.fixture),23))
+        asyncio.run(asyncio.wait_for(exercise(Path(d),args.fixture,args.program),23))
 
 
 if __name__ == "__main__":

@@ -40,9 +40,11 @@ def check_motion_bridge(stock, dictionary, out, bridge):
     commands.append("M400")
     script = out/"hybrid-motion.gcode"
     script.write_text(generated+"\n"+"\n".join(commands)+"\n")
-    outputs = []
-    for engine in ("python", "rust"):
-        prep = [sys.executable, klippy] if engine == "python" else [sys.executable, entry, klippy, bridge]
+    outputs = {"python": [], "rust": []}
+    peers = ("", "-tool0", "-tool1")
+    for engine in outputs:
+        prep = [sys.executable, entry, "--drain-debug-output", klippy,
+                "--stock-only" if engine == "python" else bridge]
         path = out/(engine+"-motion.bin")
         args = [out/"printer.cfg", "-i", script, "-o", path, "-d", dictionary,
                 "-d", f"tool0={dictionary}", "-d", f"tool1={dictionary}"]
@@ -50,13 +52,22 @@ def check_motion_bridge(stock, dictionary, out, bridge):
         (out/(engine+"-motion.log")).write_text(run.stdout+run.stderr)
         if run.returncode:
             raise RuntimeError(f"{engine} fixture failed: {(run.stdout+run.stderr)[-2000:]}")
-        outputs.append(path.read_bytes())
+        marker = next(line for line in run.stdout.splitlines() if line.startswith("FILE_OUTPUT_DRAIN "))
+        drained = set(json.loads(marker.split(" ",1)[1]))
+        expected = {str(path) + suffix for suffix in peers}
+        if drained != expected:
+            raise RuntimeError(f"{engine}: unexpected drained output files {drained!r}")
+        outputs[engine] = [Path(str(path)+suffix).read_bytes() for suffix in peers]
         if engine == "rust":
             row = next(line for line in run.stdout.splitlines() if line.startswith("RUST_LOOKAHEAD_STATS "))
             stats = json.loads(row.split(" ", 1)[1])
             if stats["planned"] < 60 or stats["fallbacks"] != 0:
                 raise RuntimeError(f"unexpected motion bridge usage {stats}")
-    return compare_motor_traces(stock, dictionary, outputs)
+    counts = [compare_motor_traces(stock, dictionary, pair)
+              for pair in zip(outputs["python"], outputs["rust"], strict=True)]
+    if counts[0] < 100:
+        raise RuntimeError("stock debug recording contained too few motor commands")
+    return sum(counts)
 
 
 def main():

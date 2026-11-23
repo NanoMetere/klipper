@@ -1444,9 +1444,23 @@ stock Python dependencies. It does not create a real Klippy socket,
 test native named-socket dialing, expose a server on the network, or
 execute printer commands.
 
+The modern Toolchanger debug-motion comparison explicitly waits for
+all three stock C file-output queues before reading the recorded
+commands. It checks the main and both tool files independently.
+That wait affects only this fixture, not the normal benchmark or
+a running printer.
+
+Add `--moonraker-job` to include a 59th phase. The fixture privately
+drives an actual virtual Rust Program and checks HTTP and WebSocket
+views of its temperature gate, routed motion proof and fan demand.
+A partial synthetic peer receipt leaves the state unchanged. Complete
+synthetic evidence updates the visible tool and fan and opens the next
+temperature gate. The fixture's controls never become Moonraker
+endpoints and are not instructions for a real printer.
+
 ```sh
 python3 bench/moonraker_frontend.py "$moonraker" \
-  target/release/examples/moonraker_status_fixture
+  target/release/examples/moonraker_status_fixture --program
 ```
 
 ### Status polling A/B

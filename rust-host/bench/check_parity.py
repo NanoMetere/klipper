@@ -35,7 +35,11 @@ def main():
                    help="run the optional pinned Moonraker read-only socketpair fixture")
     p.add_argument("--moonraker-http", action="store_true",
                    help="also run pinned Moonraker's read-only loopback HTTP/WebSocket server")
+    p.add_argument("--moonraker-job", action="store_true",
+                   help="also stream a routed Rust virtual job through the read-only frontend")
     a = p.parse_args()
+    if a.moonraker_job and not a.moonraker_http:
+        p.error("--moonraker-job requires --moonraker-http")
     if a.moonraker_http and not a.moonraker:
         p.error("--moonraker-http requires --moonraker")
     modern = [a.modern_toolchanger, a.klippain, a.led_effect]
@@ -108,6 +112,10 @@ def main():
         phases.append(("moonraker_status_frontend", [sys.executable, ROOT/"bench/moonraker_frontend.py",
                                                     a.moonraker.resolve(),
                                                     examples/"moonraker_status_fixture"]))
+    if a.moonraker_job:
+        phases.append(("moonraker_virtual_job", [sys.executable, ROOT/"bench/moonraker_frontend.py",
+                                                a.moonraker.resolve(), examples/"moonraker_status_fixture",
+                                                "--program"]))
     if a.toolchanger_reference:
         phases.append(("toolchange_order", [sys.executable, ROOT/"bench/toolchange_order.py",
                                            a.legacy_klippy.resolve(), a.toolchanger_reference.resolve(),

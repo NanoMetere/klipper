@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Software-only status fixture using an inherited socketpair end on stdin.
 #[cfg(unix)]
+#[path = "moonraker_fixture/program.rs"]
+mod program;
+
+#[cfg(unix)]
 fn main() -> std::io::Result<()> {
     use klipper_host_protocol::{status_socket::StatusConnection, webhooks::Snapshot};
     use serde_json::json;
@@ -11,11 +15,21 @@ fn main() -> std::io::Result<()> {
         thread,
         time::{Duration, Instant},
     };
-    let [path] = env::args_os()
-        .skip(1)
-        .collect::<Vec<_>>()
-        .try_into()
-        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "expected a fixture state file"))?;
+    let mut argv = env::args_os().skip(1);
+    let path = argv
+        .next()
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "expected a fixture state file"))?;
+    let control = argv.next();
+    if argv.next().is_some() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "unexpected fixture argument",
+        ));
+    }
+    let mut program = control
+        .as_ref()
+        .map(|_| program::FixtureProgram::new())
+        .transpose()?;
     let stream = UnixStream::from(io::stdin().as_fd().try_clone_to_owned()?);
     stream.peer_addr()?;
     let mut client = StatusConnection::from_stream(stream)?;
@@ -68,6 +82,14 @@ fn main() -> std::io::Result<()> {
             ] {
                 assert!(snapshot.set_object(name.into(), value.as_object().unwrap().clone()));
             }
+        }
+        if let (Some(path), Some(driver)) = (&control, &mut program) {
+            let next = fs::read_to_string(path)?
+                .trim()
+                .parse::<u8>()
+                .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+            driver.advance(next)?;
+            driver.publish(&mut snapshot);
         }
         match client.poll(&snapshot, started.elapsed().as_secs_f64()) {
             Ok(_) => thread::sleep(Duration::from_millis(5)),
