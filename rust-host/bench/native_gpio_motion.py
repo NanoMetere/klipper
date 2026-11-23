@@ -12,7 +12,7 @@ import tarfile
 import tempfile
 
 from mcu_config import drop_write_ack, fresh
-from native_gpio_dual import check_dual
+from native_gpio_dual import check_dual, check_mixed_tool_proofs
 from planner import PIN, ROOT
 
 
@@ -119,6 +119,7 @@ def main():
         assert "motion frame" in details and "GPIO_FIXTURE" not in details, details
         print("Dropped a batched motion ACK: no extra host frame or virtual clock advance")
         check_dual(upstream, mcu, binary, a.dual_rounds)
+        check_mixed_tool_proofs(upstream, mcu, binary)
         for mode, expected in (
             ("--gpio-mixed", "THERMAL_FIXTURE 13 13 560 -80 0 75"),
             ("--gpio-mixed-shutdown", "THERMAL_FIXTURE_FAULT 13 0 240 240 0 25"),

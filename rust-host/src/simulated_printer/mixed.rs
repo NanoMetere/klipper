@@ -11,7 +11,7 @@ use crate::{
     },
     step_wire::StepMessages,
     thermal::commands::{Gate, Observation, Output, Source, Wait},
-    virtual_job::{self, Issued, Job, State as JobState},
+    virtual_job::{self, Issued, Job, RoutedLane, State as JobState},
 };
 use std::collections::VecDeque;
 
@@ -35,10 +35,36 @@ pub struct MotionProof {
     pub simulated_tick: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Route {
+    pub peer: u8,
+    pub oid: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerReceipt {
+    pub peer: u8,
+    pub accepted_commands: usize,
+    pub simulated_tick: u64,
+}
+
+#[derive(Debug)]
+pub struct RoutedIssued {
+    pub route: Route,
+    pub item: Issued,
+}
+
+#[derive(Clone, Copy)]
+struct ActiveRoutes {
+    lanes: [Route; 4],
+    counts: [usize; 16],
+}
+
 enum Pending {
     Motion {
         line: usize,
         job: Job,
+        routes: Option<ActiveRoutes>,
     },
     Heater {
         line: usize,
@@ -62,12 +88,21 @@ pub struct Program {
     require_commit: bool,
     pending_commit: Option<MotionProof>,
     active_tool: Option<u8>,
+    routed: bool,
+    active_routes: Option<ActiveRoutes>,
 }
 
 pub struct ToolOids<'a> {
     pub xyz: [u8; 3],
     /// Pairs of virtual selector ID and distinct discovered stepper OID.
     pub extruders: &'a [(u8, u8)],
+}
+
+pub struct ToolRoutes<'a> {
+    pub xyz: [Route; 3],
+    /// Tool IDs mapped to peer-local wire OIDs. All peers in this
+    /// software-only fixture use the same dictionary and local clock grid.
+    pub extruders: &'a [(u8, Route)],
 }
 
 impl Program {
@@ -101,7 +136,7 @@ impl Program {
                 Stage::Motion { first_line, trace } => build.motion(first_line, i, trace, oids)?,
             }
         }
-        Ok(build.program(initial_targets, None))
+        Ok(build.program(initial_targets, None, false))
     }
 
     /// Compile a software-only program for sparse virtual tool lanes. An
@@ -117,29 +152,72 @@ impl Program {
         if !(1..=8).contains(&oids.extruders.len()) {
             return Err(Error::InputLimit);
         }
-        let mut seen = [false; 256];
-        for oid in oids
+        let xyz = oids.xyz.map(|oid| Route { peer: 0, oid });
+        let extruders: Vec<_> = oids
+            .extruders
+            .iter()
+            .map(|&(tool, oid)| (tool, Route { peer: 0, oid }))
+            .collect();
+        Self::build_tools(
+            trace,
+            codec,
+            ToolRoutes {
+                xyz,
+                extruders: &extruders,
+            },
+            initial_targets,
+            max_sample_age,
+            false,
+        )
+    }
+
+    /// Simulate a common-clock set of peers. Each required peer must
+    /// supply its own receipt; an aggregate ACK count cannot clear a gate.
+    pub fn new_tools_routed(
+        trace: ToolTrace<'_>,
+        codec: &StepMessages,
+        routes: ToolRoutes<'_>,
+        initial_targets: &[f64],
+        max_sample_age: f64,
+    ) -> Result<Self, Error> {
+        Self::build_tools(trace, codec, routes, initial_targets, max_sample_age, true)
+    }
+
+    fn build_tools(
+        trace: ToolTrace<'_>,
+        codec: &StepMessages,
+        routes: ToolRoutes<'_>,
+        initial_targets: &[f64],
+        max_sample_age: f64,
+        routed: bool,
+    ) -> Result<Self, Error> {
+        if !(1..=8).contains(&routes.extruders.len()) {
+            return Err(Error::InputLimit);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for route in routes
             .xyz
             .into_iter()
-            .chain(oids.extruders.iter().map(|p| p.1))
+            .chain(routes.extruders.iter().map(|p| p.1))
         {
-            if std::mem::replace(&mut seen[oid as usize], true) {
+            if route.peer >= 16 || !seen.insert((route.peer, route.oid)) {
                 return Err(Error::InputLimit);
             }
         }
-        if oids
+        if routes
             .extruders
             .iter()
             .enumerate()
-            .any(|(i, (id, _))| oids.extruders[..i].iter().any(|(prior, _)| prior == id))
+            .any(|(i, (id, _))| routes.extruders[..i].iter().any(|(prior, _)| prior == id))
         {
             return Err(Error::InputLimit);
         }
         let lookup = |tool| {
-            oids.extruders
+            routes
+                .extruders
                 .iter()
                 .find(|(id, _)| *id == tool)
-                .map(|(_, oid)| *oid)
+                .map(|(_, route)| *route)
                 .ok_or(Error::InputLimit)
         };
         lookup(trace.initial_tool)?;
@@ -181,12 +259,17 @@ impl Program {
                     if tool != active || trace.extruder.is_none() {
                         return Err(Error::InputLimit);
                     }
-                    let [x, y, z] = oids.xyz;
-                    build.motion(first_line, i, trace, &[x, y, z, lookup(tool)?])?;
+                    let [x, y, z] = routes.xyz;
+                    let e = lookup(tool)?;
+                    if routed {
+                        build.motion_routed(first_line, i, trace, [x, y, z, e])?;
+                    } else {
+                        build.motion(first_line, i, trace, &[x.oid, y.oid, z.oid, e.oid])?;
+                    }
                 }
             }
         }
-        Ok(build.program(initial_targets, Some(trace.initial_tool)))
+        Ok(build.program(initial_targets, Some(trace.initial_tool), routed))
     }
 
     /// Require the caller to supply inert phase completion evidence before
@@ -200,7 +283,31 @@ impl Program {
     }
 
     pub fn pending_motion_commit(&self) -> Option<MotionProof> {
-        self.pending_commit
+        if self.routed {
+            None
+        } else {
+            self.pending_commit
+        }
+    }
+
+    /// List minimum phase-local evidence expected from peers that actually
+    /// received commands. This is not evidence that a peer sent a receipt.
+    pub fn pending_peer_commit(&self) -> Option<(u64, Vec<PeerReceipt>)> {
+        let proof = self.pending_commit?;
+        let routes = self.active_routes?;
+        let receipts = routes
+            .counts
+            .iter()
+            .enumerate()
+            .filter_map(|(peer, &count)| {
+                (count != 0).then_some(PeerReceipt {
+                    peer: peer as u8,
+                    accepted_commands: count,
+                    simulated_tick: proof.simulated_tick,
+                })
+            })
+            .collect();
+        Some((proof.generation, receipts))
     }
 
     pub fn state(&self) -> State {
@@ -228,7 +335,7 @@ impl Program {
             State::Cancelled => "cancelled",
             State::Faulted => "faulted",
         };
-        let pending = self.pending_commit.map(|p| {
+        let pending = self.pending_motion_commit().map(|p| {
             serde_json::json!({
                 "generation": p.generation,
                 "accepted_commands": p.accepted_commands,
@@ -245,6 +352,20 @@ impl Program {
         });
         if let Some(tool) = self.active_tool {
             data["active_tool"] = tool.into();
+        }
+        if self.routed {
+            data["peer_proof"] = self.pending_peer_commit().map_or(
+                serde_json::Value::Null,
+                |(generation, peers)| {
+                    serde_json::json!({
+                        "generation":generation,
+                        "requirements":peers.iter().map(|p| serde_json::json!({
+                            "peer":p.peer, "accepted_commands":p.accepted_commands,
+                            "simulated_tick":p.simulated_tick,
+                        })).collect::<Vec<_>>(),
+                    })
+                },
+            );
         }
         snapshot.set_object(
             "virtual_mixed_job".into(),
@@ -264,6 +385,35 @@ impl Program {
     /// A single dispatch tick can drain only the currently armed phase.
     /// Even an arbitrarily late tick cannot issue data from the next phase.
     pub fn advance(&mut self, clock: u64, budget: usize) -> Result<Vec<Issued>, Error> {
+        if self.routed {
+            return Err(Error::MotionCommit);
+        }
+        self.advance_inner(clock, budget)
+    }
+
+    pub fn advance_routed(
+        &mut self,
+        clock: u64,
+        budget: usize,
+    ) -> Result<Vec<RoutedIssued>, Error> {
+        if !self.routed {
+            return Err(Error::MotionCommit);
+        }
+        let routes = self.active_routes;
+        let out = self.advance_inner(clock, budget)?;
+        if out.is_empty() {
+            return Ok(Vec::new());
+        }
+        let routes = routes.ok_or(Error::MotionCommit)?;
+        out.into_iter()
+            .map(|item| {
+                let route = *routes.lanes.get(item.lane).ok_or(Error::MotionCommit)?;
+                Ok(RoutedIssued { route, item })
+            })
+            .collect()
+    }
+
+    fn advance_inner(&mut self, clock: u64, budget: usize) -> Result<Vec<Issued>, Error> {
         if !(1..=256).contains(&budget) {
             return Err(Error::Job(virtual_job::Error::Batch));
         }
@@ -295,7 +445,7 @@ impl Program {
     /// closed. This caller-supplied evidence is simulation-only.
     pub fn commit_motion(&mut self, clock: u64, proof: MotionProof) -> Result<(), Error> {
         self.time(clock)?;
-        let expected = self.pending_commit.ok_or(Error::MotionCommit)?;
+        let expected = self.pending_motion_commit().ok_or(Error::MotionCommit)?;
         if proof.generation != expected.generation
             || proof.accepted_commands != expected.accepted_commands
             || proof.simulated_tick < expected.simulated_tick
@@ -304,6 +454,39 @@ impl Program {
         }
         self.clock = clock;
         self.pending_commit = None;
+        self.load(clock)
+    }
+
+    pub fn commit_peers(
+        &mut self,
+        clock: u64,
+        generation: u64,
+        received: &[PeerReceipt],
+    ) -> Result<(), Error> {
+        self.time(clock)?;
+        let expected = self.pending_commit.ok_or(Error::MotionCommit)?;
+        let routes = self.active_routes.ok_or(Error::MotionCommit)?;
+        if !self.routed
+            || generation != expected.generation
+            || received.len() != routes.counts.iter().filter(|&&n| n != 0).count()
+        {
+            return Err(Error::MotionCommit);
+        }
+        let mut seen = [false; 16];
+        for receipt in received {
+            let peer = usize::from(receipt.peer);
+            if peer >= seen.len()
+                || std::mem::replace(&mut seen[peer], true)
+                || routes.counts[peer] == 0
+                || routes.counts[peer] != receipt.accepted_commands
+                || receipt.simulated_tick < expected.simulated_tick
+            {
+                return Err(Error::MotionCommit);
+            }
+        }
+        self.clock = clock;
+        self.pending_commit = None;
+        self.active_routes = None;
         self.load(clock)
     }
 
@@ -346,10 +529,15 @@ impl Program {
         while let Some(stage) = self.stages.pop_front() {
             match stage {
                 Pending::Select { tool } => self.active_tool = Some(tool),
-                Pending::Motion { line, mut job } => {
+                Pending::Motion {
+                    line,
+                    mut job,
+                    routes,
+                } => {
                     job.start(clock).map_err(Error::Job)?;
                     self.line = Some(line);
                     self.running = Some(job);
+                    self.active_routes = routes;
                     self.state = State::Running;
                     return Ok(());
                 }
@@ -384,6 +572,7 @@ impl Program {
     fn clear(&mut self, state: State) {
         self.stages.clear();
         self.pending_commit = None;
+        self.active_routes = None;
         self.running = None;
         self.waiting = None;
         self.state = state;
@@ -493,11 +682,61 @@ impl<'a> StageBuilder<'a> {
         let end = job_end(trace.duration, self.hz, &tracks)?;
         let job = Job::for_lanes(self.codec, &tracks, oids, 0, end, index as u64 + 1)
             .map_err(Error::Job)?;
-        self.stages.push_back(Pending::Motion { line, job });
+        self.stages.push_back(Pending::Motion {
+            line,
+            job,
+            routes: None,
+        });
         Ok(())
     }
 
-    fn program(self, targets: &[f64], active_tool: Option<u8>) -> Program {
+    fn motion_routed(
+        &mut self,
+        line: usize,
+        index: usize,
+        trace: Trace,
+        routes: [Route; 4],
+    ) -> Result<(), Error> {
+        self.line(line)?;
+        if !trace.duration.is_finite() || trace.duration < 0. {
+            return Err(Error::Clock);
+        }
+        let e = trace.extruder.as_ref().ok_or(Error::InputLimit)?;
+        let tracks = trace.motors.each_ref().map(Vec::as_slice);
+        let tracks = [tracks[0], tracks[1], tracks[2], e.as_slice()];
+        let count = tracks.iter().map(|lane| lane.len()).sum::<usize>();
+        self.records = self.records.saturating_add(count);
+        if self.records > 196_000 {
+            return Err(Error::InputLimit);
+        }
+        if count == 0 && trace.duration == 0. {
+            return Ok(());
+        }
+        let end = job_end(trace.duration, self.hz, &tracks)?;
+        let mut counts = [0; 16];
+        let routed = std::array::from_fn::<_, 4, _>(|i| {
+            let Route { peer, oid } = routes[i];
+            counts[usize::from(peer)] += tracks[i].len();
+            RoutedLane {
+                peer,
+                oid,
+                commands: tracks[i],
+            }
+        });
+        let job =
+            Job::for_routed(self.codec, &routed, 0, end, index as u64 + 1).map_err(Error::Job)?;
+        self.stages.push_back(Pending::Motion {
+            line,
+            job,
+            routes: Some(ActiveRoutes {
+                lanes: routes,
+                counts,
+            }),
+        });
+        Ok(())
+    }
+
+    fn program(self, targets: &[f64], active_tool: Option<u8>, routed: bool) -> Program {
         Program {
             stages: self.stages,
             running: None,
@@ -510,6 +749,8 @@ impl<'a> StageBuilder<'a> {
             require_commit: active_tool.is_some(),
             pending_commit: None,
             active_tool,
+            routed,
+            active_routes: None,
         }
     }
 }

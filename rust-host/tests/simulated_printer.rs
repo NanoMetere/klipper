@@ -1586,4 +1586,111 @@ fn sparse_mixed_program_requires_a_commit_before_selecting_a_new_tool() {
         .unwrap();
     assert_eq!(run.state(), ProgramState::Finished);
     assert_eq!(run.targets(), [0., 0.]);
+
+    // Routed simulation permits the same wire OID on different peers, but
+    // the tool change cannot be committed with an incomplete peer set.
+    use klipper_host_protocol::simulated_printer::mixed::{Route, ToolRoutes};
+    let route = |peer, oid| Route { peer, oid };
+    let mut routed = Program::new_tools_routed(
+        trace(),
+        &codec,
+        ToolRoutes {
+            xyz: [route(0, 1), route(0, 2), route(0, 3)],
+            extruders: &[(2, route(4, 1)), (5, route(7, 1))],
+        },
+        bank.targets(),
+        0.5,
+    )
+    .unwrap();
+    let mut view = Snapshot::default();
+    let mut subscriber = Session::default();
+    let mut frames = Vec::new();
+    assert!(routed.publish_status(&mut view));
+    subscriber.feed(
+        b"{\"id\":1,\"method\":\"objects/subscribe\",\"params\":{\"objects\":{\"virtual_mixed_job\":null}}}\x03",
+        &view,0.,|frame| collect(frame,&mut frames),
+    );
+    assert!(frames[0]["result"]["status"]["virtual_mixed_job"]["peer_proof"].is_null());
+    routed.start(0).unwrap();
+    assert!(routed.advance(tick(1.), 256).is_err());
+    routed
+        .temperature(tick(1.), Some(reading(0, 1., 210.)), false)
+        .unwrap();
+    let collect = |events: Vec<klipper_host_protocol::simulated_printer::mixed::RoutedIssued>| {
+        let mut counts = BTreeMap::new();
+        for e in events {
+            assert_eq!(e.route.oid, lane_oid(e.item));
+            *counts.entry(e.route.peer).or_insert(0) += 1;
+        }
+        counts
+    };
+    let first = collect(routed.advance_routed(tick(9.), 256).unwrap());
+    assert_eq!(first.keys().copied().collect::<Vec<_>>(), [0, 4]);
+    assert!(routed.pending_motion_commit().is_none());
+    routed.publish_status(&mut view);
+    assert!(subscriber.update(&view, 9., |frame| {
+        let got: serde_json::Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        let body = &got["params"]["status"]["virtual_mixed_job"];
+        assert_eq!(body["state"], "waiting_for_motion_proof");
+        let set = body["peer_proof"]["requirements"].as_array().unwrap();
+        assert_eq!(set.len(), 2);
+        assert_eq!(set[0]["peer"], 0);
+        assert_eq!(set[1]["peer"], 4);
+    }));
+    let (first_gen, mut receipts) = routed.pending_peer_commit().unwrap();
+    for row in &receipts {
+        assert_eq!(row.accepted_commands, first[&row.peer]);
+    }
+    assert!(routed
+        .commit_peers(tick(10.), first_gen, &receipts[..1])
+        .is_err());
+    let mut malformed = receipts.clone();
+    malformed[1].peer = malformed[0].peer;
+    assert!(routed
+        .commit_peers(tick(10.), first_gen, &malformed)
+        .is_err());
+    malformed = receipts.clone();
+    malformed[0].simulated_tick -= 1;
+    assert!(routed
+        .commit_peers(tick(10.), first_gen, &malformed)
+        .is_err());
+    assert!(routed.advance_routed(tick(11.), 256).unwrap().is_empty());
+    assert_eq!(routed.active_tool(), Some(2));
+    receipts.reverse();
+    routed
+        .commit_peers(tick(12.), first_gen, &receipts)
+        .unwrap();
+    routed.publish_status(&mut view);
+    assert!(subscriber.update(&view, 12., |frame| {
+        let got: serde_json::Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        let body = &got["params"]["status"]["virtual_mixed_job"];
+        assert_eq!(body["active_tool"], 5);
+        assert_eq!(body["state"], "waiting_for_temperature");
+        assert_eq!(body.get("peer_proof"), Some(&serde_json::Value::Null));
+    }));
+    assert_eq!(routed.active_tool(), Some(5));
+    assert_eq!(routed.state(), ProgramState::Waiting);
+    routed
+        .temperature(tick(15.), Some(reading(1, 15., 220.)), false)
+        .unwrap();
+    let second = collect(routed.advance_routed(tick(25.), 256).unwrap());
+    assert_eq!(second.keys().copied().collect::<Vec<_>>(), [0, 7]);
+    let (next_gen, next_receipts) = routed.pending_peer_commit().unwrap();
+    assert!(routed
+        .commit_peers(tick(26.), first_gen, &next_receipts)
+        .is_err());
+    assert!(routed.commit_peers(tick(26.), next_gen, &receipts).is_err());
+    for row in &next_receipts {
+        assert_eq!(row.accepted_commands, second[&row.peer]);
+    }
+    routed
+        .commit_peers(tick(26.), next_gen, &next_receipts)
+        .unwrap();
+    let last = collect(routed.advance_routed(tick(35.), 256).unwrap());
+    assert_eq!(last.keys().copied().collect::<Vec<_>>(), [0, 4]);
+    let (last_gen, last_receipts) = routed.pending_peer_commit().unwrap();
+    routed
+        .commit_peers(tick(36.), last_gen, &last_receipts)
+        .unwrap();
+    assert_eq!(routed.state(), ProgramState::Finished);
 }

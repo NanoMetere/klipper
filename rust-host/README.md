@@ -1392,6 +1392,14 @@ second wait leaves only the first 13 records issued. Unsupported
 non-fixture firmware must reject both modes before configuring any
 simulated motion. The runtime uses no physical dock or heater.
 
+A second fixture routes the same path to two independently started
+software MCU peers, using separate OID namespaces, phase-local clocks
+and one common wire dictionary. It sends 39 commands, verifies all
+five final counters, and withholds one peer receipt after the second
+phase to prove that the final 13 commands stay unissued. An aggregate
+ACK count is not accepted for routed stages. This is not a SocketCAN
+or hardware driver.
+
 ```sh
 cargo build --locked --release --example mixed_tool_steps
 python3 bench/mixed_tool_steps.py "$stock_klipper" \

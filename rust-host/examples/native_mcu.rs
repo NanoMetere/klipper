@@ -509,7 +509,13 @@ mod linux {
     pub fn run() -> Result<(), String> {
         let mut argv = std::env::args().skip(1);
         let arg = argv.next().ok_or("missing sample count")?;
-        if matches!(arg.as_str(), "--gpio-dual" | "--gpio-dual-packed") {
+        if matches!(
+            arg.as_str(),
+            "--gpio-dual"
+                | "--gpio-dual-packed"
+                | "--gpio-dual-tool-mixed"
+                | "--gpio-dual-tool-missing-proof"
+        ) {
             let fd = argv
                 .next()
                 .ok_or("secondary simulator descriptor required")?
@@ -522,6 +528,15 @@ mod linux {
             let (secondary, b) = inherited_pty(fd, fd)?;
             if a == b {
                 return Err("the two fixture PTYs must be independent".into());
+            }
+            if matches!(
+                arg.as_str(),
+                "--gpio-dual-tool-mixed" | "--gpio-dual-tool-missing-proof"
+            ) {
+                return crate::gpio_tool_mixed::run_dual(
+                    [primary, secondary],
+                    arg == "--gpio-dual-tool-missing-proof",
+                );
             }
             return crate::gpio_dual::run([primary, secondary], arg == "--gpio-dual-packed");
         }

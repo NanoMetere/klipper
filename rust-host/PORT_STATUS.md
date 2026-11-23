@@ -84,6 +84,8 @@ but cannot measure printer I/O or physical print duration.
   pressure-advanced jobs matched stock at deliberate stops. The
   GPIO-free T2/T5/T2 path then verified 13+13+13 commands on the
   intended lanes, while the synthetic shutdown released 13+0+0.
+  Two software peers also preserve cumulative positions and block
+  the final 13 commands if the second peer's receipt is absent.
   Thermal waits consume only explicit simulation observations. No endpoints operate a real heater, probe,
   motor or tool dock.
 

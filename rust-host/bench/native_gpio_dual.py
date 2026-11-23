@@ -153,3 +153,36 @@ def check_dual(upstream, mcu, binary, rounds=1):
         assert not any(p.startswith(advance) for _, _, p in events), events[-8:]
         assert sum(typ == "send" and board == 1 and p.startswith(motion) for typ, board, p in events) == 1
     print("Lost secondary motion ACK in either mode: no retry, later writes, or clock advances")
+
+
+def check_mixed_tool_proofs(upstream, mcu, binary):
+    """Require per-peer evidence before the final virtual tool phase."""
+    sys.path.insert(0, str(upstream / "klippy"))
+    from msgproto import MessageParser
+
+    def proc(a, b, mode):
+        fd = b if isinstance(b, int) else b.fileno()
+        return subprocess.run([binary, mode, str(fd)], stdin=a, stdout=a,
+                              pass_fds=(fd,), stderr=subprocess.PIPE, text=True, timeout=12)
+
+    parser = MessageParser()
+    parser.process_identify((mcu.parent / "klipper.dict").read_bytes(), decompress=False)
+    tags = lambda *names: tuple(bytes(parser.messages_by_name[n].msgid_bytes) for n in names)
+    motion = tags("queue_step", "set_next_step_dir")
+    for mode, wanted, counts in (
+        ("--gpio-dual-tool-mixed", "TOOL_PEERS 13 0 10 3 13 0 640 0 0 35 50", (36, 3)),
+        ("--gpio-dual-tool-missing-proof", "TOOL_PEER_WAIT 13 0 10 3 0", (23, 3)),
+    ):
+        events = []
+        with observed_peer(mcu, 0, events) as a, observed_peer(mcu, 1, events) as b:
+            run = proc(a, b, mode)
+        assert run.returncode == 0 and run.stderr.strip() == wanted, (mode, run.stderr)
+        assert tuple(sum(kind == "send" and board == target and data.startswith(motion)
+                         for kind, board, data in events) for target in (0, 1)) == counts
+    events = []
+    with observed_peer(mcu, 0, events) as a, fresh(upstream/"out/klipper.elf") as unmarked:
+        refused = proc(a, unmarked, "--gpio-dual-tool-mixed")
+    assert refused.returncode and "NotFixture" in refused.stderr, refused.stderr
+    forbidden = tags("allocate_oids", "config_stepper", "queue_step", "set_next_step_dir")
+    assert not any(kind == "send" and payload.startswith(forbidden) for kind, _, payload in events)
+    print("Two mixed-tool MCU peers: 39 commands matched; withholding the second peer's receipt blocked all 13 later commands")
