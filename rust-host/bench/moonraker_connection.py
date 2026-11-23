@@ -20,7 +20,7 @@ PIN = "b559b9a81161f958a43c2f527b6ad96f73310d5d"
 
 
 async def exercise(binary, root):
-    from moonraker.common import KlippyState
+    from moonraker.common import APITransport, KlippyState
     from moonraker.components.klippy_apis import KlippyAPI
     from moonraker.components.klippy_connection import KlippyConnection
     from moonraker.eventloop import EventLoop
@@ -86,6 +86,17 @@ async def exercise(binary, root):
                 if event == wanted:
                     return args
 
+    class CaptureTransport(APITransport):
+        def __init__(self):
+            self.updates = asyncio.Queue()
+
+        def send_status(self, status, _eventtime):
+            if status:
+                self.updates.put_nowait(status)
+
+        async def next(self):
+            return await asyncio.wait_for(self.updates.get(), 4)
+
     class FixtureConnection(KlippyConnection):
         # The real dial needs a named socket. Supply an already-connected
         # pair for this test; retain the stock lifecycle, RPC, and stream code.
@@ -140,6 +151,8 @@ async def exercise(binary, root):
     connection = server.components["klippy_connection"] = FixtureConnection(config)
     api = server.components["klippy_apis"] = KlippyAPI(config)
     updates = asyncio.Queue()
+    position_client = CaptureTransport()
+    state_client = CaptureTransport()
 
     async def ready(x):
         # The real client must remain in STARTUP during the first reply.
@@ -177,12 +190,22 @@ async def exercise(binary, root):
         connection.connect()
         await ready(10)
         await subscribe(10)
+        assert await api.subscribe_from_transport(
+            {"toolhead": ["position"]}, position_client
+        ) == {"toolhead": {"position": [10, 2, 3, 0]}}
+        assert await api.subscribe_from_transport(
+            {"toolhead": ["homed_axes"], "webhooks": ["state"]}, state_client
+        ) == {"toolhead": {"homed_axes": "xyz"}, "webhooks": {"state": "ready"}}
         put_state("ready", 11)
         assert await asyncio.wait_for(updates.get(), 4) == {
             "toolhead": {"position": [11, 2, 3, 0]}
         }
+        assert await position_client.next() == {"toolhead": {"position": [11, 2, 3, 0]}}
+        assert state_client.updates.empty()
         put_state("shutdown", 11)
         await server.until("server:klippy_shutdown")
+        assert await state_client.next() == {"webhooks": {"state": "shutdown"}}
+        assert position_client.updates.empty()
         assert connection.state == KlippyState.SHUTDOWN
         child.terminate()
         await asyncio.wait_for(child.wait(), 4)
@@ -205,15 +228,18 @@ async def exercise(binary, root):
         else:
             raise AssertionError("reconnected peer did not expose the new position")
         assert updates.empty()
+        assert position_client.updates.empty() and state_client.updates.empty()
         await subscribe(21)
         put_state("ready", 22)
         assert await asyncio.wait_for(updates.get(), 4) == {
             "toolhead": {"position": [22, 2, 3, 0]}
         }
+        assert position_client.updates.empty() and state_client.updates.empty()
         assert len(missing_output) == 2, missing_output
         assert not {"gcode/script", "emergency_stop"} & server.endpoints
         print("Pinned Moonraker client: disconnected → startup → ready → shutdown "
-              "→ disconnected → startup → ready; query, diff, and new subscription verified")
+              "→ disconnected → startup → ready; query, filtered multi-client "
+              "diffs, and new subscription verified")
     finally:
         logger.removeFilter(known_warning)
         server.running = False
