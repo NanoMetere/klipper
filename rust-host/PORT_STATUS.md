@@ -279,9 +279,16 @@ justify changing either solver. No live performance claim follows.
   compression mode. That is 15,566 exact compressed/direction records
   with zero error and 429 with the stock default 25 μs tolerance.
   The one shared E OID also matches unchanged C replay across positive
-  and negative rebinds and detach. This captures stock look-ahead
-  inputs; it does not independently plan G-code or support a physical
-  nozzle changer.
+  and negative rebinds and detach. A separate bounded Rust planner
+  now parses and plans the same two G-code bodies from a supplied
+  virtual start and fixed geometry, without using the captured stock
+  phases as inputs. It matches 38 ordered E and 24 XYZ planning events
+  per job (excluding idempotent duplicate/no-time flushes), plus all
+  four command streams in both compression modes. It implements only
+  the two queues, one named shared stepper, supported inert motion and
+  positive fixed-smoothing gain commands, with a final M400. The
+  no-pacing debug calendar is not live Klippy scheduling, there is no
+  preview CLI flag, and no physical nozzle-changer support is implied.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

@@ -15,6 +15,9 @@ mod arcs;
 pub mod display;
 #[path = "gcode/extended.rs"]
 mod extended;
+#[path = "gcode/shared_debug.rs"]
+mod shared_debug;
+pub(crate) use shared_debug::{shared_debug_control, SharedDebugControl};
 #[path = "gcode/transform.rs"]
 mod transform;
 #[path = "gcode/velocity.rs"]

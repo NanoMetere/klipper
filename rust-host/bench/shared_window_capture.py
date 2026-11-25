@@ -80,6 +80,30 @@ def observe(upstream, dictionary, fixture, temp, path, zero_error):
 
 
 
+def normalized_ops(text):
+    """Skip only duplicate/no-time flushes and their idempotent retirement."""
+    last_flush = None
+    skip = False
+    for row in text.splitlines():
+        op, *fields = row.split()
+        values = tuple(map(float, fields))
+        if op == "f":
+            skip = values == (0.,) or values == last_flush
+            last_flush = values
+            if skip:
+                continue
+        if op == "t" and skip:
+            continue
+        yield op, values
+
+
+def same_plan(stock, independent):
+    a, b = tuple(normalized_ops(stock)), tuple(normalized_ops(independent))
+    for i, (wanted, actual) in enumerate(zip(a, b, strict=True)):
+        assert wanted == actual, (i, wanted, actual)
+    return len(b)
+
+
 def flatten_file(rows):
     clock = 0
     packets = []
@@ -117,6 +141,9 @@ def main():
         lib = temp / "libklipper_host_protocol.rlib"
         subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_xyz_capture.rs",
                         "--extern", f"klipper_host_protocol={lib}", "-o", xyz], check=True)
+        plan = temp / "plan"
+        subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_independent_plan.rs",
+                        "--extern", f"klipper_host_protocol={lib}", "-o", plan], check=True)
         for zero_error in (True, False):
             for negative, e_count, e_ticks in ((False, 579 if zero_error else 113, 1250),
                                                       (True, 831 if zero_error else 118, 1755)):
@@ -138,7 +165,21 @@ def main():
                       f"{len(want)} compressed blocks/directions, "
                       f"{physical_steps} individual ticks, exact C replay and Rust")
                 xyz_args = [xyz, hz, tol, *map(str, meta["d"]), *(str(int(v)) for v in meta["inverted"])]
-                xyz_rows = subprocess.check_output(xyz_args, input=xyz_events, text=True, timeout=20)
+                init, executable = script.split("\n", 1)
+                assert init == "SET_KINEMATIC_POSITION X=10 Y=10 Z=1"
+                independently_planned_e = subprocess.check_output([plan], input=executable, text=True,
+                                                                  timeout=10)
+                independently_planned_xyz = subprocess.check_output([plan, "--xyz"], input=executable,
+                                                                    text=True, timeout=10)
+                assert same_plan(events, independently_planned_e) == 38
+                assert same_plan(xyz_events, independently_planned_xyz) == 24
+                plan_e = subprocess.check_output([rust, "--wire", hz, tol], input=independently_planned_e,
+                                                 text=True, timeout=15)
+                assert wire_records(plan_e) == want
+                captured_xyz = subprocess.check_output(xyz_args, input=xyz_events, text=True, timeout=20)
+                xyz_rows = subprocess.check_output(xyz_args, input=independently_planned_xyz,
+                                                   text=True, timeout=20)
+                assert captured_xyz == xyz_rows
                 fields = xyz_rows.split("end\n")
                 assert fields[-1] == "" and len(fields) == 4
                 tick_count = 0
@@ -150,7 +191,7 @@ def main():
                     records += len(expected)
                 assert (records, tick_count) == (7078 if zero_error else 99, 20488)
                 print(f"Actual stock debug, max compress error {tol} ticks, XYZ, negative={negative}: "
-                      f"{records} compressed blocks/directions, {tick_count} individual ticks, exact Rust")
+                      f"{records} compressed blocks/directions, {tick_count} individual ticks, exact independently planned Rust")
 
 
 if __name__ == "__main__":
