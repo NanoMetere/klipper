@@ -100,6 +100,16 @@ impl Extruder {
     }
 }
 
+/// Append a prepared extrusion phase group to a disposable E queue.
+/// X is filament position; Y's direction flag marks pressure eligibility.
+/// The caller supplies the planned absolute time and signed velocities.
+pub fn append_prepared(queue: &mut Trajectory, move_: Trapezoid) -> Result<(), trajectory::Error> {
+    if move_.start[1..] != [0.0, 0.0] || !matches!(move_.direction, [1.0, 0.0 | 1.0, 0.0]) {
+        return Err(trajectory::Error::Invalid);
+    }
+    queue.append_signed(move_)
+}
+
 /// Add signed extrusion phases to a dedicated timeline (X is the E axis).
 /// Caller supplies the shared scheduled time and tracks dwells/XYZ-only
 /// blocks. This intentionally models no pressure advance.

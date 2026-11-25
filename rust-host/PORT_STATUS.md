@@ -264,7 +264,14 @@ justify changing either solver. No live performance claim follows.
   records are a repeatable stock-only reference for future timing
   work, not yet Rust-generated parity. No preview CLI option, queue
   scheduling, shaper dynamics, hardware, or third-party compatibility is
-  implied by this state model.
+  implied by this state model. Separately, a flushed-window E timing
+  kernel with caller-supplied prepared phases, effective gain times,
+  and queue switches matches unchanged stock C for 71 synthetic
+  scenarios: 133,188 raw crossings, 269,845 commit markers, and 67,653
+  direction/compressed-step records at 20 MHz. Flushes preserve one
+  stepper's direction and clock across rebind/detach and roll back on
+  an invalid or over-cap window. This is not full configured
+  Klippy-to-Rust XYZ/E time parity; no CLI path calls this kernel.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

@@ -360,6 +360,138 @@ impl Advance {
     }
 }
 
+/// Experimental one-motor flushed window seam. Bound queues and gain changes
+/// are supplied by the caller in the same logical clock domain.
+#[derive(Clone)]
+pub struct WindowStepper {
+    solver: Solver,
+    last_flush: f64,
+    last_move: f64,
+    half: f64,
+}
+
+impl WindowStepper {
+    pub fn new(distance: f64, smooth_time: f64) -> Result<Self, step_times::Error> {
+        let half = 0.5 * smooth_time;
+        if !(0.0..=0.2).contains(&smooth_time) || half == 0.0 || !(1.0 / (half * half)).is_finite()
+        {
+            return Err(step_times::Error::Invalid);
+        }
+        Ok(Self {
+            solver: Solver::new(Axis::X, distance, [0.; 3])?,
+            last_flush: 0.0,
+            last_move: 0.0,
+            half,
+        })
+    }
+
+    /// Re-anchor after the last completed flush without resetting step
+    /// direction or the flushed time range. Queue identity is caller-owned.
+    pub fn rebase_after_flush(&mut self, commanded: f64) -> Result<(), step_times::Error> {
+        self.solver.rebase(commanded)
+    }
+
+    pub fn commanded(&self) -> f64 {
+        self.solver.commanded_position()
+    }
+
+    /// Derive events in only the new window. The supplied queue must
+    /// include all phase neighborhoods needed by the fixed smoothing
+    /// window. `None` advances time while detached. A failure leaves
+    /// the previous solver position, direction and times unchanged.
+    pub fn flush(
+        &mut self,
+        queue: Option<&Trajectory>,
+        advance: &Advance,
+        flush: f64,
+        cap: usize,
+    ) -> Result<Vec<Event>, step_times::Error> {
+        use step_times::Error::{EventLimit, Invalid};
+        if !(self.last_flush..=1e12).contains(&flush) || advance.half != self.half {
+            return Err(Invalid);
+        }
+        if !(1..=65_535).contains(&cap) {
+            return Err(EventLimit);
+        }
+        let Some(segs) = queue.map(Trajectory::segments).filter(|q| !q.is_empty()) else {
+            self.last_flush = flush;
+            return Ok(Vec::new());
+        };
+        let first = &segs[0];
+        let last = segs.last().unwrap();
+        let head = idle(first.at - 1.0, 1.0, first.position[0]);
+        let tail = idle(last.end(), 1.0, last.local(last.duration)[0]);
+        let coefficients = advance.prepare_phases(segs, Integrals::new);
+        let inactive = Integrals::new(&head, 0.0);
+        let lookup = |i: isize| {
+            (
+                pick(segs, &head, &tail, i),
+                coefficients.get(i as usize).copied().unwrap_or(inactive),
+            )
+        };
+        let from = self.last_flush;
+        let mut trial = self.clone();
+        let mut out = Vec::new();
+        let mut solve = |i: usize, start: f64, end: f64| {
+            let (m, _) = lookup(i as isize);
+            if end.min(m.end()) <= start.max(m.at) {
+                return Ok(());
+            }
+            let available = cap
+                .checked_sub(out.len())
+                .filter(|n| *n > 0)
+                .ok_or(EventLimit)?;
+            trial
+                .solver
+                .solve_range_into(m, start..end, available, &mut out, |t| {
+                    advance
+                        .sample_relative(lookup, i as isize, t)
+                        .map_err(|_| Invalid)
+                })
+        };
+        let mut force = self.last_move + advance.half;
+        let mut skipped = 0;
+        let mut last_move = self.last_move;
+        for i in segs.partition_point(|m| from >= m.end())..=segs.len() {
+            let (m, _) = lookup(i as isize);
+            if m.direction[0] != 0.0 {
+                if skipped != 0 {
+                    let start = (m.at - advance.half).max(from).max(force);
+                    let mut previous = i - 1;
+                    while previous > i - skipped && segs[previous].at > start {
+                        previous -= 1;
+                    }
+                    for j in previous..i {
+                        solve(j, start, flush)?;
+                    }
+                }
+                solve(i, from, flush)?;
+                if m.end() >= flush {
+                    last_move = flush;
+                    break;
+                }
+                skipped = 0;
+                last_move = m.end();
+                force = last_move + advance.half;
+            } else {
+                if m.at < force {
+                    solve(i, from, flush.min(force))?;
+                    skipped = 1;
+                } else {
+                    skipped += 1;
+                }
+                if flush + advance.half <= m.end() {
+                    break;
+                }
+            }
+        }
+        trial.last_move = last_move;
+        trial.last_flush = flush;
+        *self = trial;
+        Ok(out)
+    }
+}
+
 fn pick<'a>(segs: &'a [Segment], head: &'a Segment, tail: &'a Segment, i: isize) -> &'a Segment {
     if i < 0 {
         head
@@ -477,5 +609,54 @@ mod tests {
             .unwrap()
             .prepare_phases(&phases, |_, gain| gain)
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use crate::{extrusion::append_prepared, trajectory::Trapezoid};
+
+    #[test]
+    fn shared_flush_keeps_position_on_failure_and_advances_clock_while_detached() {
+        use step_times::Error::{EventLimit, Invalid};
+        let mut lane = WindowStepper::new(0.005, 0.04).unwrap();
+        let mut q = Trajectory::new(12).unwrap();
+        append_prepared(
+            &mut q,
+            Trapezoid {
+                at: 2.0,
+                phase_sec: [0.03125, 0.125, 0.03125],
+                start: [0., 0., 0.],
+                direction: [1., 1., 0.],
+                start_velocity: 0.0,
+                cruise_velocity: 8.0,
+                accel: 256.0,
+            },
+        )
+        .unwrap();
+        let gain = Advance::new(0.04, &[(0., 0.04)]).unwrap();
+        let wrong = Advance::new(0.06, &[(0., 0.04)]).unwrap();
+        assert_eq!(lane.flush(Some(&q), &gain, 2.25, 1), Err(EventLimit));
+        assert_eq!(lane.flush(Some(&q), &wrong, 2.25, 2048), Err(Invalid));
+        assert_eq!(lane.rebase_after_flush(f64::NAN), Err(Invalid));
+        assert_eq!(
+            (lane.commanded(), lane.last_move, lane.last_flush),
+            (0., 0., 0.)
+        );
+        let valid = lane.flush(Some(&q), &gain, 2.25, 2048).unwrap();
+        let clean = WindowStepper::new(0.005, 0.04)
+            .unwrap()
+            .flush(Some(&q), &gain, 2.25, 2048)
+            .unwrap();
+        assert_eq!(valid, clean);
+        assert!(valid.iter().any(|e| matches!(e, Event::Crossing { .. })));
+        let pos = lane.commanded();
+        assert_eq!(lane.flush(None, &gain, 3.0, 128).unwrap(), Vec::new());
+        assert_eq!(lane.commanded(), pos);
+        assert_eq!(lane.last_flush, 3.0);
+        assert_eq!(lane.flush(Some(&q), &gain, 2.5, 128), Err(Invalid));
+        lane.rebase_after_flush(0.0).unwrap();
+        assert_eq!(lane.flush(Some(&q), &gain, 3.1, 128).unwrap(), Vec::new());
     }
 }

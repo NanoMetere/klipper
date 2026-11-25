@@ -13,7 +13,7 @@ from planner import PIN, ROOT
 OFFLINE = (
     "check_stream.sh", "clock_sync.py", "planner.py", "flight.py", "retry_timing.py", "can.py",
     "config.py", "lookahead.py", "gcode_preview.py", "gcode_arcs.py", "bed_mesh.py", "trajectory.py", "step_times.py",
-    "step_compress.py", "step_clock.py", "machine_trace.py", "pressure_advance.py",
+    "step_compress.py", "step_clock.py", "machine_trace.py", "pressure_advance.py", "shared_windows.py",
     "tool_transform.py", "thermal.py", "probe.py", "homing.py",
 )
 

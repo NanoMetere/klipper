@@ -57,6 +57,7 @@ pub enum Error {
     IterationLimit,
 }
 
+#[derive(Clone)]
 pub struct Solver {
     axis: Axis,
     dist: f64,
@@ -81,6 +82,14 @@ impl Solver {
             pos,
             positive: false,
         })
+    }
+
+    pub(crate) fn rebase(&mut self, position: f64) -> Result<(), Error> {
+        if !position.is_finite() || position + self.dist == position {
+            return Err(Error::Invalid);
+        }
+        self.pos = position;
+        Ok(())
     }
 
     pub fn commanded_position(&self) -> f64 {
