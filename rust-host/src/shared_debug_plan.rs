@@ -83,6 +83,8 @@ pub(super) struct RuntimePlan<'a> {
     dynamic_pressure: bool,
     #[cfg(feature = "runtime-pickup-extended-preview")]
     extended_pickup: bool,
+    #[cfg(feature = "runtime-pickup-arcs-preview")]
+    arc_resolution: Option<f64>,
     updates: &'a [(usize, f64)],
     positions: &'a mut Vec<(usize, usize)>,
     #[cfg(feature = "runtime-pickup-preview")]
@@ -398,6 +400,17 @@ fn plan_body(
         Some(geometries[0].corner_velocity()),
         [start[0], start[1], start[2], 0.],
     )?;
+    #[cfg(feature = "runtime-pickup-arcs-preview")]
+    let arc_resolution = shape_updates.as_ref().and_then(|plan| plan.arc_resolution);
+    #[cfg(feature = "runtime-pickup-arcs-preview")]
+    let mut arc_budget = 4096usize;
+    #[cfg(feature = "runtime-pickup-arcs-preview")]
+    if let Some(resolution) = arc_resolution {
+        if !(0.25..=5.0).contains(&resolution) {
+            return Err(Error::Inputs);
+        }
+        preview.enable_arcs(resolution)?;
+    }
     let mut selected = ExtruderPositions::new(&[(0, 0.), (1, 0.)], 0).map_err(|_| Error::Inputs)?;
     let mut time = OriginClock {
         move_end: 0.0,
@@ -661,24 +674,37 @@ fn plan_body(
                     time.dwell(delay)?;
                     continue;
                 }
-                if ![
-                    "G0",
-                    "G1",
-                    "G90",
-                    "G91",
-                    "G92",
-                    "M82",
-                    "M83",
-                    "M220",
-                    "M221",
-                    "M204",
-                    "SET_VELOCITY_LIMIT",
-                    "SAVE_GCODE_STATE",
-                    "RESTORE_GCODE_STATE",
-                    "SET_GCODE_OFFSET",
-                ]
-                .iter()
-                .any(|code| code.eq_ignore_ascii_case(opcode))
+                #[cfg(feature = "runtime-pickup-arcs-preview")]
+                let is_arc = arc_resolution.is_some()
+                    && ["G2", "G3"].iter().any(|c| c.eq_ignore_ascii_case(opcode));
+                #[cfg(feature = "runtime-pickup-arcs-preview")]
+                let is_plane = arc_resolution.is_some()
+                    && ["G17", "G18", "G19"]
+                        .iter()
+                        .any(|c| c.eq_ignore_ascii_case(opcode));
+                #[cfg(feature = "runtime-pickup-arcs-preview")]
+                let arc_allowed = is_arc || is_plane;
+                #[cfg(not(feature = "runtime-pickup-arcs-preview"))]
+                let arc_allowed = false;
+                if !arc_allowed
+                    && ![
+                        "G0",
+                        "G1",
+                        "G90",
+                        "G91",
+                        "G92",
+                        "M82",
+                        "M83",
+                        "M220",
+                        "M221",
+                        "M204",
+                        "SET_VELOCITY_LIMIT",
+                        "SAVE_GCODE_STATE",
+                        "RESTORE_GCODE_STATE",
+                        "SET_GCODE_OFFSET",
+                    ]
+                    .iter()
+                    .any(|code| code.eq_ignore_ascii_case(opcode))
                 {
                     // Slicer display metadata does not schedule any work.
                     if gcode::display::parse(line)?.is_some() {
@@ -689,6 +715,10 @@ fn plan_body(
                 }
                 let lane = usize::from(active);
                 let out = preview.line_with(pure, |previous, movement| {
+                    #[cfg(feature = "runtime-pickup-arcs-preview")]
+                    if is_arc {
+                        arc_budget = arc_budget.checked_sub(1).ok_or(gcode::Error::ArcLimit)?;
+                    }
                     if !inside(&movement.end_position()[..3]) {
                         return Err(gcode::Error::MoveOutsidePreview);
                     }
@@ -700,6 +730,10 @@ fn plan_body(
                         .map_err(|_| gcode::Error::MoveOutsidePreview)
                 })?;
                 append(out.moves, &mut time)?;
+                #[cfg(feature = "runtime-pickup-arcs-preview")]
+                if is_plane {
+                    last_was_wait = was_wait;
+                }
             }
         }
     }
@@ -736,6 +770,8 @@ pub use runtime_shaper::trace_file_debug_runtime_pickup_mesh_bank;
 
 #[cfg(feature = "runtime-pickup-pressure-preview")]
 pub use runtime_shaper::trace_file_debug_runtime_pickup_pressure;
+#[cfg(feature = "runtime-pickup-arcs-preview")]
+pub use runtime_shaper::{trace_file_debug_runtime_pickup_arcs, PickupArcs};
 
 #[cfg(feature = "runtime-pickup-extended-preview")]
 pub use runtime_shaper::{

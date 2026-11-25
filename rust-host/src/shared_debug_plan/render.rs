@@ -193,6 +193,8 @@ pub(super) struct ShapeCaptureSchedule<'a> {
     pub(super) dynamic_pressure: bool,
     #[cfg(feature = "runtime-pickup-extended-preview")]
     pub(super) extended_pickup: bool,
+    #[cfg(feature = "runtime-pickup-arcs-preview")]
+    pub(super) arc_resolution: Option<f64>,
     pub(super) delays: &'a [(usize, f64)],
     pub(super) positions: &'a mut Vec<(usize, usize)>,
     #[cfg(feature = "runtime-pickup-preview")]
@@ -234,6 +236,8 @@ pub(super) fn shaped_plan(
         dynamic_pressure,
         #[cfg(feature = "runtime-pickup-extended-preview")]
         extended_pickup,
+        #[cfg(feature = "runtime-pickup-arcs-preview")]
+        arc_resolution,
         delays,
         positions: output_positions,
         #[cfg(feature = "runtime-pickup-preview")]
@@ -255,6 +259,8 @@ pub(super) fn shaped_plan(
                 dynamic_pressure,
                 #[cfg(feature = "runtime-pickup-extended-preview")]
                 extended_pickup,
+                #[cfg(feature = "runtime-pickup-arcs-preview")]
+                arc_resolution,
                 updates: delays,
                 positions: &mut positions,
                 #[cfg(feature = "runtime-pickup-preview")]

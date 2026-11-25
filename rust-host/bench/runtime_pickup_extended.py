@@ -22,6 +22,7 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("stock", "dictionary", "cli"):
         parser.add_argument(name, type=lambda v: Path(v).resolve())
+    parser.add_argument("--arcs", action="store_true", help="exercise bounded arc support")
     parser.add_argument("--fast-json", action="store_true",
                         help="exercise the optional compact writer; time writers, not workers")
     parser.add_argument("--c-json-shadow", action="store_true",
@@ -88,6 +89,9 @@ def main(argv):
         end = second.index('x_count:',start)
         second = second[:start]+"points:\n    -0.05, 0.05, 0.12\n    0.01, 0.02, 0.09\n    0.08, 0.12, 0.19\n"+second[end:]
         cfgbase = cfg.read_text() + CONFIG0 + "\n"
+        arc_flags = ["--arc-resolution=1"] if args.arcs else []
+        if args.arcs:
+            cfgbase += "\n[gcode_arcs]\nresolution: 1\n"
         explicit = mesh + "\n" + second
         saved_profile = lambda v: "".join(f"#*# {line}\n" for line in v.splitlines())
         saved = head + SAVED + saved_profile(f"[bed_mesh {NAME}]" + tail + "\n" + second)
@@ -122,7 +126,14 @@ def main(argv):
                 script += first + a + second + b
                 expected.extend(((.06,.075),(.085,.025)))
             expected = tuple(expected)
-            script += "G1 X19 Y31 Z1.7 E.72 F830\nM400\n"
+            if args.arcs:
+                script += ("G1 X20 Y20 Z1.5 E.25 F830\n"
+                           "G17\nG3 X25 Y20 I2.5 J0 Z1.55 E.20 F840\n"
+                           "G2 X20 Y20 I-2.5 J0 Z1.50 E.20 F840\n"
+                           "G18\nG3 X22 Z1.50 I1 K0 Y20.10 E.07 F420\n"
+                           "G19\nG3 Y22.10 Z1.50 J1 K0 X22.10 E.07 F420\nG17\nM400\n")
+            else:
+                script += "G1 X19 Y31 Z1.7 E.72 F830\nM400\n"
             # Many short motion lines without changing the published 120s cap.
             script = "\n".join(
                 line.rsplit(" F", 1)[0]+" F2700" if line.startswith("G1 X") else line
@@ -150,22 +161,25 @@ def main(argv):
                 md["max_error_ticks"] = tol
                 m.write_text(json.dumps(md))
                 old = [cli, "--dynamic-pressure", m, g, settings]
-                rust_args = [cli, "--extended-pickup", m, g, settings]
-                parallel_args = [cli, "--extended-pickup-parallel", m, g, settings]
+                rust_args = [cli, "--extended-pickup", *arc_flags, m, g, settings]
+                parallel_args = [cli, "--extended-pickup-parallel", *arc_flags, m, g, settings]
                 data = subprocess.check_output([*rust_args, meshfile, *names], timeout=25)
                 assert subprocess.check_output([*parallel_args, meshfile, *names], timeout=25) == data
-                fast_args = [*rust_args[:2], "--fast-json", *rust_args[2:]]
+                fast_index = 2 + len(arc_flags)
+                fast_args = [*rust_args[:fast_index], "--fast-json", *rust_args[fast_index:]]
                 if args.fast_json:
                     assert subprocess.check_output([*fast_args, meshfile, *names], timeout=25) == data
-                    fast_parallel = [*parallel_args[:2], "--fast-json", *parallel_args[2:]]
+                    fast_parallel = [*parallel_args[:fast_index], "--fast-json", *parallel_args[fast_index:]]
                     assert subprocess.check_output([*fast_parallel, meshfile, *names], timeout=25) == data
                     wrong = subprocess.run([cli, "--fast-json", m, g, settings, meshfile, *names],
                                            capture_output=True, timeout=25)
                     assert wrong.returncode == 2 and not wrong.stdout and b"requires" in wrong.stderr
                 want = [packets for packets, _ in lanes]
-                assert wire_records(data, hz) == want, (label, tol)
+                for lane, (grab, expected_lane) in enumerate(zip(wire_records(data, hz), want, strict=True)):
+                    assert grab == expected_lane, (label, tol, lane, len(grab), len(expected_lane),
+                        next(((i, a, b) for i, (a, b) in enumerate(zip(grab, expected_lane)) if a != b), None))
                 narrow = subprocess.run([*old, meshfile, *names], capture_output=True, timeout=25)
-                if rounds == 4:
+                if rounds == 4 and not args.arcs:
                     assert narrow.returncode == 0 and narrow.stdout == data
                 else:
                     assert narrow.returncode == 2 and not narrow.stdout
@@ -180,8 +194,9 @@ def main(argv):
                     if args.fast_json:
                         assert subprocess.check_output([*fast_args, path, *names], timeout=25) == data
                 cfg.write_text(base + explicit)
-                cap = 512 if rounds == 4 else 1024
-                target = old if rounds == 4 else rust_args
+                narrow_case = rounds == 4 and not args.arcs
+                cap = 512 if narrow_case else 1024
+                target = old if narrow_case else rust_args
                 padded = script + ";\n" * (cap - len(script.splitlines()))
                 g.write_text(padded)
                 assert subprocess.check_output([*target, meshfile, *names], timeout=25) == data
@@ -262,6 +277,33 @@ def main(argv):
                     stock_run = [sys.executable, Path(__file__).resolve(), "--stock-arm",
                                  stock, dictionary, f, m, g]
                     paired([stock_run,[*rust_args,meshfile,*names]],t/"whole.json",data,args.rounds)
+        if args.arcs:
+            circles = START + "G90\nG1 X20 Y20 Z1.5 F1500\n"
+            raw_arc = "G3 X20 Y20 I1 J0 F3600\n"
+            def grouped_arcs(count):
+                body = "".join(raw_arc * min(8, count-i) + PROFILE0 for i in range(0, count, 8))
+                return circles + body + "M400\n"
+            base = [cli, "--extended-pickup", "--arc-resolution=0.25", m, g, settings, meshfile, *names]
+            g.write_text(grouped_arcs(163))
+            assert subprocess.check_output(base, timeout=25)
+            g.write_text(grouped_arcs(164))
+            too_many = subprocess.run(base, capture_output=True, timeout=25)
+            assert too_many.returncode == 2 and not too_many.stdout and b"ArcLimit" in too_many.stderr
+            g.write_text(circles + raw_arc + "M400\n")
+            for command in (
+                [cli, "--extended-pickup", m, g, settings, meshfile, *names],
+                [cli, "--arc-resolution=1", m, g, settings, meshfile, *names],
+                *([cli, "--extended-pickup", "--arc-resolution=" + invalid, m, g, settings, meshfile, *names]
+                  for invalid in ("NaN", ".249", "5.001", "inf")),
+            ):
+                rejected = subprocess.run(command, capture_output=True, timeout=25)
+                assert rejected.returncode == 2 and not rejected.stdout
+            for unsupported in ("G91\nG3 X1 Y1 I1 J0\n", "G2 X24 Y20 R2\n",
+                                "G3 X310 Y20 I145 J0\n", "G18 F70\n"):
+                g.write_text(circles + unsupported + "M400\n")
+                rejected = subprocess.run(base, capture_output=True, timeout=25)
+                assert rejected.returncode == 2 and not rejected.stdout
+            print("Arc distance, resolution, motion mode and cumulative bounds passed", flush=True)
         print("Both pickup bounds and four longer-job stock oracles passed", flush=True)
 
 

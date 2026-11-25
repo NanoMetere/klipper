@@ -2,6 +2,8 @@
 use super::*;
 #[cfg(feature = "runtime-pickup-pressure-preview")]
 use klipper_host_protocol::shared_debug_plan::trace_file_debug_runtime_pickup_pressure;
+#[cfg(feature = "runtime-pickup-arcs-preview")]
+use klipper_host_protocol::shared_debug_plan::{trace_file_debug_runtime_pickup_arcs, PickupArcs};
 #[cfg(feature = "runtime-pickup-extended-preview")]
 use klipper_host_protocol::shared_debug_plan::{
     trace_file_debug_runtime_pickup_extended, trace_file_debug_runtime_pickup_extended_parallel,
@@ -23,6 +25,8 @@ fn run() -> Result<(), String> {
             println!("Use --extended-pickup for the extended offline motion preview (includes dynamic pressure).");
             println!("Use --extended-pickup-parallel for the same preview with optional parallel lanes on long jobs.");
         }
+        #[cfg(feature = "runtime-pickup-arcs-preview")]
+        println!("Add --arc-resolution=MM after an extended pickup flag to opt in to G2/G3 arcs.");
         #[cfg(feature = "runtime-pickup-fast-json")]
         println!(
             "Add --fast-json after an extended option to select equivalent buffered JSON output."
@@ -39,6 +43,22 @@ fn run() -> Result<(), String> {
         Some(opt) if opt == "--extended-pickup" => (true, false, &args[1..]),
         Some(opt) if opt == "--extended-pickup-parallel" => (true, true, &args[1..]),
         _ => (false, false, args),
+    };
+    #[cfg(feature = "runtime-pickup-arcs-preview")]
+    let (arc_resolution, args) = match args
+        .first()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("--arc-resolution="))
+    {
+        Some(raw) if extended_pickup => {
+            let resolution: f64 = raw.parse().map_err(|_| "Invalid arc resolution")?;
+            if !(0.25..=5.).contains(&resolution) {
+                return Err("Arc resolution must be 0.25–5 mm".into());
+            }
+            (Some(resolution), &args[1..])
+        }
+        Some(_) => return Err("--arc-resolution requires an extended pickup option".into()),
+        None => (None, args),
     };
     #[cfg(feature = "runtime-pickup-fast-json")]
     let (fast_json, args) = match args.first() {
@@ -96,6 +116,26 @@ fn run() -> Result<(), String> {
         trace_file_debug_runtime_pickup_extended
     } else {
         trace
+    };
+    #[cfg(feature = "runtime-pickup-arcs-preview")]
+    let trace = |script: &str, start, options, geometries, wire, fixed, bank| {
+        if let Some(resolution_mm) = arc_resolution {
+            trace_file_debug_runtime_pickup_arcs(
+                script,
+                start,
+                options,
+                geometries,
+                wire,
+                fixed,
+                bank,
+                PickupArcs {
+                    resolution_mm,
+                    parallel,
+                },
+            )
+        } else {
+            trace(script, start, options, geometries, wire, fixed, bank)
+        }
     };
     let t = trace(
         &script,

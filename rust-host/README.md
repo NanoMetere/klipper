@@ -2467,3 +2467,20 @@ against a frozen prior build. `--c-json-shadow` separately enables a
 benchmark-only C comparison of formatted and buffered records after loading
 the same validated input. Its timing covers the JSON writer, not motion
 planning or validation.
+
+
+Build with `runtime-pickup-arcs-preview` and place `--arc-resolution=1`
+after either extended pickup flag (before optional `--fast-json`) to opt
+in to G2/G3 arc expansion in the offline mesh-bank preview. The allowed
+resolution is 0.25–5 mm. This uses the existing arc expander for G17,
+G18 and G19, including helical motion with extrusion. XYZ coordinates
+must be absolute; use I/J/K center offsets, not R. Arc-generated
+physical moves, including mesh splits, have a separate cumulative 4,096
+limit. The existing trajectory, generation, file and virtual time limits
+still apply independently. All prior modes keep their original input rules.
+
+The `runtime_pickup_extended.py --arcs` fixture checks the four predicted
+lanes against pinned stock and its C replay at 0 and 25 µs. It combines
+arc commands with shared-extruder tool transitions, shape changes,
+dynamic pressure and mesh switching. It is not a real-print or plugin
+compatibility test.

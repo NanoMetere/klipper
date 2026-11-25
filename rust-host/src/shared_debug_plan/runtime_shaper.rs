@@ -159,6 +159,8 @@ macro_rules! trace_runtime {
                 dynamic_pressure: false,
                 #[cfg(feature = "runtime-pickup-extended-preview")]
                 extended_pickup: false,
+                #[cfg(feature = "runtime-pickup-arcs-preview")]
+                arc_resolution: None,
                 delays: &delays,
                 positions: &mut positions,
                 #[cfg(feature = "runtime-pickup-preview")]
@@ -261,6 +263,8 @@ pub(super) fn prepare_runtime(
             dynamic_pressure: false,
             #[cfg(feature = "runtime-pickup-extended-preview")]
             extended_pickup: false,
+            #[cfg(feature = "runtime-pickup-arcs-preview")]
+            arc_resolution: None,
             delays: &delays,
             positions: &mut positions,
             #[cfg(feature = "runtime-pickup-preview")]
@@ -316,6 +320,8 @@ pub fn trace_file_debug_runtime_pickup(
             dynamic_pressure: false,
             #[cfg(feature = "runtime-pickup-extended-preview")]
             extended_pickup: false,
+            #[cfg(feature = "runtime-pickup-arcs-preview")]
+            arc_resolution: None,
             delays: &delays,
             positions: &mut positions,
             pressure: Some(&mut pressure),
@@ -379,6 +385,8 @@ pub fn trace_file_debug_runtime_pickup_mesh(
         false,
         #[cfg(feature = "runtime-pickup-extended-preview")]
         (false, false),
+        #[cfg(feature = "runtime-pickup-arcs-preview")]
+        None,
     )
 }
 
@@ -406,6 +414,8 @@ pub fn trace_file_debug_runtime_pickup_mesh_bank(
         false,
         #[cfg(feature = "runtime-pickup-extended-preview")]
         (false, false),
+        #[cfg(feature = "runtime-pickup-arcs-preview")]
+        None,
     )
 }
 
@@ -432,6 +442,8 @@ pub fn trace_file_debug_runtime_pickup_pressure(
         true,
         #[cfg(feature = "runtime-pickup-extended-preview")]
         (false, false),
+        #[cfg(feature = "runtime-pickup-arcs-preview")]
+        None,
     )
 }
 
@@ -457,6 +469,8 @@ pub fn trace_file_debug_runtime_pickup_extended(
         Some(bank),
         true,
         (true, false),
+        #[cfg(feature = "runtime-pickup-arcs-preview")]
+        None,
     )
 }
 
@@ -485,6 +499,43 @@ pub fn trace_file_debug_runtime_pickup_extended_parallel(
         Some(bank),
         true,
         (true, true),
+        #[cfg(feature = "runtime-pickup-arcs-preview")]
+        None,
+    )
+}
+
+/// Opt-in bounded arc configuration for the extended pickup preview.
+#[cfg(feature = "runtime-pickup-arcs-preview")]
+pub struct PickupArcs {
+    pub resolution_mm: f64,
+    pub parallel: bool,
+}
+
+/// Reuse the existing stock-derived arc expansion in a bounded pickup trace.
+#[cfg(feature = "runtime-pickup-arcs-preview")]
+#[allow(clippy::too_many_arguments)]
+pub fn trace_file_debug_runtime_pickup_arcs(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    initial: &config::Config,
+    bank: &crate::bed_mesh::profile_bank::Bank,
+    arcs: PickupArcs,
+) -> Result<MotionTrace, TraceError> {
+    trace_pickup_with_mesh(
+        file,
+        start,
+        options,
+        geometries,
+        wire,
+        initial,
+        None,
+        Some(bank),
+        true,
+        (true, arcs.parallel),
+        Some(arcs.resolution_mm),
     )
 }
 
@@ -507,6 +558,7 @@ fn trace_pickup_with_mesh(
     >,
     #[cfg(feature = "runtime-pickup-pressure-preview")] dynamic_pressure: bool,
     #[cfg(feature = "runtime-pickup-extended-preview")] (extended_pickup, parallel): (bool, bool),
+    #[cfg(feature = "runtime-pickup-arcs-preview")] arc_resolution: Option<f64>,
 ) -> Result<MotionTrace, TraceError> {
     let shaper = Shaper::from_file_debug_config(initial).map_err(|_| TraceError::Options)?;
     let (_, body) = file.split_once('\n').ok_or(TraceError::Options)?;
@@ -536,6 +588,8 @@ fn trace_pickup_with_mesh(
             dynamic_pressure,
             #[cfg(feature = "runtime-pickup-extended-preview")]
             extended_pickup,
+            #[cfg(feature = "runtime-pickup-arcs-preview")]
+            arc_resolution,
             delays: &delays,
             positions: &mut positions,
             pressure: Some(&mut pressure),
