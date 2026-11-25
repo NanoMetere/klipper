@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import statistics
 import subprocess
@@ -29,9 +30,15 @@ def stock(endpoint, count, width):
     result = {}
     failure = []
 
+    def retransmitted_bytes():
+        match = re.search(r"\bbytes_retransmit=(\d+)\b", serial.stats(reactor.monotonic()))
+        assert match is not None
+        return int(match[1])
+
     def execute(_):
         try:
             serial.connect_pipe(endpoint)
+            before = retransmitted_bytes()
             wave = None
             reference = None
             durations = []
@@ -65,7 +72,8 @@ def stock(endpoint, count, width):
                 if reference is not None and blob != reference:
                     raise ValueError("stock reply contents changed between waves")
                 reference = blob
-            result.update(wave_ns=durations, reference=base64.b64encode(reference).decode())
+            result.update(wave_ns=durations, reference=base64.b64encode(reference).decode(),
+                          retransmitted_bytes=retransmitted_bytes() - before)
         except Exception as exc:
             failure.append(exc)
         finally:
@@ -110,19 +118,24 @@ def fault_relay(mcu, fault):
     master, client = pty.openpty()
     tty.setraw(client)
     stop = threading.Event()
-    dropped = []
+    altered = []
     failure = []
+
+    def write_all(dst, data):
+        while data:
+            data = data[os.write(dst, data):]
 
     def relay():
         buffer = bytearray()
-        scan = master if fault == "drop-frame" else mcu
+        outbound = fault in ("drop-frame", "crc-frame")
+        scan = master if outbound else mcu
         try:
             while not stop.is_set():
                 ready, _, _ = select.select([master, mcu], [], [], 0.010)
                 for src in ready:
                     data = os.read(src, 4096)
                     dst = mcu if src == master else master
-                    if src == scan and not dropped:
+                    if src == scan and not altered:
                         buffer.extend(data)
                         data = bytearray()
                         while buffer and len(buffer) >= buffer[0]:
@@ -133,17 +146,27 @@ def fault_relay(mcu, fault):
                             del buffer[:length]
                             payload = frame[2:-3]
                             match = (len(payload) > 2 and payload[0] == 1 and payload[-1] == CHUNK
-                                     if fault == "drop-frame"
+                                     if outbound
                                      else len(payload) > CHUNK and payload[0] == 0
                                      and payload[-CHUNK - 1] == CHUNK)
                             if match:
-                                dropped.append(frame)
+                                altered.append(frame)
+                                if fault == "crc-frame":
+                                    # Do not change the length, sequence, payload, or sync.
+                                    # Send the first two bytes separately, like a partial read.
+                                    broken = bytearray(frame)
+                                    bit = 1 if broken[-3] ^ 1 != 0x7e else 2
+                                    broken[-3] ^= bit
+                                    write_all(dst, data)
+                                    data.clear()
+                                    write_all(dst, broken[:2])
+                                    time.sleep(0.001)
+                                    write_all(dst, broken[2:])
                                 data.extend(buffer)
                                 buffer.clear()
                                 break
                             data.extend(frame)
-                    while data:
-                        data = data[os.write(dst, data):]
+                    write_all(dst, data)
         except (OSError, ValueError) as exc:
             failure.append(exc)
 
@@ -156,8 +179,8 @@ def fault_relay(mcu, fault):
         thread.join(timeout=1)
         os.close(master)
         os.close(client)
-        if thread.is_alive() or failure or len(dropped) != 1:
-            raise RuntimeError((thread.is_alive(), failure, len(dropped)))
+        if thread.is_alive() or failure or len(altered) != 1:
+            raise RuntimeError((thread.is_alive(), failure, len(altered)))
 
 
 def rust_result(run):
@@ -174,9 +197,18 @@ def fresh(args, kind, count, fault=None):
         if kind == "stock":
             env = os.environ.copy()
             env["PYTHONPATH"] = str(args.upstream / "klippy") + os.pathsep + env.get("PYTHONPATH", "")
-            out = subprocess.check_output([sys.executable, __file__, "--stock", str(endpoint),
-                                           str(count), str(args.width)], env=env, text=True, timeout=30)
-            return json.loads(out)
+
+            def run_stock(path):
+                out = subprocess.check_output([sys.executable, __file__, "--stock", str(path),
+                                               str(count), str(args.width)], env=env,
+                                              text=True, timeout=30)
+                return json.loads(out)
+
+            if fault is None:
+                return run_stock(endpoint)
+            with endpoint.open("r+b", buffering=0) as stream:
+                with fault_relay(stream.fileno(), fault) as client:
+                    return run_stock(os.ttyname(client))
 
         argv = [args.binary, "--pipeline", str(count), str(args.width)]
 
@@ -214,6 +246,14 @@ def main():
     assert first["reference"] == golden and first["peak"] > 1, first
     retry = fresh(args, "rust", args.width, "drop-frame")
     assert retry["reference"] == golden and 1 <= retry["retries"] <= 3, retry
+    # Crossing 4-bit sequence wrap exposes dropped or duplicate replies.
+    fault_count = 32 * args.width
+    crc_stock = fresh(args, "stock", fault_count, "crc-frame")
+    crc_rust = fresh(args, "rust", fault_count, "crc-frame")
+    assert crc_stock["reference"] == crc_rust["reference"] == golden
+    assert len(crc_stock["wave_ns"]) == len(crc_rust["wave_ns"]) == 32
+    assert crc_stock["retransmitted_bytes"] >= 5, crc_stock
+    assert 1 <= crc_rust["retries"] <= 3, crc_rust
     fresh(args, "rust", args.width, "drop-reply")
     for i in range(args.rounds):
         for kind in tuple(groups)[::(-1 if i % 2 else 1)]:
@@ -231,6 +271,9 @@ def main():
     print(f"Rust max flight {first['peak']} frames in {first['frames']} frames/wave; "
           f"drop-frame recovered with {retry['retries']} retry writes; "
           "drop-reply failed closed at deadline")
+    print(f"CRC-corrupted fragmented outbound frame: stock and Rust recovered "
+          f"{fault_count} exact replies each; stock replayed "
+          f"{crc_stock['retransmitted_bytes']} bytes, Rust retried {crc_rust['retries']} time(s)")
     if args.json:
         args.json.write_text(json.dumps(dict(width=args.width, clean=groups, dropped_frame=retry)) + "\n")
 

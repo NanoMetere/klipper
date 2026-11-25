@@ -148,6 +148,26 @@ but whole-process elapsed increased by 0.90–2.65% in C and 0.25–1.89%
 in Rust. Neither implementation was adopted. These are measured
 software workloads, not printer benchmarks.
 
+The C and Rust iterative step solvers were also prototyped with the same
+residual-cache transformation: reuse both secant distances while the
+target is unchanged and recompute from the original positions immediately
+on a direction change or confirmed crossing. Original and modified C,
+and modified Rust, matched 34,805 crossings, 64,048 commit markers, and
+5,000 reported positions. The stock C comparison used only a shadow
+helper loaded into pinned Klippy; both versions drained actual debug
+file output. The Rust comparison was between full release CLIs and
+included byte-identical JSON output.
+
+| Candidate vs its original | Layered elapsed | Shaped extrusion elapsed |
+| --- | ---: | ---: |
+| Shadow C, 24 pairs per repeat | −0.42% / −1.23% | −3.01% / −4.38% |
+| Rust CLI, 80 pairs per repeat | −0.17% / +0.66% | −0.02% / −0.58% |
+
+Each repeat kept both arms on one CPU and alternated order. The C
+workloads matched 60,340 and 74,811 timed records; the Rust workloads
+matched 14,935 and 16,576. The modest, fixture-dependent changes did not
+justify changing either solver. No live performance claim follows.
+
 ## Verified scope
 
 - Configuration and motion: bounded Cartesians/CoreXY, stock move
@@ -192,8 +212,13 @@ software workloads, not printer benchmarks.
   candidate, not a merged upstream release.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
-  fault injection, including two independent peers. No SocketCAN or
-  real printer sessions are used.
+  fault injection, including two independent peers. A fragmented
+  outbound identify frame with a flipped CRC bit triggered replay in
+  both the pinned stock C-backed host and Rust on separate disposable
+  Linux MCU PTYs. Each host then matched all 4,096 and 1,024 read-only
+  replies at two wave widths, including sequence wraps. A dropped
+  application reply still fails closed even after every frame was
+  acknowledged. No SocketCAN or real printer sessions are used.
 - Slicer display metadata: bounded `M73`, `M117` and `SET_DISPLAY_TEXT`
   are inert in motion previews. The read-only display fixture matches the pinned
   stock progress and message behavior without a real display or UI.
