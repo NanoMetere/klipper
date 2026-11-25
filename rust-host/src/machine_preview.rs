@@ -51,6 +51,12 @@ pub enum Error {
     Clock(step_clock::Error),
 }
 
+impl From<step_times::Error> for Error {
+    fn from(error: step_times::Error) -> Self {
+        Self::Solver(error)
+    }
+}
+
 pub struct Machine {
     motor_axis: [Axis; 3],
     motor_step: [f64; 3],
@@ -863,11 +869,14 @@ impl Machine {
                     .as_ref()
                     .filter(|s| s.is_enabled_for(axis))
                 {
-                    let events = shaper
-                        .crossings(xyz, axis, self.motor_step[i], start)
-                        .map_err(Error::Solver)?;
-                    step_clock::encode_trace(clock, &events, max_error, invert[i])
-                        .map_err(Error::Clock)
+                    step_lane_shaped(
+                        shaper,
+                        xyz,
+                        axis,
+                        self.motor_step[i],
+                        start,
+                        (clock, max_error, invert[i]),
+                    )
                 } else {
                     step_lane(
                         xyz,
@@ -887,11 +896,14 @@ impl Machine {
                 .and_then(Option::as_ref)
                 .or(tool.pressure_advance)
             {
-                let events = advance
-                    .crossings(queue, tool.step_distance)
-                    .map_err(Error::Solver)?;
-                step_clock::encode_trace(clock, &events, max_error, tool.inverse_direction)
-                    .map_err(Error::Clock)
+                step_lane_advance(
+                    advance,
+                    queue,
+                    tool.step_distance,
+                    clock,
+                    max_error,
+                    tool.inverse_direction,
+                )
             } else {
                 step_lane(
                     queue,
@@ -1079,10 +1091,7 @@ impl Machine {
                 .as_ref()
                 .filter(|s| s.is_enabled_for(axis))
             {
-                let events = shaper
-                    .crossings(&queue, axis, dist, start)
-                    .map_err(Error::Solver)?;
-                step_clock::encode_trace(clock, &events, max_error, inv).map_err(Error::Clock)?
+                step_lane_shaped(shaper, &queue, axis, dist, start, (clock, max_error, inv))?
             } else {
                 step_lane(&queue, axis, dist, start, clock, max_error, inv)?
             };
@@ -1090,11 +1099,14 @@ impl Machine {
         let extruder = match (e_queue, extruder) {
             (Some(queue), Some(e)) => Some(
                 if let Some(advance) = runtime_advance.as_ref().or(e.pressure_advance) {
-                    let raw = advance
-                        .crossings(&queue, e.step_distance)
-                        .map_err(Error::Solver)?;
-                    step_clock::encode_trace(clock, &raw, max_error, e.inverse_direction)
-                        .map_err(Error::Clock)?
+                    step_lane_advance(
+                        advance,
+                        &queue,
+                        e.step_distance,
+                        clock,
+                        max_error,
+                        e.inverse_direction,
+                    )?
                 } else {
                     step_lane(
                         &queue,
@@ -1185,16 +1197,60 @@ fn step_lane(
 ) -> Result<Vec<Command>, Error> {
     let mut solver = Solver::new(axis, distance, start).map_err(Error::Solver)?;
     let mut events: Vec<Event> = Vec::new();
+    let mut encoder = step_clock::TraceEncoder::new(clock, max_error, invert);
+    let mut room = MAX_EVENTS;
     for seg in queue.segments().iter().filter(|s| s.direction != [0.0; 3]) {
-        let room = MAX_EVENTS
-            .checked_sub(events.len())
-            .filter(|n| *n > 0)
-            .ok_or(Error::Solver(step_times::Error::EventLimit))?;
+        if room == 0 {
+            return Err(Error::Solver(step_times::Error::EventLimit));
+        }
         solver
             .crossing_events_into(seg, seg.at..seg.end(), room, &mut events)
             .map_err(Error::Solver)?;
+        room -= events.len();
+        encoder.push(&events).map_err(Error::Clock)?;
+        events.clear();
     }
-    step_clock::encode_trace(clock, &events, max_error, invert).map_err(Error::Clock)
+    encoder.finish().map_err(Error::Clock)
+}
+
+fn encode_batch(
+    encoder: &mut step_clock::TraceEncoder,
+    events: &mut Vec<Event>,
+) -> Result<(), Error> {
+    encoder.push(events).map_err(Error::Clock)?;
+    events.clear();
+    Ok(())
+}
+
+fn step_lane_shaped(
+    shaper: &Shaper,
+    queue: &Trajectory,
+    axis: Axis,
+    distance: f64,
+    start: [f64; 3],
+    (clock, max_error, invert): (Clock, u32, bool),
+) -> Result<Vec<Command>, Error> {
+    let mut encoder = step_clock::TraceEncoder::new(clock, max_error, invert);
+    shaper.crossing_batches(queue, axis, distance, start, |batch| {
+        encode_batch(&mut encoder, batch)
+    })?;
+    encoder.finish().map_err(Error::Clock)
+}
+
+fn step_lane_advance(
+    advance: &Advance,
+    queue: &Trajectory,
+    distance: f64,
+    clock: Clock,
+    max_error: u32,
+    invert: bool,
+) -> Result<Vec<Command>, Error> {
+    let mut encoder = step_clock::TraceEncoder::new(clock, max_error, invert);
+    let initial = queue.segments().first().map_or(0., |s| s.position[0]);
+    advance.crossing_batches_from(queue, distance, initial, |batch| {
+        encode_batch(&mut encoder, batch)
+    })?;
+    encoder.finish().map_err(Error::Clock)
 }
 
 fn append_move(queue: &mut Trajectory, at: &mut f64, m: &Profile) -> Result<(), trajectory::Error> {

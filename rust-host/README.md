@@ -379,6 +379,39 @@ messages, the second fixture matched all 6,593 direction commands and
 half-tick rounding, and rollbacks at the reversal boundary. Nothing
 was sent to a device.
 
+The offline motion preview now reuses a raw-event buffer for each solved
+phase instead of retaining all crossings until a lane is finished. The
+clock encoder carries the pending reversal, epoch, and same-direction
+compression run across phase boundaries; handing it a batch does not
+flush the queue. The preview still limits a lane to 65,535 raw crossing
+and commit events, keeps its existing clock horizon, and does not gain
+long-job or live transport support from this change. The stock C code
+already accepts events incrementally and is unchanged. The position,
+reversal and compression algorithms are unchanged.
+
+In two 60-pair runs on separate pinned CPUs, compared with the prior Rust
+preview, elapsed time including JSON output decreased 5.0% on the
+2,500-move XYZ fixture, 5.1–6.5% on a 220-move layered fixture,
+2.9–4.6% on a 420-move shaped extrusion fixture, and 1.6–2.4% on the
+2,500-move sparse-tool fixture with one worker. Complete JSON (16,379,
+14,935, 16,576 and 21,683 step records respectively) was byte-identical.
+In nine independent process launches per arm from a minimal native
+runner, median peak RSS decreased from 2,708 to 2,280 KiB on the layered
+fixture and from 3,328 to 2,536 KiB on the shaped extrusion fixture.
+These comparisons are against the prior Rust preview, not measurements
+of printing speed or a Rust-versus-C runtime comparison.
+
+To time the full offline preview before and after this change with
+matching JSON output:
+
+```sh
+python3 bench/preview_cli_timing.py /path/to/prior /path/to/current --moves 2500
+python3 bench/preview_cli_timing.py /path/to/prior /path/to/current --profile layered --moves 220
+python3 bench/preview_cli_timing.py /path/to/prior /path/to/current --profile shaped-extrusion --moves 420
+python3 bench/preview_cli_timing.py /path/to/prior /path/to/current --moves 2500 --tools \
+  --baseline-workers 1 --candidate-workers 1
+```
+
 ## Offline configuration resolution
 
 `config::parse` reads only a caller-supplied map of relative file names and

@@ -12,6 +12,7 @@ import tempfile
 import time
 
 from planner import ROOT
+from hybrid_process_timing import CFG, SHAPED_EXTRUSION_CFG, gcode as debug_gcode
 
 
 def gcode(count, tools):
@@ -38,11 +39,18 @@ def main():
     p.add_argument("--rounds", type=int, default=30)
     p.add_argument("--moves", type=int, default=1500)
     p.add_argument("--tools", action="store_true")
+    p.add_argument("--profile", choices=("standard", "layered", "shaped-extrusion"),
+                   default="standard", help="optional bounded shaped/PA workload")
     p.add_argument("--candidate-workers", type=int, help="pass this worker count only to the candidate")
     p.add_argument("--baseline-workers", type=int, help="pass this worker count only to the baseline")
     a = p.parse_args()
-    if not 1 <= a.rounds <= 200 or not 500 <= a.moves <= 3200:
-        p.error("--rounds must be 1–200 and --moves must be 500–3,200")
+    if not 1 <= a.rounds <= 200:
+        p.error("--rounds must be 1–200")
+    if a.profile == "standard":
+        if not 500 <= a.moves <= 3200:
+            p.error("standard profile needs 500–3,200 moves")
+    elif a.tools or not 20 <= a.moves <= (220 if a.profile == "layered" else 420):
+        p.error("layered/shaped requires no --tools and 20–220/20–420 moves (raw-event bound)")
     for name, count in (("--candidate-workers", a.candidate_workers),
                         ("--baseline-workers", a.baseline_workers)):
         if count is not None and (not a.tools or not 1 <= count <= 8):
@@ -52,11 +60,20 @@ def main():
     observations = {name: [] for name in programs}
     with tempfile.TemporaryDirectory(prefix="preview-cli-timing-") as d:
         script = Path(d) / "path.gcode"
-        script.write_text("\n".join(gcode(a.moves, a.tools)) + "\n")
-        flags = ["--tool-temps", "0:210,2:210,6:210"] if a.tools else []
-        config = "sparse-tool.cfg" if a.tools else "printer.cfg"
-        includes = ["printer.cfg"] if a.tools else []
-        args = [*flags, cfg, config, script, "20000000",  "10", "10", ".3", "rails.cfg", *includes]
+        if a.profile == "standard":
+            script.write_text("\n".join(gcode(a.moves, a.tools)) + "\n")
+            flags = ["--tool-temps", "0:210,2:210,6:210"] if a.tools else []
+            config = "sparse-tool.cfg" if a.tools else "printer.cfg"
+            includes = ["printer.cfg"] if a.tools else []
+            args = [*flags, cfg, config, script, "20000000", "10", "10", ".3", "rails.cfg", *includes]
+        else:
+            fixture = Path(d)
+            (fixture / "printer.cfg").write_text(CFG + SHAPED_EXTRUSION_CFG)
+            lines = iter(debug_gcode(a.moves, a.profile, 0))
+            next(lines)  # use the preview's fixed X/Y/Z start instead of force_move
+            script.write_text("\n".join(lines) + "\n")
+            args = ["--tool-temps", "0:210", "--fixed-pressure-script", fixture,
+                    "printer.cfg", script, "20000000", "10", "10", "1"]
         digest = None
         for r in range(a.rounds + 1):
             for label in tuple(programs)[::(1 if r % 2 == 0 else -1)]:

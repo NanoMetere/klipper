@@ -119,101 +119,129 @@ pub enum Command {
     Steps(Block),
 }
 
+/// Stateful offline encoder. A pushed batch is not a flush boundary:
+/// pending reversal, same-direction run and clock epoch survive between batches.
+/// On any error the private encoder must be discarded.
+pub(crate) struct TraceEncoder {
+    clock: Clock,
+    max_error: u32,
+    invert: bool,
+    filter: Filter,
+    output: Vec<Command>,
+    run: Vec<u64>,
+    direction: Option<bool>,
+    epoch: Option<f64>,
+    count: usize,
+}
+
+impl TraceEncoder {
+    pub(crate) fn new(clock: Clock, max_error: u32, invert: bool) -> Self {
+        Self {
+            clock,
+            max_error,
+            invert,
+            filter: Filter::default(),
+            output: Vec::new(),
+            run: Vec::new(),
+            direction: None,
+            epoch: None,
+            count: 0,
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), Error> {
+        if !self.run.is_empty() {
+            compress_each(
+                self.clock.last_encoded,
+                &self.run,
+                self.max_error,
+                |block| {
+                    self.clock.last_encoded = block.last_clock;
+                    self.output.push(Command::Steps(block));
+                },
+            )
+            .map_err(Error::Compress)?;
+            self.run.clear();
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self, step: Step) -> Result<(), Error> {
+        if self.direction != Some(step.positive) {
+            if !self.run.is_empty() {
+                self.flush()?;
+                self.epoch = None;
+            }
+            self.output
+                .push(Command::SetDirection(step.positive ^ self.invert));
+            self.direction = Some(step.positive);
+        }
+        self.run.push(step.clock);
+        Ok(())
+    }
+
+    pub(crate) fn push(&mut self, events: &[Event]) -> Result<(), Error> {
+        if events.len() > MAX_EVENTS - self.count {
+            return Err(Error::Capacity);
+        }
+        self.count += events.len();
+        for event in events {
+            let send = match *event {
+                Event::Commit => self.filter.commit(),
+                Event::Crossing {
+                    direction_positive,
+                    segment_time,
+                    offset,
+                } => {
+                    // Recompute only after compression changes the epoch and
+                    // validate lazily (no crossing consumes no clock).
+                    let last_time = match self.epoch {
+                        Some(time) => time,
+                        None => {
+                            let time = self.clock.epoch()?;
+                            self.epoch = Some(time);
+                            time
+                        }
+                    };
+                    self.filter.append(
+                        Step {
+                            clock: self
+                                .clock
+                                .tick_from_epoch(last_time, segment_time, offset)?,
+                            positive: direction_positive,
+                        },
+                        self.clock.hz,
+                    )?
+                }
+            };
+            if let Some(step) = send {
+                self.commit(step)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> Result<Vec<Command>, Error> {
+        if let Some(step) = self.filter.commit() {
+            self.commit(step)?;
+        }
+        self.flush()?;
+        Ok(self.output)
+    }
+}
+
 /// Encode a short, bounded raw-event trace. Committing a direction change
 /// emits the preceding run and rebases the clock just like stock. This API
 /// has no incremental scheduler, far-future path, or queue-flush deadlines.
 pub fn encode_trace(
-    mut clock: Clock,
+    clock: Clock,
     events: &[Event],
     max_error: u32,
     invert: bool,
 ) -> Result<Vec<Command>, Error> {
-    if events.len() > MAX_EVENTS {
-        return Err(Error::Capacity);
-    }
-    let mut filter = Filter::default();
-    let mut output = Vec::new();
-    let mut run = Vec::new();
-    let mut direction = None;
-    let flush = |clock: &mut Clock, output: &mut Vec<Command>, run: &mut Vec<u64>| {
-        if !run.is_empty() {
-            compress_each(clock.last_encoded, run, max_error, |block| {
-                clock.last_encoded = block.last_clock;
-                output.push(Command::Steps(block));
-            })
-            .map_err(Error::Compress)?;
-            run.clear();
-        }
-        Ok(())
-    };
-    let commit = |s: Step,
-                  clock: &mut Clock,
-                  output: &mut Vec<Command>,
-                  run: &mut Vec<u64>,
-                  direction: &mut Option<bool>,
-                  epoch: &mut Option<f64>| {
-        if *direction != Some(s.positive) {
-            if !run.is_empty() {
-                flush(clock, output, run)?;
-                *epoch = None;
-            }
-            output.push(Command::SetDirection(s.positive ^ invert));
-            *direction = Some(s.positive);
-        }
-        run.push(s.clock);
-        Ok(())
-    };
-    // Recompute only after compression releases a run and rebases the clock.
-    // Validate lazily: an empty (or commit-only) input consumes no clock.
-    let mut epoch = None;
-    for e in events {
-        let send = match *e {
-            Event::Commit => filter.commit(),
-            Event::Crossing {
-                direction_positive,
-                segment_time,
-                offset,
-            } => {
-                let last_time = match epoch {
-                    Some(time) => time,
-                    None => {
-                        let time = clock.epoch()?;
-                        epoch = Some(time);
-                        time
-                    }
-                };
-                filter.append(
-                    Step {
-                        clock: clock.tick_from_epoch(last_time, segment_time, offset)?,
-                        positive: direction_positive,
-                    },
-                    clock.hz,
-                )?
-            }
-        };
-        if let Some(step) = send {
-            commit(
-                step,
-                &mut clock,
-                &mut output,
-                &mut run,
-                &mut direction,
-                &mut epoch,
-            )?;
-        }
-    }
-    if let Some(step) = filter.commit() {
-        commit(
-            step,
-            &mut clock,
-            &mut output,
-            &mut run,
-            &mut direction,
-            &mut epoch,
-        )?;
-    }
-    flush(&mut clock, &mut output, &mut run)?;
-    Ok(output)
+    let mut encoder = TraceEncoder::new(clock, max_error, invert);
+    encoder.push(events)?;
+    encoder.finish()
 }
 
 #[cfg(test)]
@@ -225,6 +253,49 @@ mod tests {
             direction_positive: positive,
             segment_time: 0.,
             offset: f64::from(tick) / 1_000_000.,
+        }
+    }
+
+    #[test]
+    fn batch_boundaries_preserve_rebases_and_total_capacity() {
+        for base in [0, (1_u64 << 32) - 100, (1_u64 << 36) + 13] {
+            let hz = 1_000_000.0;
+            let origin = 471.625;
+            let clock = Clock {
+                last_encoded: base,
+                time_origin: origin,
+                hz,
+            };
+            let crossing = |offset, direction_positive| Event::Crossing {
+                direction_positive,
+                segment_time: origin + (base as f64 / hz),
+                offset,
+            };
+            let events = [
+                crossing(0.001, true),
+                crossing(0.0013, true),
+                Event::Commit,
+                crossing(0.0037, false),
+                crossing(0.0049, false),
+                Event::Commit,
+                crossing(0.0067, true),
+            ];
+            let expected = encode_trace(clock, &events, 20, true).unwrap();
+            assert!(expected
+                .iter()
+                .any(|c| matches!(c, Command::Steps(b) if b.last_clock == base + 6_700)));
+            for n in 1..=events.len() {
+                let mut encoder = TraceEncoder::new(clock, 20, true);
+                for part in events.chunks(n) {
+                    encoder.push(part).unwrap();
+                    encoder.push(&[]).unwrap();
+                }
+                assert_eq!(encoder.finish().unwrap(), expected);
+            }
+            let mut encoder = TraceEncoder::new(clock, 0, false);
+            let hints = vec![Event::Commit; MAX_EVENTS];
+            encoder.push(&hints[..MAX_EVENTS - 1]).unwrap();
+            assert_eq!(encoder.push(&hints[..2]), Err(Error::Capacity));
         }
     }
 
@@ -245,6 +316,12 @@ mod tests {
             step(3_750, true),
         ]; // threshold equal, no cancel
         let output = encode_trace(clock, &events, 0, false).unwrap();
+        for k in 0..=events.len() {
+            let mut encoder = TraceEncoder::new(clock, 0, false);
+            encoder.push(&events[..k]).unwrap();
+            encoder.push(&events[k..]).unwrap();
+            assert_eq!(encoder.finish(), Ok(output.clone()));
+        }
         let directions: Vec<_> = output
             .iter()
             .filter_map(|cmd| match *cmd {

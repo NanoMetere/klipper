@@ -251,22 +251,38 @@ impl Shaper {
         distance: f64,
         start: [f64; 3],
     ) -> Result<Vec<Event>, step_times::Error> {
+        self.crossing_batches(timeline, lane, distance, start, |_| Ok(()))
+    }
+
+    // The visitor may leave the collected events in place or consume and
+    // clear them. The cumulative work limit is independent of either choice.
+    pub(crate) fn crossing_batches<E: From<step_times::Error>>(
+        &self,
+        timeline: &Trajectory,
+        lane: Axis,
+        distance: f64,
+        start: [f64; 3],
+        mut visit: impl FnMut(&mut Vec<Event>) -> Result<(), E>,
+    ) -> Result<Vec<Event>, E> {
         let Some(phases) = Phases::new(timeline) else {
             return Ok(Vec::new());
         };
         let (pre, post) = self.window(lane);
         let mut solver = Solver::new(lane, distance, start)?;
         let mut events = Vec::new();
-        let mut solve = |i: isize, lo: f64, hi: f64| -> Result<(), step_times::Error> {
-            let cap = MAX_EVENTS
-                .checked_sub(events.len())
-                .filter(|n| *n > 0)
-                .ok_or(step_times::Error::EventLimit)?;
-            let seg = phases.pick(i);
-            solver.solve_range_into(seg, lo..hi, cap, &mut events, |local| {
+        let mut remaining = MAX_EVENTS;
+        let mut solve = |i: isize, lo: f64, hi: f64| -> Result<(), E> {
+            if remaining == 0 {
+                return Err(step_times::Error::EventLimit.into());
+            }
+            let segment = phases.pick(i);
+            let before = events.len();
+            solver.solve_range_into(segment, lo..hi, remaining, &mut events, |local| {
                 self.sample_relative(&phases, lane, i, local)
                     .map_err(|_| step_times::Error::Invalid)
-            })
+            })?;
+            remaining -= events.len() - before;
+            visit(&mut events)
         };
         let mut force_until = post;
         let mut skipped = 0;

@@ -276,6 +276,18 @@ impl Advance {
         distance: f64,
         initial: f64,
     ) -> Result<Vec<Event>, step_times::Error> {
+        self.crossing_batches_from(timeline, distance, initial, |_| Ok(()))
+    }
+
+    // The visitor may leave the collected events in place or consume and
+    // clear them. The cumulative work limit is independent of either choice.
+    pub(crate) fn crossing_batches_from<E: From<step_times::Error>>(
+        &self,
+        timeline: &Trajectory,
+        distance: f64,
+        initial: f64,
+        mut visit: impl FnMut(&mut Vec<Event>) -> Result<(), E>,
+    ) -> Result<Vec<Event>, E> {
         let segs = timeline.segments();
         let Some((first, last)) = segs.first().zip(segs.last()) else {
             return Ok(Vec::new());
@@ -292,16 +304,19 @@ impl Advance {
             )
         };
         let mut out = Vec::new();
-        let mut solve = |idx: usize, start: f64, end: f64| -> Result<(), step_times::Error> {
-            let room = 65_535_usize
-                .checked_sub(out.len())
-                .filter(|n| *n > 0)
-                .ok_or(step_times::Error::EventLimit)?;
+        let mut remaining = 65_535_usize;
+        let mut solve = |idx: usize, start: f64, end: f64| -> Result<(), E> {
+            if remaining == 0 {
+                return Err(step_times::Error::EventLimit.into());
+            }
             let seg = pick(segs, &head, &tail, idx as isize);
-            solver.solve_range_into(seg, start.max(0.0)..end, room, &mut out, |t| {
+            let before = out.len();
+            solver.solve_range_into(seg, start.max(0.0)..end, remaining, &mut out, |t| {
                 self.sample_relative(lookup, idx as isize, t)
                     .map_err(|_| step_times::Error::Invalid)
-            })
+            })?;
+            remaining -= out.len() - before;
+            visit(&mut out)
         };
         let mut force_until = self.half;
         let mut skipped = None;
