@@ -79,6 +79,8 @@ pub(super) struct RuntimePlan<'a> {
     mesh: Option<(&'a str, &'a crate::bed_mesh::Transform)>,
     #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
     mesh_bank: Option<&'a crate::bed_mesh::profile_bank::Bank>,
+    #[cfg(feature = "runtime-pickup-pressure-preview")]
+    dynamic_pressure: bool,
     updates: &'a [(usize, f64)],
     positions: &'a mut Vec<(usize, usize)>,
     #[cfg(feature = "runtime-pickup-preview")]
@@ -340,6 +342,11 @@ fn plan_body(
     let runtime_pa = shape_updates
         .as_ref()
         .is_some_and(|plan| plan.pressure.is_some());
+    #[cfg(feature = "runtime-pickup-pressure-preview")]
+    let mut retuned = shape_updates
+        .as_ref()
+        .filter(|p| p.dynamic_pressure)
+        .map(|_| (opt.initial_advance, opt.smooth));
     if script.len() > 65_536
         || !inside(&start)
         || !opt.simulation_temp.iter().all(|t| t.is_finite())
@@ -360,7 +367,17 @@ fn plan_body(
                     .all(|v| v.is_finite() && *v > 0.0)
             }
         }
-        || !(1e-6..=0.1).contains(&opt.smooth)
+        || !(1e-6..={
+            #[cfg(feature = "runtime-pickup-pressure-preview")]
+            if retuned.is_some() {
+                0.2
+            } else {
+                0.1
+            }
+            #[cfg(not(feature = "runtime-pickup-pressure-preview"))]
+            0.1
+        })
+            .contains(&opt.smooth)
     {
         return Err(Error::Inputs);
     }
@@ -498,8 +515,25 @@ fn plan_body(
                 continue;
             }
         }
+        #[cfg(feature = "runtime-pickup-pressure-preview")]
+        let pressure_override = if let Some(configured) = &mut retuned {
+            let next = gcode::pickup_pressure_setting(pure, *configured)?;
+            if let Some(updated) = next {
+                *configured = updated;
+            }
+            next
+        } else {
+            None
+        };
         #[cfg(feature = "runtime-pickup-preview")]
         let control = if runtime_pa {
+            #[cfg(feature = "runtime-pickup-pressure-preview")]
+            if let Some((gain, _)) = pressure_override {
+                Some(gcode::SharedDebugControl::Advance(gain))
+            } else {
+                gcode::pickup_control(pure)?
+            }
+            #[cfg(not(feature = "runtime-pickup-pressure-preview"))]
             gcode::pickup_control(pure)?
         } else {
             gcode::shared_debug_control(pure)?
@@ -534,7 +568,10 @@ fn plan_body(
                     .as_mut()
                     .and_then(|s| s.pressure.as_deref_mut())
                 {
-                    let smooth = if advance == 0. { 0. } else { opt.smooth };
+                    let configured_smooth = opt.smooth;
+                    #[cfg(feature = "runtime-pickup-pressure-preview")]
+                    let configured_smooth = pressure_override.map_or(configured_smooth, |p| p.1);
+                    let smooth = if advance == 0. { 0. } else { configured_smooth };
                     if smooth * 0.5 != time.smoothing {
                         append(preview.finish()?, &mut time)?;
                         time.flush(&mut result, 0.);
@@ -671,6 +708,9 @@ pub use runtime_shaper::trace_file_debug_runtime_pickup_mesh;
 
 #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
 pub use runtime_shaper::trace_file_debug_runtime_pickup_mesh_bank;
+
+#[cfg(feature = "runtime-pickup-pressure-preview")]
+pub use runtime_shaper::trace_file_debug_runtime_pickup_pressure;
 
 #[cfg(test)]
 mod tests {

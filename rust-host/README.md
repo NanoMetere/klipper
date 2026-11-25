@@ -2359,3 +2359,29 @@ C replay with one and four workers. The optional timing measures whole
 stock file-debug plus normalization versus the Rust process, not a
 C-versus-Rust microbenchmark or printer throughput. The earlier single
 profile command and production C paths remain separate.
+
+### Retuning pressure advance during a combined offline pickup
+
+Build `runtime-pickup-pressure-preview` and pass `--dynamic-pressure`
+before the model path to opt in. On the named `shared_extruder` stepper,
+`SET_PRESSURE_ADVANCE` can update either `ADVANCE` or `SMOOTH_TIME`
+without respecifying the other. The preview accepts a smoothing time of
+zero or 1 microsecond through 0.2 seconds; the initial model setting must
+be positive.
+Zero advance disables the effective smoothing window but remembers the
+configured time. A changed effective window flushes pending movement
+before the update, while the unchanged-window path uses look-ahead
+timing. None of these commands access or apply settings to a printer.
+
+```sh
+cargo run --locked --release --features runtime-pickup-pressure-preview \
+  --bin klipper-runtime-pickup-mesh-bank-preview -- --dynamic-pressure \
+  MODEL.json GCODE SHAPER.cfg MESH.cfg first_surface second_surface
+python3 bench/runtime_pickup_pressure.py UPSTREAM UPSTREAM/out/klipper.dict \
+  target/release/klipper-runtime-pickup-mesh-bank-preview --rounds 16 --core 0
+```
+
+The fixture measures complete normalized offline output, checks all four
+lanes against stock and unchanged native C replay, and checks explicit,
+SAVE_CONFIG, and mixed profiles. The mesh bank without that flag retains
+its original fixed smoothing contract.

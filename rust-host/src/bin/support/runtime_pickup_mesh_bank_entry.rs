@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::*;
+#[cfg(feature = "runtime-pickup-pressure-preview")]
+use klipper_host_protocol::shared_debug_plan::trace_file_debug_runtime_pickup_pressure;
 use klipper_host_protocol::{
     bed_mesh::profile_bank::Bank, config,
     shared_debug_plan::trace_file_debug_runtime_pickup_mesh_bank,
@@ -12,9 +14,20 @@ fn run() -> Result<(), String> {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
     if args.len() == 1 && args[0] == "--help" {
         println!("{HELP}");
+        #[cfg(feature = "runtime-pickup-pressure-preview")]
+        println!(
+            "Optional --dynamic-pressure before MODEL.json enables bounded SMOOTH_TIME updates."
+        );
         return Ok(());
     }
-    let [model, gcode, settings, mesh_path, names @ ..] = &args[..] else {
+    let args = &args[..];
+    #[cfg(feature = "runtime-pickup-pressure-preview")]
+    let (dynamic_pressure, args) = if args.first().is_some_and(|x| x == "--dynamic-pressure") {
+        (true, &args[1..])
+    } else {
+        (false, args)
+    };
+    let [model, gcode, settings, mesh_path, names @ ..] = args else {
         return Err(HELP.into());
     };
     if !(2..=8).contains(&names.len()) {
@@ -42,7 +55,14 @@ fn run() -> Result<(), String> {
         m.min_cruise_ratio,
     )
     .map_err(|e| format!("Motion limits: {e:?}"))?;
-    let t = trace_file_debug_runtime_pickup_mesh_bank(
+    let trace = trace_file_debug_runtime_pickup_mesh_bank;
+    #[cfg(feature = "runtime-pickup-pressure-preview")]
+    let trace = if dynamic_pressure {
+        trace_file_debug_runtime_pickup_pressure
+    } else {
+        trace
+    };
+    let t = trace(
         &script,
         m.virtual_start_mm,
         Options {

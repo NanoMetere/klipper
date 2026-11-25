@@ -189,6 +189,8 @@ pub(super) struct ShapeCaptureSchedule<'a> {
     pub(super) mesh: Option<(&'a str, &'a crate::bed_mesh::Transform)>,
     #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
     pub(super) mesh_bank: Option<&'a crate::bed_mesh::profile_bank::Bank>,
+    #[cfg(feature = "runtime-pickup-pressure-preview")]
+    pub(super) dynamic_pressure: bool,
     pub(super) delays: &'a [(usize, f64)],
     pub(super) positions: &'a mut Vec<(usize, usize)>,
     #[cfg(feature = "runtime-pickup-preview")]
@@ -226,6 +228,8 @@ pub(super) fn shaped_plan(
         mesh,
         #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
         mesh_bank,
+        #[cfg(feature = "runtime-pickup-pressure-preview")]
+        dynamic_pressure,
         delays,
         positions: output_positions,
         #[cfg(feature = "runtime-pickup-preview")]
@@ -243,6 +247,8 @@ pub(super) fn shaped_plan(
                 mesh,
                 #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
                 mesh_bank,
+                #[cfg(feature = "runtime-pickup-pressure-preview")]
+                dynamic_pressure,
                 updates: delays,
                 positions: &mut positions,
                 #[cfg(feature = "runtime-pickup-preview")]
@@ -416,6 +422,7 @@ pub(super) fn solve_e_pickup(
     mut smooth: f64,
     pressure: &[super::PressureBoundary],
     wire: OutputOptions,
+    #[cfg(feature = "runtime-pickup-pressure-preview")] dynamic_pressure: bool,
 ) -> Result<Vec<Command>, TraceError> {
     let clock = Clock {
         last_encoded: 0,
@@ -432,7 +439,15 @@ pub(super) fn solve_e_pickup(
         while let Some(change) = pressure.next_if(|p| p.before == index) {
             smooth = change.smooth;
             e.set_smoothing_after_flush(smooth);
-            if smooth != 0. {
+            if smooth != 0. && {
+                #[cfg(feature = "runtime-pickup-pressure-preview")]
+                {
+                    !dynamic_pressure
+                        || gains.last().map_or(0., |&(_, gain)| gain) != change.advance
+                }
+                #[cfg(not(feature = "runtime-pickup-pressure-preview"))]
+                true
+            } {
                 gains.clear();
                 gains.push((0., change.advance));
             }
@@ -450,6 +465,11 @@ pub(super) fn solve_e_pickup(
                 }
             }
             Event::Gain { at, advance } => {
+                // Stock's zero-width window does not install a gain record.
+                #[cfg(feature = "runtime-pickup-pressure-preview")]
+                if dynamic_pressure && smooth == 0. {
+                    continue;
+                }
                 if let Some(last) = gains.last_mut().filter(|(t, _)| *t == at) {
                     last.1 = advance;
                 } else {
