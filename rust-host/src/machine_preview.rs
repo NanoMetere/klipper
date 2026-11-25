@@ -1155,6 +1155,68 @@ impl Machine {
                 line: n + 1,
                 error: gcode::Error::InvalidSession,
             })?;
+        #[cfg(feature = "parallel-long-step-preview")]
+        if self.long_steps && self.lane_workers > 1 {
+            if self.lane_workers > 4 {
+                return Err(Error::LaneWorkers);
+            }
+            if queue.segments().len() >= PARALLEL_SEGMENTS {
+                let extrusion = e_queue.as_ref().zip(extruder.as_ref());
+                let count = 3 + usize::from(extrusion.is_some());
+                let solve = |i: usize| {
+                    if i < 3 {
+                        let axis = self.motor_axis[i];
+                        let distance = self.motor_step[i];
+                        let inv = invert[i];
+                        if let Some(shaper) = self
+                            .fixed_shaper
+                            .as_ref()
+                            .filter(|s| s.is_enabled_for(axis))
+                        {
+                            step_lane_shaped_long(
+                                shaper,
+                                &queue,
+                                axis,
+                                distance,
+                                start,
+                                (clock, max_error, inv),
+                            )
+                        } else {
+                            step_lane_long(&queue, axis, distance, start, clock, max_error, inv)
+                        }
+                    } else {
+                        let (trajectory, spec) = extrusion.expect("validated extrusion lane");
+                        if let Some(advance) = runtime_advance.as_ref().or(spec.pressure_advance) {
+                            step_lane_advance_long(
+                                advance,
+                                trajectory,
+                                spec.step_distance,
+                                clock,
+                                max_error,
+                                spec.inverse_direction,
+                            )
+                        } else {
+                            step_lane_long(
+                                trajectory,
+                                Axis::X,
+                                spec.step_distance,
+                                [0.0; 3],
+                                clock,
+                                max_error,
+                                spec.inverse_direction,
+                            )
+                        }
+                    }
+                };
+                let mut commands =
+                    solve_lanes(count, self.lane_workers.min(count), solve)?.into_iter();
+                return Ok(Trace {
+                    motors: std::array::from_fn(|_| commands.next().expect("three motion lanes")),
+                    extruder: commands.next(),
+                    duration: time - at,
+                });
+            }
+        }
         #[cfg(feature = "long-step-preview")]
         if self.long_steps {
             let mut commands = std::array::from_fn(|_| Vec::new());

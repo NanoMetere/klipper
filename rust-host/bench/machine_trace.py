@@ -134,7 +134,7 @@ SHAPES = [
 
 
 def traced(config_path, c, script, use_extruder, pressure, shaped=False, runtime_pressure=False,
-           native_samples=None, preview_cli=False):
+           native_samples=None, preview_cli=False, native_plan=None):
     from configfile import ConfigFileReader, ConfigWrapper
     from kinematics.cartesian import CartKinematics
     from kinematics.corexy import CoreXYKinematics
@@ -249,8 +249,13 @@ def traced(config_path, c, script, use_extruder, pressure, shaped=False, runtime
             rows.extend([("g", 0., .05, .04), ("g", 2.46, .075, .04)])
         if not preview_cli:
             rows.append(("s", "e", 0., 0., 0., 0.004, time + .08, 20e6, 20, 1))
-    run = subprocess.run([c], text=True, capture_output=True, check=True,
-                         input="\n".join(" ".join(map(str, r)) for r in rows)+"\n")
+    serialized = "\n".join(" ".join(map(str, r)) for r in rows) + "\n"
+    if native_plan is not None:
+        # Move the E-only settings ahead of the lane requests. This does
+        # not affect any XYZ lane, and lets a native runner plan once.
+        ordered = [r for r in rows if r[0] != "s"] + [r for r in rows if r[0] == "s"]
+        native_plan.write_text("\n".join(" ".join(map(str, r)) for r in ordered) + "\n")
+    run = subprocess.run([c], text=True, capture_output=True, check=True, input=serialized)
     native_ns = int(run.stderr.split()[1])
     if native_samples is not None:
         native_samples.append(native_ns)

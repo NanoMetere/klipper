@@ -2385,3 +2385,27 @@ The fixture measures complete normalized offline output, checks all four
 lanes against stock and unchanged native C replay, and checks explicit,
 SAVE_CONFIG, and mixed profiles. The mesh bank without that flag retains
 its original fixed smoothing contract.
+
+### Optional parallel lanes for long file previews
+
+Build `parallel-long-step-preview` and add `--lane-workers 2` or
+`--lane-workers 4` to `--long-step-preview` for a long XYZ job or an
+existing single-extruder fixed-pressure preview. The unchanged planner
+runs once, followed by independent bounded motor/extruder lanes. Results
+are assembled in the original order. Short plans still run serially, and
+omitting the flag keeps the existing serial default. This option does not
+change the multi-tool, mixed-plan, or live paths.
+
+```sh
+cargo run --locked --release --features parallel-long-step-preview \
+  --bin klipper-preview -- --lane-workers 2 --long-step-preview \
+  CONFIG_ROOT ENTRY.cfg PATH.gcode 20000000 X Y Z
+```
+
+The parity fixture compares exact output with the old Rust preview and the
+pinned stock C pipeline, including an independent 1/2/4-worker C replay
+over the same captured movement. C-native replay timing includes plan-data
+reading, step generation and output, but not Klippy's Python planning.
+Whole Rust timing includes configuration, G-code planning and result
+serialization. Compare worker choices within each implementation, not
+absolute timings between these different interfaces.
