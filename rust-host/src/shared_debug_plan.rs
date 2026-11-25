@@ -202,7 +202,7 @@ pub fn plan(
         if i >= 128 {
             return Err(Error::Inputs);
         }
-        last_was_wait = false;
+        let was_wait = std::mem::take(&mut last_was_wait);
         let active = selected.active();
         let mut append = |moves: Vec<Profile>, time: &mut OriginClock| {
             for movement in moves {
@@ -291,6 +291,11 @@ pub fn plan(
                 .iter()
                 .any(|code| code.eq_ignore_ascii_case(opcode))
                 {
+                    // Slicer display metadata does not schedule any work.
+                    if gcode::display::parse(line)?.is_some() {
+                        last_was_wait = was_wait;
+                        continue;
+                    }
                     return Err(Error::Inputs);
                 }
                 let lane = usize::from(active);
@@ -354,6 +359,7 @@ mod tests {
             "M400\nG1 X11",
             "G28\nM400",
             "G4 P-1\nM400",
+            "G1 X11\nM73 P100",
             "M204 S0\nM400",
             "SET_VELOCITY_LIMIT ACCEL=0\nM400",
             "SET_VELOCITY_LIMIT ACCEL=900 ACCEL=1000\nM400",

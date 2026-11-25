@@ -2095,6 +2095,9 @@ The total simulated motion timeline remains under 120 seconds.
 `M204 S…` (or `M204 P… T…`) and `SET_VELOCITY_LIMIT` update limits for
 subsequent moves without flushing queued moves. These affect only the
 virtual machine; they do not change the modeled Z limit or printer settings.
+Bounded slicer display metadata (`M73`, `M117`, and `SET_DISPLAY_TEXT`)
+is accepted without changing the trace, including after the final `M400`.
+The preview does not display progress or track text state.
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.
