@@ -225,6 +225,13 @@ def main():
         phases.append(("stock_runtime_pickup_extended_preview", [sys.executable,
                        ROOT/"bench/runtime_pickup_extended.py", upstream, dictionary,
                        pickup_extended / "release/klipper-runtime-pickup-mesh-bank-preview"]))
+        pickup_fast_json = target / "runtime-pickup-fast-json"
+        phases.append(("build_runtime_pickup_fast_json", ["cargo", "build", "--locked",
+                       "--release", "--features", "runtime-pickup-fast-json", "--bin",
+                       "klipper-runtime-pickup-mesh-bank-preview", "--target-dir", pickup_fast_json]))
+        phases.append(("stock_runtime_pickup_fast_json", [sys.executable,
+                       ROOT/"bench/runtime_pickup_extended.py", upstream, dictionary,
+                       pickup_fast_json / "release/klipper-runtime-pickup-mesh-bank-preview", "--fast-json"]))
         clock_live = target / "clock-liveness-preview"
         phases.append(("build_clock_liveness_preview", ["cargo", "build", "--locked",
                        "--release", "--features", "clock-liveness-preview", "--example",

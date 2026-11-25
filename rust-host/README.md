@@ -2453,3 +2453,17 @@ replay against the pinned stock outputs. The C capture replay does not
 include planning or normalization, so do not compare its raw times to the
 whole Rust times. Optionally pass `--baseline-cli PATH` to use a previously
 built serial Rust binary for the baseline.
+
+
+The optional `runtime-pickup-fast-json` feature also accepts `--fast-json`
+immediately after either extended pickup flag. It keeps the exact output
+schema and motion records, and changes only how the existing records are
+written. It is most useful for zero-compression-tolerance jobs with many
+individual records. The default writer and C code are unchanged.
+
+For a repeated whole-process check add `--fast-json --parallel-rounds 24
+--parallel-jsonl PATH` to the fixture; add `--baseline-cli PATH` to compare
+against a frozen prior build. `--c-json-shadow` separately enables a
+benchmark-only C comparison of formatted and buffered records after loading
+the same validated input. Its timing covers the JSON writer, not motion
+planning or validation.

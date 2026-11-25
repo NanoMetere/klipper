@@ -23,6 +23,10 @@ fn run() -> Result<(), String> {
             println!("Use --extended-pickup for the extended offline motion preview (includes dynamic pressure).");
             println!("Use --extended-pickup-parallel for the same preview with optional parallel lanes on long jobs.");
         }
+        #[cfg(feature = "runtime-pickup-fast-json")]
+        println!(
+            "Add --fast-json after an extended option to select equivalent buffered JSON output."
+        );
         #[cfg(feature = "runtime-pickup-pressure-preview")]
         println!(
             "Optional --dynamic-pressure before MODEL.json enables bounded SMOOTH_TIME updates."
@@ -35,6 +39,14 @@ fn run() -> Result<(), String> {
         Some(opt) if opt == "--extended-pickup" => (true, false, &args[1..]),
         Some(opt) if opt == "--extended-pickup-parallel" => (true, true, &args[1..]),
         _ => (false, false, args),
+    };
+    #[cfg(feature = "runtime-pickup-fast-json")]
+    let (fast_json, args) = match args.first() {
+        Some(opt) if opt == "--fast-json" && extended_pickup => (true, &args[1..]),
+        Some(opt) if opt == "--fast-json" => {
+            return Err("--fast-json requires an extended pickup option".into())
+        }
+        _ => (false, args),
     };
     #[cfg(feature = "runtime-pickup-pressure-preview")]
     let (dynamic_pressure, args) = if args.first().is_some_and(|x| x == "--dynamic-pressure") {
@@ -108,6 +120,12 @@ fn run() -> Result<(), String> {
         &bank,
     )
     .map_err(|e| format!("Offline preview: {e:?}"))?;
+    #[cfg(feature = "runtime-pickup-fast-json")]
+    if fast_json {
+        let mut out = io::BufWriter::new(io::stdout().lock());
+        write_direct(&mut out, m.clock_hz, &t.lanes).map_err(|e| e.to_string())?;
+        return out.flush().map_err(|e| e.to_string());
+    }
     let p = Preview {
         schema: "klipper.shared-corexy.runtime-shaper.v1",
         clock_hz: m.clock_hz,
@@ -128,5 +146,83 @@ pub(crate) fn entry() {
     if let Err(err) = run() {
         eprintln!("{err}");
         std::process::exit(2);
+    }
+}
+
+/// This changes only the writer, not the wire format or motion data.
+#[cfg(feature = "runtime-pickup-fast-json")]
+fn write_direct(w: &mut impl Write, hz: f64, lanes: &[Vec<Command>; 4]) -> io::Result<()> {
+    w.write_all(br#"{"schema":"klipper.shared-corexy.runtime-shaper.v1","clock_hz":"#)?;
+    serde_json::to_writer(&mut *w, &hz).map_err(io::Error::other)?;
+    w.write_all(br#","lane_order":["corexy_a","corexy_b","z","shared_e"],"lanes":["#)?;
+    let mut row = Vec::with_capacity(128);
+    let mut integer = itoa::Buffer::new();
+    for (lane_index, lane) in lanes.iter().enumerate() {
+        w.write_all(if lane_index == 0 { b"[" } else { b",[" })?;
+        for (index, command) in lane.iter().enumerate() {
+            row.clear();
+            if index > 0 {
+                row.push(b',');
+            }
+            match command {
+                Command::SetDirection(true) => {
+                    row.extend_from_slice(br#"{"kind":"direction","positive":true}"#)
+                }
+                Command::SetDirection(false) => {
+                    row.extend_from_slice(br#"{"kind":"direction","positive":false}"#)
+                }
+                Command::Steps(b) => {
+                    row.extend_from_slice(br#"{"kind":"steps","interval":"#);
+                    row.extend_from_slice(integer.format(b.interval).as_bytes());
+                    row.extend_from_slice(br#","count":"#);
+                    row.extend_from_slice(integer.format(b.count).as_bytes());
+                    row.extend_from_slice(br#","add":"#);
+                    row.extend_from_slice(integer.format(b.add).as_bytes());
+                    row.extend_from_slice(br#","last_clock":"#);
+                    row.extend_from_slice(integer.format(b.last_clock).as_bytes());
+                    row.push(b'}');
+                }
+            }
+            w.write_all(&row)?;
+        }
+        w.write_all(b"]")?;
+    }
+    w.write_all(b"]}\n")
+}
+
+#[cfg(all(test, feature = "runtime-pickup-fast-json"))]
+#[test]
+fn fast_output_matches_serde_with_empty_lanes_and_decimal_boundaries() {
+    use klipper_host_protocol::step_compress::Block;
+    let lanes = [
+        vec![Command::SetDirection(true), Command::SetDirection(false)],
+        vec![Command::Steps(Block {
+            interval: u32::MAX,
+            count: u16::MAX,
+            add: i16::MIN,
+            last_clock: u64::MAX,
+        })],
+        vec![],
+        vec![Command::Steps(Block {
+            interval: 0,
+            count: 1,
+            add: i16::MAX,
+            last_clock: 1,
+        })],
+    ];
+    for hz in [1., 50_000_000., 1.234567e-13] {
+        let mut direct = Vec::new();
+        write_direct(&mut direct, hz, &lanes).unwrap();
+        let mut expected = serde_json::to_vec(&Preview {
+            schema: "klipper.shared-corexy.runtime-shaper.v1",
+            clock_hz: hz,
+            lane_order: ["corexy_a", "corexy_b", "z", "shared_e"],
+            lanes: lanes
+                .each_ref()
+                .map(|lane| lane.iter().copied().map(Record::from).collect()),
+        })
+        .unwrap();
+        expected.push(b'\n');
+        assert_eq!(direct, expected);
     }
 }

@@ -44,6 +44,7 @@ name = "klipper-host-protocol"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "itoa",
  "serde",
  "serde_json",
 ]

@@ -22,6 +22,10 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("stock", "dictionary", "cli"):
         parser.add_argument(name, type=lambda v: Path(v).resolve())
+    parser.add_argument("--fast-json", action="store_true",
+                        help="exercise the optional compact writer; time writers, not workers")
+    parser.add_argument("--c-json-shadow", action="store_true",
+                        help="compare the C writers over the same validated records")
     parser.add_argument("--rounds", type=int, default=0)
     parser.add_argument("--core", type=int)
     parser.add_argument("--parallel-rounds", type=int, default=0)
@@ -31,6 +35,8 @@ def main(argv):
     args = parser.parse_args(argv)
     if not 0 <= args.rounds <= 80:
         parser.error("--rounds must be 0–80")
+    if args.c_json_shadow and not (args.fast_json and args.parallel_rounds):
+        parser.error("--c-json-shadow requires --fast-json and --parallel-rounds")
     if not 0 <= args.parallel_rounds <= 80:
         parser.error("--parallel-rounds must be 0–80")
     if args.parallel_rounds and not args.parallel_jsonl:
@@ -60,6 +66,10 @@ def main(argv):
     assert old.count(a)==1
     with tempfile.TemporaryDirectory(prefix='pickup-sideband-') as td:
         t=Path(td); c=t/'windows.c'; exe=t/'capture-c'
+        shadow = t / "serialize-c"
+        if args.c_json_shadow:
+            subprocess.run(["cc", "-std=c11", "-O3", "-Wall", "-Wextra", "-Werror",
+                            ROOT/"bench/pickup_json_shadow.c", "-o", shadow], check=True)
         c.write_text(old.replace(a,b))
         subprocess.run(['cc','-O3','-DWIRE','-DCAPTURE_LANES','-DCAPTURE_SHAPE','-pthread','-I',helper,ROOT/'bench/file_debug_capture_lanes.c',c,*(helper/f'{s}.c' for s in units),'-lm','-o',exe],check=True)
         f=t/'fixture'; shutil.copytree(ROOT/'bench/shared_extruder_fixture',f)
@@ -144,6 +154,14 @@ def main(argv):
                 parallel_args = [cli, "--extended-pickup-parallel", m, g, settings]
                 data = subprocess.check_output([*rust_args, meshfile, *names], timeout=25)
                 assert subprocess.check_output([*parallel_args, meshfile, *names], timeout=25) == data
+                fast_args = [*rust_args[:2], "--fast-json", *rust_args[2:]]
+                if args.fast_json:
+                    assert subprocess.check_output([*fast_args, meshfile, *names], timeout=25) == data
+                    fast_parallel = [*parallel_args[:2], "--fast-json", *parallel_args[2:]]
+                    assert subprocess.check_output([*fast_parallel, meshfile, *names], timeout=25) == data
+                    wrong = subprocess.run([cli, "--fast-json", m, g, settings, meshfile, *names],
+                                           capture_output=True, timeout=25)
+                    assert wrong.returncode == 2 and not wrong.stdout and b"requires" in wrong.stderr
                 want = [packets for packets, _ in lanes]
                 assert wire_records(data, hz) == want, (label, tol)
                 narrow = subprocess.run([*old, meshfile, *names], capture_output=True, timeout=25)
@@ -159,6 +177,8 @@ def main(argv):
                         [*rust_args, path, *names], timeout=25) == data
                     assert subprocess.check_output(
                         [*parallel_args, path, *names], timeout=25) == data
+                    if args.fast_json:
+                        assert subprocess.check_output([*fast_args, path, *names], timeout=25) == data
                 cfg.write_text(base + explicit)
                 cap = 512 if rounds == 4 else 1024
                 target = old if rounds == 4 else rust_args
@@ -185,7 +205,7 @@ def main(argv):
                       "steps; pinned stock, native C 1/4, and Rust exact", flush=True)
                 if args.parallel_rounds:
                     frozen = [args.baseline_cli or cli, *rust_args[1:], meshfile, *names]
-                    candidate = [*parallel_args, meshfile, *names]
+                    candidate = [*(fast_args if args.fast_json else parallel_args), meshfile, *names]
                     assert subprocess.check_output(frozen) == data
                     assert subprocess.check_output(candidate) == data
                     for command in (frozen, candidate):
@@ -203,20 +223,32 @@ def main(argv):
                             elapsed_ns = time.perf_counter_ns() - started
                         assert output.read_bytes() == expected
                         return elapsed_ns / 1e6
-                    for name, commands, expected_data in (
-                        ("rust", [frozen, candidate], data),
-                        ("native_c", [[exe,"1",*c_args], [exe,"4",*c_args]], expect),
-                    ):
+                    cases = [("rust_json" if args.fast_json else "rust", [frozen, candidate], data)]
+                    if not args.fast_json:
+                        cases.append(("native_c", [[exe,"1",*c_args], [exe,"4",*c_args]], expect))
+                    if args.c_json_shadow:
+                        source = t / "validated_records.txt"
+                        source.write_bytes(expect)
+                        generic, compact = ([shadow, arm, source, json.dumps(hz)] for arm in ("generic", "compact"))
+                        cases.append(("native_c_json", [generic, compact], data))
+                    def measurement(name, command, expected):
+                        if name != "native_c_json":
+                            return elapsed(command, expected)
+                        with output.open("wb") as dest:
+                            proc = subprocess.run(command, stdout=dest, stderr=subprocess.PIPE, check=True)
+                        assert output.read_bytes() == expected
+                        return int(proc.stderr) / 1e6
+                    for name, commands, expected_data in cases:
                         for _ in range(3):
                             for cmd in commands:
-                                elapsed(cmd, expected_data)
+                                measurement(name, cmd, expected_data)
                         times = [[], []]
                         win = 0
                         for index in range(args.parallel_rounds):
                             order = (0,1) if index % 2 == 0 else (1,0)
                             pair = [0,0]
                             for arm in order:
-                                pair[arm] = elapsed(commands[arm], expected_data)
+                                pair[arm] = measurement(name, commands[arm], expected_data)
                                 times[arm].append(pair[arm])
                             win += pair[1] < pair[0]
                             with args.parallel_jsonl.open("a") as out:
