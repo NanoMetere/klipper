@@ -221,6 +221,36 @@ impl TraceEncoder {
         Ok(())
     }
 
+    #[cfg(feature = "capture-replay")]
+    fn flush_before(&mut self, clock: u64) -> Result<(), Error> {
+        if self
+            .filter
+            .pending
+            .is_some_and(|pending| pending.clock <= clock)
+        {
+            if let Some(step) = self.filter.commit() {
+                self.commit(step)?;
+            }
+        }
+        let mut consumed = 0;
+        while consumed < self.run.len() && self.clock.last_encoded < clock {
+            let block = crate::step_compress::compress_prefix(
+                self.clock.last_encoded,
+                &self.run[consumed..],
+                self.max_error,
+            )
+            .map_err(Error::Compress)?;
+            consumed += usize::from(block.count);
+            self.clock.last_encoded = block.last_clock;
+            self.output.push(Command::Steps(block));
+        }
+        if consumed != 0 {
+            self.run.drain(..consumed);
+            self.epoch = None;
+        }
+        Ok(())
+    }
+
     pub(crate) fn finish(mut self) -> Result<Vec<Command>, Error> {
         if let Some(step) = self.filter.commit() {
             self.commit(step)?;
@@ -246,6 +276,45 @@ pub fn encode_trace(
 
 #[cfg(feature = "long-step-preview")]
 pub(crate) mod long;
+
+/// Encode an offline capture with explicit transmission cutoffs.
+#[cfg(feature = "capture-replay")]
+pub fn encode_captured_windows(
+    clock: Clock,
+    windows: &[(Vec<Event>, u64)],
+    remaining: &[Event],
+    max_error: u32,
+    invert: bool,
+) -> Result<Vec<Command>, Error> {
+    if windows.len() > 512 {
+        return Err(Error::Capacity);
+    }
+    let mut encoder = TraceEncoder::new(clock, max_error, invert);
+    let mut prior = 0;
+    for (events, cutoff) in windows {
+        if *cutoff < prior || *cutoff >= (1 << 53) {
+            return Err(Error::InvalidTime);
+        }
+        prior = *cutoff;
+        encoder.push(events)?;
+        encoder.flush_before(*cutoff)?;
+    }
+    encoder.push(remaining)?;
+    encoder.finish()
+}
+
+/// Translate captured seconds to stock's truncated, nonnegative clock ticks.
+#[cfg(feature = "capture-replay")]
+pub fn captured_cutoff(seconds: f64, hz: f64) -> Result<u64, Error> {
+    if !seconds.is_finite() || seconds < 0.0 || !hz.is_finite() || hz <= 0.0 {
+        return Err(Error::InvalidTime);
+    }
+    let ticks = seconds * hz;
+    if ticks >= (1u64 << 53) as f64 {
+        return Err(Error::InvalidTime);
+    }
+    Ok(ticks as u64)
+}
 
 #[cfg(test)]
 mod tests {
@@ -429,5 +498,42 @@ mod tests {
         let representation = 10.25 + ((1u64 << 32) as f64 + 41.0) / 1_000_000.0;
         assert_eq!(clock.to_tick(representation, 0.), Ok((1 << 32) + 41));
         assert_eq!(clock.to_tick(representation, -0.1), Err(Error::InvalidTime));
+    }
+
+    #[cfg(feature = "capture-replay")]
+    #[test]
+    fn captured_cutoffs_are_bounded_and_reject_reordered_windows() {
+        assert_eq!(captured_cutoff(0.0, 50_000_000.), Ok(0));
+        assert_eq!(captured_cutoff(0.25, 50_000_000.), Ok(12_500_000));
+        assert_eq!(captured_cutoff(1.75, 1.), Ok(1));
+        for (seconds, hz) in [
+            (f64::NAN, 1.),
+            (-1., 1.),
+            (1., 0.),
+            (1., f64::INFINITY),
+            (1e30, 1.),
+        ] {
+            assert_eq!(captured_cutoff(seconds, hz), Err(Error::InvalidTime));
+        }
+        let clock = Clock {
+            last_encoded: 0,
+            time_origin: 0.,
+            hz: 1_000_000.,
+        };
+        let valid = [(Vec::new(), 2), (Vec::new(), 2)];
+        assert_eq!(
+            encode_captured_windows(clock, &valid, &[], 0, false),
+            Ok(vec![])
+        );
+        let decreasing = [(Vec::new(), 2), (Vec::new(), 1)];
+        assert_eq!(
+            encode_captured_windows(clock, &decreasing, &[], 0, false),
+            Err(Error::InvalidTime)
+        );
+        let excess = vec![(Vec::new(), 0); 513];
+        assert_eq!(
+            encode_captured_windows(clock, &excess, &[], 0, false),
+            Err(Error::Capacity)
+        );
     }
 }

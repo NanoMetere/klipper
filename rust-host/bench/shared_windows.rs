@@ -2,7 +2,7 @@
 use klipper_host_protocol::{
     extrusion::{append_prepared, prune_prepared},
     pressure_advance::{Advance, WindowStepper},
-    step_clock::{encode_trace, Clock, Command},
+    step_clock::{captured_cutoff, encode_captured_windows, encode_trace, Clock, Command},
     step_times::Event,
     trajectory::{Trajectory, Trapezoid},
 };
@@ -16,6 +16,7 @@ fn main() {
         .map_or(20_000_000., |s| s.parse::<f64>().unwrap());
     let max_error = args.next().map_or(0, |s| s.parse::<u32>().unwrap());
     let mut all = Vec::new();
+    let mut captured = Vec::new();
     let mut motor = WindowStepper::new(22.17 / 3200., 0.04).unwrap();
     let mut queues = [
         Trajectory::new(2048).unwrap(),
@@ -56,6 +57,11 @@ fn main() {
                 prune_prepared(&mut queues[fields[1].parse::<usize>().unwrap()], values(2))
                     .unwrap();
             }
+            "w" if wire => captured.push((
+                std::mem::take(&mut all),
+                captured_cutoff(values(1), hz).unwrap(),
+            )),
+            "w" => {}
             "f" => {
                 let end = values(1);
                 let a = Advance::new(0.04, &gains).unwrap();
@@ -92,7 +98,13 @@ fn main() {
             time_origin: 0.,
             hz,
         };
-        for command in encode_trace(clock, &all, max_error, false).unwrap() {
+        let result = if captured.is_empty() {
+            encode_trace(clock, &all, max_error, false)
+        } else {
+            encode_captured_windows(clock, &captured, &all, max_error, false)
+        }
+        .unwrap();
+        for command in result {
             match command {
                 Command::SetDirection(v) => println!("d {}", v as u8),
                 Command::Steps(b) => {

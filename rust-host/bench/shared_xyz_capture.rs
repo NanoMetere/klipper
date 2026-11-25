@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use klipper_host_protocol::{
     extrusion::prune_prepared,
-    step_clock::{encode_trace, Clock, Command},
+    step_clock::{captured_cutoff, encode_captured_windows, encode_trace, Clock, Command},
     step_times::{Axis, Solver},
     trajectory::{Trajectory, Trapezoid},
 };
@@ -30,6 +30,7 @@ fn main() {
         .map(|&(axis, dist)| Solver::new(axis, dist, [0.; 3]).unwrap())
         .collect();
     let mut events = [Vec::new(), Vec::new(), Vec::new()];
+    let mut captured = [Vec::new(), Vec::new(), Vec::new()];
     let mut queue = Trajectory::new(1024).unwrap();
     let mut from = 0.0_f64;
     for line in io::stdin().lock().lines() {
@@ -69,6 +70,11 @@ fn main() {
             "t" => {
                 prune_prepared(&mut queue, f(1)).unwrap();
             }
+            "w" => {
+                for (window, events) in captured.iter_mut().zip(&mut events) {
+                    window.push((std::mem::take(events), captured_cutoff(f(1), hz).unwrap()));
+                }
+            }
             "f" => {
                 let to = f(1);
                 assert!(from <= to);
@@ -94,8 +100,14 @@ fn main() {
         time_origin: 0.,
         hz,
     };
-    for (events, inverse) in events.into_iter().zip(inverse) {
-        for c in encode_trace(clock, &events, max_error, inverse).unwrap() {
+    for ((events, captured), inverse) in events.into_iter().zip(captured).zip(inverse) {
+        let result = if captured.is_empty() {
+            encode_trace(clock, &events, max_error, inverse)
+        } else {
+            encode_captured_windows(clock, &captured, &events, max_error, inverse)
+        }
+        .unwrap();
+        for c in result {
             match c {
                 Command::SetDirection(v) => println!("d {}", v as u8),
                 Command::Steps(b) => {

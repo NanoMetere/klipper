@@ -110,7 +110,7 @@ def setup_mq(self, config):
     generate = self.steppersyncmgr_gen_steps
     def capture(*args):
         emit("WINDOW", op="f", cutoff=args[1], at=args[2], history=args[3])
-        emit("XYZ", op="f", at=args[2])
+        emit("XYZ", op="f", at=args[2], cutoff=args[1])
         return generate(*args)
     self.steppersyncmgr_gen_steps = capture
     trim = self.trapq_finalize_moves

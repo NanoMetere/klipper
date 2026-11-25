@@ -378,6 +378,13 @@ justify changing either solver. No live performance claim follows.
   A tenth job verifies absolute XYZ offsets, a Z adjustment with a
   simulated move, and clearing the offsets without a move. Across the
   four lanes, 21,798 steps match stock at both tolerances.
+  A separate 216-additional-move fixture uses timestamps recorded from
+  stock generation and transmit cutoffs. The opt-in `capture-replay`
+  encoder matches stock's complete records on four lanes at both
+  tolerances (29,992 steps per mode); pinned C independently matches the
+  captured E lane. This is capture-driven replay, not support for
+  independently scheduling longer scripts. The public preview's
+  128-line limit is unchanged.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

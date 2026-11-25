@@ -27,7 +27,7 @@ XYZ_ATTRS = {"a": "at ta tc td x y z rx ry rz sv cv acc", "b": "x y z",
              "t": "cutoff", "f": "at"}
 
 
-def observe(upstream, dictionary, fixture, temp, path, zero_error):
+def observe(upstream, dictionary, fixture, temp, path, zero_error, long=False):
     out, log = temp / "steps.out", temp / "klippy.log"
     run = subprocess.run(
         [sys.executable, fixture / "stock_entry.py",
@@ -59,8 +59,12 @@ def observe(upstream, dictionary, fixture, temp, path, zero_error):
         if op == "t" and q == -1:
             paused_trims += 1
         events.append(" ".join(map(str, (op, *(row[k] for k in ATTRS[op].split())))))
-    assert paused_trims == 2 and Counter(e[0] for e in events) == {
-        "p": 3, "f": 10, "b": 5, "a": 12, "t": 20}
+        if long and op == "f":
+            events.append(f"w {row['cutoff']}")
+    counts = Counter(e[0] for e in events)
+    expected = ({"p": 3, "f": 36, "b": 5, "a": 228, "t": 72, "w": 36} if long else
+                {"p": 3, "f": 10, "b": 5, "a": 12, "t": 20})
+    assert paused_trims == 2 and counts == expected, (long, counts)
     trace = motor_trace(upstream, dictionary, out.read_bytes())
     assert len(trace) == 4
     snaps = [json.loads(s.split(" ", 1)[1]) for s in rows if s.startswith("SHARED_OUTCOME ")]
@@ -71,8 +75,11 @@ def observe(upstream, dictionary, fixture, temp, path, zero_error):
     assert len(meta["oids"]) == len(set(meta["oids"])) == 3
     for item in xyz:
         assert item["op"] in XYZ_ATTRS
-    xyz_inputs = [" ".join(map(str, (row["op"], *(row[k] for k in XYZ_ATTRS[row["op"]].split()))))
-                  for row in xyz]
+    xyz_inputs = []
+    for row in xyz:
+        xyz_inputs.append(" ".join(map(str, (row["op"], *(row[k] for k in XYZ_ATTRS[row["op"]].split())))))
+        if long and row["op"] == "f":
+            xyz_inputs.append(f"w {row['cutoff']}")
     eid = ids.pop()
     assert eid not in meta["oids"]
     return ("\n".join(events) + "\n", trace[f"oid={eid}"],
@@ -191,6 +198,10 @@ def main():
          .replace("G1 Z1.42 F360\n",
          "SET_GCODE_OFFSET X=0 Y=0 Z=0 MOVE=0\nG1 Z1.42 F360\n", 1),
          (635, 112), 1250, (6830, 98)),
+        ("long-short-moves", source.replace("M400\n", "".join(
+         f"G1 X{18 + (i % 2)*0.24:.3f} Y{39 + (1 - i % 2)*0.14:.3f} E0.002 F600\n"
+         for i in range(216)) + "M400\n", 1),
+         (644, 183), 1312, ((5491, 5564, 87), (688, 1119, 25))),
     )
     with tempfile.TemporaryDirectory(prefix="klipper-captured-window-") as d:
         temp = Path(d)
@@ -213,8 +224,9 @@ def main():
                 path = temp / "fixture.gcode"
                 e_count = e_counts[mode]
                 path.write_text(script)
-                observed = observe(a.upstream, a.dictionary, fixture, temp, path, zero_error)
-                assert observed == observe(a.upstream, a.dictionary, fixture, temp, path, zero_error)
+                long = name == "long-short-moves"
+                observed = observe(a.upstream, a.dictionary, fixture, temp, path, zero_error, long)
+                assert observed == observe(a.upstream, a.dictionary, fixture, temp, path, zero_error, long)
                 events, stock_file, xyz_events, meta, xyz_stock_files = observed
                 tol = str(meta["max_error"])
                 assert int(tol) == (0 if zero_error else int(int(hz) * 0.000025))
@@ -222,7 +234,7 @@ def main():
                 rust_out = wire_records(subprocess.check_output([rust, "--wire", hz, tol],
                                                               input=events, text=True, timeout=15))
                 want, physical_steps = flatten_file(stock_file)
-                assert c_out == rust_out == want
+                assert c_out == rust_out == want, (name, tol)
                 assert (len(want), physical_steps) == (e_count, e_ticks)
                 print(f"Actual stock debug, max compress error {tol} ticks, E, case={name}: "
                       f"{len(want)} compressed blocks/directions, "
@@ -230,6 +242,25 @@ def main():
                 xyz_args = [xyz, hz, tol, *map(str, meta["d"]), *(str(int(v)) for v in meta["inverted"])]
                 init, executable = script.split("\n", 1)
                 assert init == "SET_KINEMATIC_POSITION X=10 Y=10 Z=1"
+                if long:
+                    replay = subprocess.check_output(xyz_args, input=xyz_events, text=True, timeout=20)
+                    fields = replay.split("end\n")
+                    assert len(fields) == 4 and fields[-1] == ""
+                    for want_axis, actual, n, records in zip(
+                        xyz_stock_files, fields[:-1], (13651, 14861, 168), xyz_counts[mode], strict=True,
+                    ):
+                        expected, physical = flatten_file(want_axis)
+                        assert (len(expected), physical) == (records, n)
+                        assert expected == wire_records(actual), (name, tol)
+                    if a.shared_preview:
+                        model["max_error_ticks"] = int(tol)
+                        mt.write_text(json.dumps(model))
+                        body.write_text(executable)
+                        guarded = subprocess.run([a.shared_preview, mt, body], capture_output=True, timeout=10)
+                        assert guarded.returncode == 2 and not guarded.stdout and b"Inputs" in guarded.stderr
+                    print(f"Capture replay only (no independent schedule), {tol} ticks: "
+                          f"{sum(xyz_counts[mode]) + e_count} exact records, 29992 steps")
+                    continue
                 full = subprocess.check_output([integrated, tol], input=executable, text=True, timeout=15)
                 lanes = full.split("end\n")
                 assert lanes[-1] == "" and len(lanes) == 5
@@ -305,7 +336,7 @@ def main():
             rejected(symlink, b"non-symlink")
             body.write_bytes(b" " * 65_537)
             rejected(body, b"exceeds 65536 bytes")
-            print("Standalone shared preview matched all twenty stock file cases; invalid inputs rejected")
+            print("Standalone shared preview matched 20 stock cases; 2 longer captured cases replayed exactly")
 
 
 

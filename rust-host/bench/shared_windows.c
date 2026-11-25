@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Two pinned stock C trap queues and one stepper, with an inert event sink.
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include "itersolve.h"
 #include "trapq.h"
@@ -36,7 +37,7 @@ int main(int argc, char *argv[])
     unsigned error = argc >= 3 ? strtoul(argv[2], NULL, 10) : 0;
     stepcompress_fill(sink, 1, error, 3, 4);
     double hz = argc >= 2 ? strtod(argv[1], NULL) : 20000000.;
-    if (!(hz > 0.))
+    if (!isfinite(hz) || !(hz > 0.))
         return 2;
     stepcompress_set_time(sink, 0., hz);
 #else
@@ -48,6 +49,8 @@ int main(int argc, char *argv[])
     struct trapq *queue[2] = {trapq_alloc(), trapq_alloc()};
     struct stepper_kinematics *sk = extruder_stepper_alloc();
     char op;
+    double prior_cutoff = 0.;
+    unsigned cutoff_count = 0;
     while (scanf(" %c", &op) == 1) {
         if (op == 'a') {
             int q, pa;
@@ -76,6 +79,20 @@ int main(int argc, char *argv[])
             if (scanf("%d %lf %lf", &q, &before, &clear) != 3 || q < 0 || q > 1)
                 return 2;
             trapq_finalize_moves(queue[q], before, clear);
+        } else if (op == 'w') {
+            double cutoff;
+            if (++cutoff_count > 512 || scanf("%lf", &cutoff) != 1
+                || !isfinite(cutoff) || cutoff < prior_cutoff)
+                return 2;
+            prior_cutoff = cutoff;
+#ifdef WIRE
+            if (cutoff * hz >= 9007199254740992.)
+                return 2;
+            struct clock_estimate ce;
+            clock_fill(&ce, hz, 0., 0);
+            if (stepcompress_flush(sink, clock_from_time(&ce, cutoff)))
+                return 4;
+#endif
         } else if (op == 'f') {
             double end;
             if (scanf("%lf", &end) != 1)

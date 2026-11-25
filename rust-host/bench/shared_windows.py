@@ -71,7 +71,7 @@ def build(upstream, d):
                     *(helper / f"{src}.c" for src in ("stepcompress", "msgblock", "pyhelper")),
                     "-lm", "-o", stock_wire], check=True)
     subprocess.run(["rustc", "--edition=2021", "-O", "--crate-type", "rlib",
-                    "--crate-name", "klipper_host_protocol", ROOT / "src/lib.rs",
+                    "--crate-name", "klipper_host_protocol", "--cfg", 'feature="capture-replay"', ROOT / "src/lib.rs",
                     "-o", lib], check=True)
     subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_windows.rs",
                     "--extern", f"klipper_host_protocol={lib}", "-o", rust], check=True)
