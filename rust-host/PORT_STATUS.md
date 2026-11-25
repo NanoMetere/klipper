@@ -16,6 +16,7 @@ them as changes in the elapsed time of a real print.
 | Shaped CoreXY + pressure advance, 6,835 exact records | Stock Python+C 8.450/7.595 ms, prior Rust 5.123/4.691 ms, current Rust 4.906/4.557 ms median CPU | 3–4% less CPU vs prior Rust and 40–42% vs stock for this offline config-to-step workload; not a whole-host benchmark |
 | Klippy move look-ahead, 25,836 moves including Python/Rust conversions | Stock 48.309 → bridge 44.712 ms and stock 46.044 → bridge 42.003 ms median CPU | 7–9% less CPU in the captured queue flush seam |
 | Whole pinned Klippy process, XYZ or shaped extrusion | 1,200 to 40,000 moves, every timed motor record equal; run-level paired elapsed changes vary in direction | No repeatable end-to-end speedup demonstrated from the optional bridge |
+| Whole pinned Klippy debug process, 40,000 shaped extrusion moves, no middle waits | Opt-in Rust G0/G1 scanner plus bridge vs stock: 5.89% and 10.31% lower paired median elapsed in two 15-pair single-core runs with debug output drained | 186,972 exact motor records; actual Klippy with simulated file output, not a printer runtime |
 | Offline Rust CLI, 2,500 CoreXY moves | Prior Rust CLI 35.136 → 7.100 ms median elapsed | About 80% less elapsed time after streaming identical JSON to a file |
 | Offline Rust CLI, three tools, 2,500 moves, 21,683 exact records | Same motion kernel, prior JSON 67.097 → 29.173 ms; separately, one lane worker 29.213 → four workers 16.201 ms (repeat 32.366 → 20.667 ms) | Serialization and concurrency were measured in independent A/B tests |
 | Offline Rust CLI, same three-tool workload and four workers on both sides | Fixed lane stripes 17.490 → dynamic scheduling 14.111 ms median elapsed; repeat 16.154 → 13.045 ms | 19.1% paired median reduction on both CPU-affinity sets, byte-identical JSON; not a Klippy or hardware result |
@@ -63,7 +64,9 @@ timed motor records in two 15-pair runs. Paired median elapsed changed
 by −0.13% and +1.57% (bridge versus stock). An instrumented diagnostic
 showed motion step generation/flush and Python G-code dispatch both
 cost more than look-ahead flush alone; instrumented timings are not
-used as benchmark results. No total-host speedup is claimed.
+used as benchmark results. No total-host speedup is claimed for the
+look-ahead-only bridge. The separate opt-in dispatch experiment above
+is limited to the tested dense debug-file workload.
 
 ## Verified scope
 

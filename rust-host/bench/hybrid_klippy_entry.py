@@ -48,10 +48,15 @@ def main():
     drain = prefix[:1] == ["--drain-debug-output"]
     if drain:
         prefix = prefix[1:]
+    dispatch = prefix[:1] == ["--rust-dispatch"]
+    if dispatch:
+        prefix = prefix[1:]
     if len(prefix) < 3:
-        raise SystemExit("usage: hybrid_klippy_entry.py [--drain-debug-output] KLIPPY.py LIBRARY [debug arguments]")
+        raise SystemExit("usage: hybrid_klippy_entry.py [--drain-debug-output] [--rust-dispatch] KLIPPY.py LIBRARY [debug arguments]")
     klippy = Path(prefix[0]).resolve()
     library = None if prefix[1] == "--stock-only" else Path(prefix[1]).resolve()
+    if dispatch and library is None:
+        raise SystemExit("--rust-dispatch requires the bridge library")
     args = prefix[2:]
     # Only explicit debug-output flags. Flag values may not be other flags.
     if not args or args[0].startswith("-") or len(args[1:]) % 2:
@@ -70,9 +75,14 @@ def main():
     import toolhead
     draining = install_debug_drain() if drain else None
     stats = None
+    dispatch_stats = None
     if library is not None:
         from klipper_rust_lookahead import install
         stats = install(toolhead, library)
+    if dispatch:
+        import gcode
+        from klipper_rust_dispatch import install
+        dispatch_stats = install(gcode, library)
     sys.argv = [str(klippy), *args]
     try:
         runpy.run_path(str(klippy), run_name="__main__")
@@ -84,6 +94,8 @@ def main():
             print("FILE_OUTPUT_DRAIN", json.dumps(sorted(seen)), flush=True)
         if stats is not None:
             print("RUST_LOOKAHEAD_STATS", json.dumps(stats, sort_keys=True), flush=True)
+        if dispatch_stats is not None:
+            print("RUST_DISPATCH_STATS", json.dumps(dispatch_stats, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":

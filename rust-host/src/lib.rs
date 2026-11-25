@@ -283,3 +283,5 @@ mod tests {
 
 #[cfg(feature = "python-bridge")]
 mod python_bridge;
+#[cfg(feature = "python-bridge")]
+mod python_dispatch;

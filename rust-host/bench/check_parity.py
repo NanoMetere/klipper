@@ -31,6 +31,7 @@ def main():
     p.add_argument("--klippain", type=Path, help="pinned Klippain smoke source")
     p.add_argument("--led-effect", type=Path, help="pinned LED Effect source")
     p.add_argument("--modern-bridge", type=Path, help="optional compiled Rust debug bridge for PR #174")
+    p.add_argument("--dispatch-bridge", type=Path, help="optional compiled bridge for the stock dispatch comparison")
     p.add_argument("--moonraker", type=Path,
                    help="run the optional pinned Moonraker read-only socketpair fixture")
     p.add_argument("--moonraker-http", action="store_true",
@@ -68,6 +69,9 @@ def main():
         phases.append((name, [runtime, ROOT/"bench"/name, upstream, *extra]))
     phases.append(("shaped_machine_trace", [sys.executable, ROOT/"bench/machine_trace.py",
                                             upstream, "--shape-timing"]))
+    if a.dispatch_bridge:
+        phases.append(("canonical_dispatch", [sys.executable, ROOT/"bench/hybrid_dispatch_parity.py",
+                                               upstream, a.dispatch_bridge.resolve()]))
     if a.macro_reference:
         phases.append(("gcode_macros", [sys.executable, ROOT/"bench/gcode_macros.py", upstream]))
     phases.extend([

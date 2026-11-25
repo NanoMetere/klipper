@@ -80,6 +80,8 @@ def main():
                    help="moves between explicit M400 waits (0 disables intermediate waits)")
     p.add_argument("--baseline-library", type=Path,
                    help="compare against a prior Rust bridge using the same Python adapter")
+    p.add_argument("--rust-dispatch", action="store_true",
+                   help="enable the optional dispatch scanner for the candidate only")
     p.add_argument("--json", type=Path, help="write raw sample pairs and verified coverage")
     a = p.parse_args()
     if not 1 <= a.rounds <= 40 or not 1200 <= a.moves <= 40000:
@@ -99,6 +101,7 @@ def main():
               for label, path in entries.items() if path}
     times = {label: [] for label in entries}
     coverage = {label: [] for label in hashes}
+    dispatch = []
     print(f"{a.profile}: {a.moves} moves; intermediate wait interval {a.wait_interval}")
     baseline_label = next(iter(entries))
     with tempfile.TemporaryDirectory(prefix="klippy-process-time-") as d:
@@ -111,14 +114,20 @@ def main():
             for label in tuple(times)[::(1 if r % 2 == 0 else -1)]:
                 output, log = root / f"{label}.out", root / f"{label}.log"
                 cpu, wall = child_cpu(), time.perf_counter()
+                flags = ["--drain-debug-output"] if a.rust_dispatch else []
+                if a.rust_dispatch and label == "adapter":
+                    flags.append("--rust-dispatch")
                 proc = subprocess.run(
-                    [sys.executable, entry, klippy, entries[label] or "--stock-only",
+                    [sys.executable, entry, *flags, klippy, entries[label] or "--stock-only",
                      cfg, "-i", script, "-o", output, "-d", dictionary, "-l", log],
                     capture_output=True, text=True, timeout=120,
                 )
                 elapsed = (child_cpu() - cpu, time.perf_counter() - wall)
                 if proc.returncode:
                     raise RuntimeError(proc.stdout + proc.stderr + log.read_text()[-5000:])
+                if a.rust_dispatch:
+                    drain = next(line for line in proc.stdout.splitlines() if line.startswith("FILE_OUTPUT_DRAIN "))
+                    assert json.loads(drain.split(" ", 1)[1]) == [str(output)], drain
                 got = motor_trace(upstream, dictionary, output.read_bytes())
                 if reference is None:
                     reference = got
@@ -131,6 +140,12 @@ def main():
                     assert stats["planned"] == a.moves and stats["fallbacks"] == 0, stats
                     if r:
                         coverage[label].append(stats)
+                if label == "adapter" and a.rust_dispatch:
+                    row = next(line for line in proc.stdout.splitlines() if line.startswith("RUST_DISPATCH_STATS "))
+                    stats = json.loads(row.split(" ", 1)[1])
+                    assert stats["canonical"] == a.moves and stats["stock"] > 0, stats
+                    if r:
+                        dispatch.append(stats)
                 if r:
                     times[label].append(elapsed)
             print(f"round {r}: all {sum(map(len, reference.values()))} motor records match", flush=True)
@@ -158,6 +173,8 @@ def main():
         report = {"stock_pin": pin, "profile": a.profile, "moves": a.moves,
                   "wait_interval": a.wait_interval, "motor_count": lanes,
                   "exact_motor_records": motor_records, "bridge_coverage": coverage,
+                  "dispatch_coverage": dispatch,
+                  "debug_output_drained": a.rust_dispatch,
                   "library_sha256": hashes,
                   "sample_fields": ["process_cpu_seconds", "elapsed_seconds"], "samples": times}
         a.json.write_text(json.dumps(report, indent=2) + "\n")

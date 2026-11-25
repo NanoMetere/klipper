@@ -924,9 +924,47 @@ taskset -c 2 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
 
 Use `--baseline-library /path/to/old/libklipper_host_protocol.so` to
 test two Rust library builds with the same Python adapter. Both sides
-must then report zero fallbacks. The JSON report retains each pair,
+must then report zero look-ahead fallbacks. The JSON report retains each pair,
 bridge coverage and library SHA-256. Hashing, verification and report
 writing are all outside the measured child-process interval.
+
+### Opt-in Rust G0/G1 dispatch experiment
+
+`--rust-dispatch` on the pinned debug-output benchmark recognizes
+bounded batches of canonical ASCII, space-delimited G0/G1 with unique
+X/Y/Z/E/F arguments. The Rust scanner returns only offsets; the
+original Klippy handlers still validate values, plan motion, and
+produce ACKs and error responses. Comments, unsupported spellings,
+short batches, and uncertain syntax use the stock dispatcher. It is
+disabled by default and refuses an unrecognized dispatcher. It is not
+a printer installation option or proof of full plugin compatibility.
+
+The 40,000-move shaped-extrusion workload without intermediate waits
+matched all 186,972 timed motor records, with every movement covered
+by the scanner and no look-ahead fallback. In two 15-pair, single-core
+runs, the candidate plus look-ahead bridge reduced paired median
+whole-process elapsed by 5.44% and 4.84% versus stock. The timed scope
+includes startup, parsing, scheduling, and debug-file output; physical
+printer I/O and printing time are excluded. The separate dispatcher
+fixture submits 72,000 lines across 2,400 batches and compares ordered
+parameters and fallback, ACK, and error behavior to stock.
+
+The benchmark now explicitly drains debug output on both sides when
+using `--rust-dispatch`, so a partial file cannot count as a speedup.
+Two drained 40,000-move repeats measured 5.89% and 10.31% lower paired
+elapsed, with 13/15 candidate wins in each. With draining, 12,000-move
+comparisons retained 43,033 exact XYZ and 57,245 shaped-extrusion
+motor records with 12,000 moves and a wait every 80 moves. The 12 paired
+elapsed medians improved 6.98% and 5.57%, respectively, versus stock.
+
+```sh
+cargo build --locked --release --features python-bridge --lib
+python3 bench/hybrid_dispatch_parity.py /path/to/pinned/klipper \
+  target/release/libklipper_host_protocol.so
+taskset -c 2 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
+  /path/to/pinned/klipper/out/klipper.dict target/release/libklipper_host_protocol.so \
+  --rust-dispatch --moves 40000 --rounds 15 --profile shaped-extrusion --wait-interval 0
+```
 
 Step timing now retains the clock epoch until compression advances it,
 rather than revalidating and recomputing it on every crossing. Two
