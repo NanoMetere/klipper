@@ -143,6 +143,10 @@ def main():
          (831, 118), 1755, (7078, 99)),
         ("absolute-flow", (fixture / "absolute_flow.gcode").read_text(),
          (522, 113), 1230, (7080, 99)),
+        ("intermediate-waits", source.replace("M83\n", "M400\nM83\n", 1)
+         .replace("G1 X28 Y18 E0.83 F900\n", "G1 X28 Y18 E0.83 F900\nM400\nM400\n", 1)
+         .replace("G1 Z1.42 F360\n", "G1 Z1.42 F360\nM400\n", 1),
+         (578, 113), 1250, (7079, 101)),
     )
     with tempfile.TemporaryDirectory(prefix="klipper-captured-window-") as d:
         temp = Path(d)
@@ -245,7 +249,7 @@ def main():
             rejected(symlink, b"non-symlink")
             body.write_bytes(b" " * 65_537)
             rejected(body, b"exceeds 65536 bytes")
-            print("Standalone shared preview matched all six stock file cases; invalid inputs rejected")
+            print("Standalone shared preview matched all eight stock file cases; invalid inputs rejected")
 
 
 

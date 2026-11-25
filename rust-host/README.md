@@ -2087,7 +2087,9 @@ cargo run --locked --release --bin klipper-shared-preview -- \
 
 The sample's first line is fixture-only virtual initialization. For your
 input, set the virtual start in the JSON instead of adding a homing or
-position-forcing command. Finish with M400. The model covers CoreXY with two
+position-forcing command. Finish with M400. Intermediate M400 commands
+flush look-ahead but do not introduce wall-clock waits in this offline mode.
+The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.
 It does not run macros, model a physical changer, or perform live pacing.

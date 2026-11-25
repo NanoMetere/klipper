@@ -323,7 +323,11 @@ justify changing either solver. No live performance claim follows.
   smoothing; it is not a live scheduler or physical nozzle-changer
   support. The separate optional `klipper-shared-preview` executable
   exposes this typed path as four JSON streams from a strict model file
-  and a bounded G-code file; it has no printer or hardware path.
+  and a bounded G-code file; it has no printer or hardware path. A fourth
+  stock-backed job exercises waits before motion, consecutive waits and
+  waits after XY/E and Z moves. All four lanes match at both tolerances
+  (21,738 physical steps per mode). The intermediate waits drain look-ahead
+  without pacing or advancing the step-generation boundary in file mode.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

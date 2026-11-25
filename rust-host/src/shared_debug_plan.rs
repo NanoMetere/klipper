@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Prototype: independent planning for a bounded pin-free stock debug slice.
-//! It is not exposed by the CLI and requires a caller-chosen virtual origin.
+//! It requires a caller-chosen virtual origin and does not model live pacing.
 
 mod render;
 pub use render::{trace, MotionTrace, OutputOptions, TraceError};
@@ -124,7 +124,8 @@ impl OriginClock {
 /// The caller sets a virtual origin and supplies both logical extrusion
 /// geometries. The only supported device-binding vocabulary is the named
 /// shared stepper with extruder/extruder1, fixed positive smoothing and
-/// positive gain updates when look-ahead holds a move. M400 must be last.
+/// positive gain updates when look-ahead holds a move. M400 closes look-ahead
+/// without pacing. A final M400 is mandatory and is followed by the file drain.
 /// Background timer interleavings, homing, shapers and physical I/O are
 /// not modeled. No input is ever sent to a printer.
 pub fn plan(
@@ -175,15 +176,16 @@ pub fn plan(
     ];
     let mut deferred = Vec::new();
     let mut consumed = 0;
-    let mut ended = false;
+    let mut last_was_wait = false;
     for (i, line) in script.lines().enumerate() {
         let pure = line.split(';').next().unwrap().trim();
         if pure.is_empty() {
             continue;
         }
-        if ended || i >= 128 {
+        if i >= 128 {
             return Err(Error::Inputs);
         }
+        last_was_wait = false;
         let active = selected.active();
         let mut append = |moves: Vec<Profile>, time: &mut OriginClock| {
             for movement in moves {
@@ -224,8 +226,10 @@ pub fn plan(
             }
             None if pure.eq_ignore_ascii_case("M400") => {
                 append(preview.finish()?, &mut time)?;
-                time.flush(&mut result, 0.25);
-                ended = true;
+                // In stock file-output mode, M400 flushes the look-ahead
+                // without waiting or advancing step generation.
+                time.priming = true;
+                last_was_wait = true;
             }
             None => {
                 let opcode = pure.split_ascii_whitespace().next().ok_or(Error::Inputs)?;
@@ -253,9 +257,10 @@ pub fn plan(
             }
         }
     }
-    if !ended || !deferred.is_empty() {
+    if !last_was_wait || !deferred.is_empty() {
         return Err(Error::Inputs);
     }
+    time.flush(&mut result, 0.25);
     Ok(result)
 }
 
@@ -309,5 +314,22 @@ mod tests {
                 .count(),
             2
         );
+        let waits =
+            execute("M400\nM83\nG1 X12 E.08\nM400\nM400\nG1 X14 E.07\nM400; drain\n; end").unwrap();
+        assert_eq!(
+            waits
+                .iter()
+                .filter(|e| matches!(e, Event::Profile { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .filter(|e| matches!(e, Event::Generation { .. }))
+                .count(),
+            1
+        );
+        assert!(execute("G1 X12\nM400\nG28\nM400").is_err());
     }
 }
