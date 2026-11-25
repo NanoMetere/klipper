@@ -253,6 +253,18 @@ justify changing either solver. No live performance claim follows.
   staged coordinates before exposing a trace. The modern stock Klippy
   compatibility fixture loads the reviewed Toolchanger PR #174
   candidate, not a merged upstream release.
+- Shared extrusion binding: a bounded offline state model for two
+  logical queues and one physical-stepper identity matches pinned
+  Klippy's independent activation, positive pressure gain status,
+  detach and re-anchor behavior. Two fixtures matched 14 Rust/stock
+  snapshots, including the signed integer step position at both
+  positive and negative rebinds and unchanged physical position across
+  a detached move. Each model is fed committed planner positions and
+  a caller-supplied flushed commanded position. The 429 timed XYZ/E
+  records are a repeatable stock-only reference for future timing
+  work, not yet Rust-generated parity. No preview CLI option, queue
+  scheduling, shaper dynamics, hardware, or third-party compatibility is
+  implied by this state model.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

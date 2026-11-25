@@ -157,6 +157,8 @@ def main():
                                          a.legacy_klippy.resolve(), a.toolchanger_reference.resolve(),
                                          "--binary", examples/"fan_transfer_replay"]))
     if dictionary.is_file():
+        phases.append(("shared_extruder_binding", [sys.executable, ROOT/"bench/shared_extruder.py",
+                                                  upstream, "--dictionary", dictionary]))
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
         phases.append(("mcu_config_payloads", [sys.executable, ROOT/"bench/mcu_config.py", upstream,

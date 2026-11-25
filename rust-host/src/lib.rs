@@ -32,6 +32,7 @@ pub mod print_stats;
 pub mod probe;
 pub mod read_query;
 pub mod retry_timing;
+pub mod shared_extruder;
 #[cfg(feature = "identify")]
 pub mod simulated_printer;
 #[cfg(all(unix, feature = "webhooks"))]
