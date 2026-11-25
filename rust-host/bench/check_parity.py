@@ -203,6 +203,12 @@ def main():
                        "clock_liveness_replay", "--target-dir", clock_live]))
         phases.append(("stock_clock_liveness_preview", [sys.executable, ROOT/"bench/clock_liveness.py",
                        upstream, clock_live / "release/examples/clock_liveness_replay"]))
+        watched = target / "clock-watched-sim-preview"
+        phases.append(("build_clock_watched_sim_preview", ["cargo", "build", "--locked",
+                       "--release", "--features", "clock-watched-sim-preview", "--example",
+                       "clock_watched_sim_replay", "--target-dir", watched]))
+        phases.append(("stock_clock_watched_sim_preview", [sys.executable, ROOT/"bench/clock_watched_sim.py",
+                       upstream, dictionary, watched / "release/examples/clock_watched_sim_replay"]))
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
         phases.append(("mcu_config_payloads", [sys.executable, ROOT/"bench/mcu_config.py", upstream,

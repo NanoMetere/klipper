@@ -517,6 +517,14 @@ serial and shutdown callbacks, and checks the exact same 12,910
 records against original-counter C, saturation-counter C and Rust.
 Add `--rounds 80 --core 0` for same-output offline replay timing.
 
+The separate `clock-watched-sim-preview` opt-in exercises that signal
+before an inert queue drain. A first report faults a ready, running or
+paused virtual job without releasing pending commands. A late reply
+does not reopen the queue; file-output and a timely reply preserve
+the exact unguarded output, and an already completed job stays
+complete. The six scripted cases reference the pinned Python and
+native C policy. No physical emergency command is sent.
+
 ## Remaining integration work
 
 A deployable host still needs a long-running runtime and independently

@@ -631,3 +631,6 @@ impl Simulation {
         Ok(at)
     }
 }
+
+#[cfg(feature = "clock-watched-sim-preview")]
+pub mod clock_watch;
