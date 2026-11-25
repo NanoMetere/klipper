@@ -77,6 +77,8 @@ pub struct Options {
 pub(super) struct RuntimePlan<'a> {
     #[cfg(feature = "runtime-mesh-preview")]
     mesh: Option<(&'a str, &'a crate::bed_mesh::Transform)>,
+    #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+    mesh_bank: Option<&'a crate::bed_mesh::profile_bank::Bank>,
     updates: &'a [(usize, f64)],
     positions: &'a mut Vec<(usize, usize)>,
     #[cfg(feature = "runtime-pickup-preview")]
@@ -467,6 +469,12 @@ fn plan_body(
                     continue;
                 }
             }
+            #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+            if let Some(bank) = runtime.mesh_bank {
+                if preview.saved_mesh_bank_command(pure, bank)? {
+                    continue;
+                }
+            }
             let mut words = pure.split_ascii_whitespace();
             if words
                 .next()
@@ -660,6 +668,9 @@ pub use runtime_shaper::trace_file_debug_runtime_pickup;
 
 #[cfg(feature = "runtime-pickup-mesh-preview")]
 pub use runtime_shaper::trace_file_debug_runtime_pickup_mesh;
+
+#[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+pub use runtime_shaper::trace_file_debug_runtime_pickup_mesh_bank;
 
 #[cfg(test)]
 mod tests {

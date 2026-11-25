@@ -2334,3 +2334,28 @@ logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.
 It does not run macros, model a physical changer, or perform live pacing.
 Unsupported commands and unknown model fields fail without a trace.
+
+### Switching saved profiles in the same offline pickup
+
+Build the separate `runtime-pickup-mesh-bank-preview` feature to declare
+2–8 distinct saved profile names. Supply a standalone mesh file containing
+the explicit `[bed_mesh]` settings and exactly the named profiles, either
+as regular sections or under the stock `SAVE_CONFIG` marker (or a mix).
+There is no implicit profile load. `BED_MESH_PROFILE LOAD=name` selects
+one of the declared profiles. Lookup offsets affect only the active
+instance; loading a profile again uses its saved, unmodified grid.
+
+```sh
+cargo run --locked --release --features runtime-pickup-mesh-bank-preview \
+  --bin klipper-runtime-pickup-mesh-bank-preview -- \
+  MODEL.json GCODE SHAPER.cfg MESH.cfg first_surface second_surface
+python3 bench/runtime_pickup_mesh_bank.py UPSTREAM UPSTREAM/out/klipper.dict \
+  target/release/klipper-runtime-pickup-mesh-bank-preview --rounds 16 --core 0
+```
+
+The output remains normalized four-lane file-debug JSON. The fixture
+checks three config layouts against pinned stock and compares the native
+C replay with one and four workers. The optional timing measures whole
+stock file-debug plus normalization versus the Rust process, not a
+C-versus-Rust microbenchmark or printer throughput. The earlier single
+profile command and production C paths remain separate.

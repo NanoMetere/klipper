@@ -5,6 +5,9 @@
 
 pub mod profile;
 
+#[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+pub mod profile_bank;
+
 const MAX_VALUES: usize = 65_536;
 const MAX_CHECKS: f64 = 16_384.0;
 

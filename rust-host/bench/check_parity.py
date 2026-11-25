@@ -197,6 +197,13 @@ def main():
                        "klipper-runtime-pickup-mesh-preview", "--target-dir", runtime_pickup_mesh]))
         phases.append(("stock_runtime_pickup_mesh_preview", [sys.executable, ROOT/"bench/runtime_pickup_mesh.py",
                        upstream, dictionary, runtime_pickup_mesh / "release/klipper-runtime-pickup-mesh-preview"]))
+        mesh_bank = target / "runtime-pickup-mesh-bank-preview"
+        phases.append(("build_runtime_pickup_mesh_bank_preview", ["cargo", "build", "--locked",
+                       "--release", "--features", "runtime-pickup-mesh-bank-preview", "--bin",
+                       "klipper-runtime-pickup-mesh-bank-preview", "--target-dir", mesh_bank]))
+        phases.append(("stock_runtime_pickup_mesh_bank_preview", [sys.executable,
+                       ROOT/"bench/runtime_pickup_mesh_bank.py", upstream, dictionary,
+                       mesh_bank / "release/klipper-runtime-pickup-mesh-bank-preview"]))
         clock_live = target / "clock-liveness-preview"
         phases.append(("build_clock_liveness_preview", ["cargo", "build", "--locked",
                        "--release", "--features", "clock-liveness-preview", "--example",

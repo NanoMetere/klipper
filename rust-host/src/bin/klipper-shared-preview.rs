@@ -270,3 +270,11 @@ mod runtime_pickup_mesh;
 #[cfg(feature = "runtime-pickup-mesh-preview")]
 #[allow(unused_imports)]
 pub(crate) use runtime_pickup_mesh::entry as entry_runtime_pickup_mesh;
+
+#[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+#[allow(dead_code)]
+#[path = "support/runtime_pickup_mesh_bank_entry.rs"]
+mod runtime_pickup_mesh_bank;
+#[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+#[allow(unused_imports)]
+pub(crate) use runtime_pickup_mesh_bank::entry as entry_runtime_pickup_mesh_bank;

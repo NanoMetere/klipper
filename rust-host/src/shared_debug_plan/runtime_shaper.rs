@@ -153,6 +153,8 @@ macro_rules! trace_runtime {
             Some(ShapeCaptureSchedule {
                 #[cfg(feature = "runtime-mesh-preview")]
                 mesh: $mesh,
+                #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+                mesh_bank: None,
                 delays: &delays,
                 positions: &mut positions,
                 #[cfg(feature = "runtime-pickup-preview")]
@@ -247,6 +249,8 @@ pub(super) fn prepare_runtime(
         Some(ShapeCaptureSchedule {
             #[cfg(feature = "runtime-mesh-preview")]
             mesh: None,
+            #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+            mesh_bank: None,
             delays: &delays,
             positions: &mut positions,
             #[cfg(feature = "runtime-pickup-preview")]
@@ -296,6 +300,8 @@ pub fn trace_file_debug_runtime_pickup(
         Some(ShapeCaptureSchedule {
             #[cfg(feature = "runtime-mesh-preview")]
             mesh: None,
+            #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+            mesh_bank: None,
             delays: &delays,
             positions: &mut positions,
             pressure: Some(&mut pressure),
@@ -339,6 +345,60 @@ pub fn trace_file_debug_runtime_pickup_mesh(
     initial: &config::Config,
     mesh: (&str, &crate::bed_mesh::Transform),
 ) -> Result<MotionTrace, TraceError> {
+    trace_pickup_with_mesh(
+        file,
+        start,
+        options,
+        geometries,
+        wire,
+        initial,
+        Some(mesh),
+        #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+        None,
+    )
+}
+
+/// Predict an offline pickup with switches among a prevalidated saved mesh bank.
+#[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+pub fn trace_file_debug_runtime_pickup_mesh_bank(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    initial: &config::Config,
+    bank: &crate::bed_mesh::profile_bank::Bank,
+) -> Result<MotionTrace, TraceError> {
+    trace_pickup_with_mesh(
+        file,
+        start,
+        options,
+        geometries,
+        wire,
+        initial,
+        None,
+        Some(bank),
+    )
+}
+
+#[cfg(feature = "runtime-pickup-mesh-preview")]
+#[cfg_attr(
+    feature = "runtime-pickup-mesh-bank-preview",
+    allow(clippy::too_many_arguments)
+)]
+#[inline(always)]
+fn trace_pickup_with_mesh(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    initial: &config::Config,
+    mesh: Option<(&str, &crate::bed_mesh::Transform)>,
+    #[cfg(feature = "runtime-pickup-mesh-bank-preview")] bank: Option<
+        &crate::bed_mesh::profile_bank::Bank,
+    >,
+) -> Result<MotionTrace, TraceError> {
     let shaper = Shaper::from_file_debug_config(initial).map_err(|_| TraceError::Options)?;
     let (_, body) = file.split_once('\n').ok_or(TraceError::Options)?;
     let settings = ShapeSettings::from_config(initial).map_err(|_| TraceError::Options)?;
@@ -360,7 +420,9 @@ pub fn trace_file_debug_runtime_pickup_mesh(
         wire,
         &shaper,
         Some(ShapeCaptureSchedule {
-            mesh: Some(mesh),
+            mesh,
+            #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+            mesh_bank: bank,
             delays: &delays,
             positions: &mut positions,
             pressure: Some(&mut pressure),

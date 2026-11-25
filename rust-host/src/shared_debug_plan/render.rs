@@ -187,6 +187,8 @@ type ShapedPlan = (
 pub(super) struct ShapeCaptureSchedule<'a> {
     #[cfg(feature = "runtime-mesh-preview")]
     pub(super) mesh: Option<(&'a str, &'a crate::bed_mesh::Transform)>,
+    #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+    pub(super) mesh_bank: Option<&'a crate::bed_mesh::profile_bank::Bank>,
     pub(super) delays: &'a [(usize, f64)],
     pub(super) positions: &'a mut Vec<(usize, usize)>,
     #[cfg(feature = "runtime-pickup-preview")]
@@ -222,6 +224,8 @@ pub(super) fn shaped_plan(
     let (events, mut output_positions) = if let Some(ShapeCaptureSchedule {
         #[cfg(feature = "runtime-mesh-preview")]
         mesh,
+        #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+        mesh_bank,
         delays,
         positions: output_positions,
         #[cfg(feature = "runtime-pickup-preview")]
@@ -237,6 +241,8 @@ pub(super) fn shaped_plan(
             Some(super::RuntimePlan {
                 #[cfg(feature = "runtime-mesh-preview")]
                 mesh,
+                #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+                mesh_bank,
                 updates: delays,
                 positions: &mut positions,
                 #[cfg(feature = "runtime-pickup-preview")]

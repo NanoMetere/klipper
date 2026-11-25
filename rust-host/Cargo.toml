@@ -22,6 +22,7 @@ runtime-shaper-workers = ["runtime-shaper-preview"]
 runtime-mesh-preview = ["runtime-shaper-preview"]
 runtime-pickup-preview = ["runtime-shaper-preview"]
 runtime-pickup-mesh-preview = ["runtime-pickup-preview", "runtime-mesh-preview"]
+runtime-pickup-mesh-bank-preview = ["runtime-pickup-mesh-preview"]
 clock-liveness-preview = []
 clock-watched-sim-preview = ["clock-liveness-preview"]
 clock-watched-status-preview = ["clock-watched-sim-preview", "webhooks"]
@@ -127,6 +128,10 @@ required-features = ["webhooks", "runtime-pickup-preview"]
 [[bin]]
 name = "klipper-runtime-pickup-mesh-preview"
 required-features = ["webhooks", "runtime-pickup-mesh-preview"]
+
+[[bin]]
+name = "klipper-runtime-pickup-mesh-bank-preview"
+required-features = ["webhooks", "runtime-pickup-mesh-bank-preview"]
 
 [[example]]
 name = "clock_liveness_replay"

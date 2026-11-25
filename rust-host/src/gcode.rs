@@ -481,6 +481,39 @@ impl Preview {
         Ok(true)
     }
 
+    #[cfg(feature = "runtime-pickup-mesh-bank-preview")]
+    pub(crate) fn saved_mesh_bank_command(
+        &mut self,
+        line: &str,
+        bank: &bed_mesh::profile_bank::Bank,
+    ) -> Result<bool, Error> {
+        let prefix = line.split(';').next().unwrap_or_default().trim();
+        let end = prefix.find(char::is_whitespace).unwrap_or(prefix.len());
+        let op = &prefix[..end];
+        if !op.eq_ignore_ascii_case("BED_MESH_PROFILE") {
+            if op.eq_ignore_ascii_case("BED_MESH_CLEAR")
+                || op.eq_ignore_ascii_case("BED_MESH_OFFSET")
+            {
+                let (name, transform) = bank.first();
+                return self.saved_mesh_command(line, name, transform);
+            }
+            return Ok(false);
+        }
+        if line.len() > MAX_LINE || line.contains(['\n', '\r', '\0']) {
+            return Err(Error::InvalidLine);
+        }
+        let args = extended::tokenize(&prefix[end..])?;
+        if args.len() != 1 {
+            return Err(Error::InvalidParameter);
+        }
+        let transform = args
+            .get("LOAD")
+            .and_then(|name| bank.get(name))
+            .ok_or(Error::InvalidParameter)?;
+        self.install_bed_mesh(transform.clone())?;
+        Ok(true)
+    }
+
     /// Rebase from the commanded physical position. Unapply the bed mesh
     /// first, then outer tool offsets, without emitting any move.
     pub fn reset_last_position(&mut self) -> Result<(), Error> {
