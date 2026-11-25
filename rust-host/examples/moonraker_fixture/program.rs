@@ -27,6 +27,7 @@ fn err(e: impl std::fmt::Debug) -> io::Error {
 pub struct FixtureProgram {
     program: Program,
     step: u8,
+    prior_generation: Option<u64>,
 }
 
 impl FixtureProgram {
@@ -117,7 +118,11 @@ impl FixtureProgram {
             0.5,
         )
         .map_err(err)?;
-        Ok(Self { program, step: 0 })
+        Ok(Self {
+            program,
+            step: 0,
+            prior_generation: None,
+        })
     }
 
     pub fn advance(&mut self, next: u8) -> io::Result<()> {
@@ -181,6 +186,77 @@ impl FixtureProgram {
                     self.program
                         .commit_peers(at(12.), generation, &actual)
                         .map_err(err)?;
+                    self.prior_generation = Some(generation);
+                }
+            }
+            6 => {
+                let ready = self
+                    .program
+                    .temperature(
+                        at(13.),
+                        Some(Observation {
+                            source: Source::Heater(1),
+                            sampled_at: 13.,
+                            temperature: 220.,
+                            controller_busy: false,
+                        }),
+                        false,
+                    )
+                    .map_err(err)?;
+                if ready != Gate::Ready {
+                    return Err(err("second fixture temperature did not clear"));
+                }
+            }
+            7 => {
+                let issued = self.program.advance_routed(at(20.), 256).map_err(err)?;
+                if issued.is_empty() || self.program.state() != State::AwaitingMotionCommit {
+                    return Err(err(
+                        "second phase did not wait for independent peer evidence",
+                    ));
+                }
+            }
+            8 | 9 => {
+                let (generation, actual) = self
+                    .program
+                    .pending_peer_commit()
+                    .ok_or_else(|| err("missing terminal proof"))?;
+                let prior = self
+                    .prior_generation
+                    .ok_or_else(|| err("missing prior phase generation"))?;
+                if generation <= prior
+                    || actual.iter().map(|r| r.peer).collect::<Vec<_>>() != [0, 2]
+                {
+                    return Err(err("unexpected terminal phase evidence"));
+                }
+                if next == 8 {
+                    // Deliberately keep the correct peer identities, counts and
+                    // ticks: only the earlier generation should block this receipt.
+                    if self.program.commit_peers(at(21.), prior, &actual).is_ok()
+                        || self.program.pending_peer_commit() != Some((generation, actual))
+                        || !self
+                            .program
+                            .advance_routed(at(22.), 256)
+                            .map_err(err)?
+                            .is_empty()
+                    {
+                        return Err(err(
+                            "earlier phase generation incorrectly cleared terminal gate",
+                        ));
+                    }
+                } else {
+                    self.program
+                        .commit_peers(at(23.), generation, &actual)
+                        .map_err(err)?;
+                    if self.program.state() != State::Finished
+                        || self.program.pending_peer_commit().is_some()
+                        || !self
+                            .program
+                            .advance_routed(at(24.), 256)
+                            .map_err(err)?
+                            .is_empty()
+                    {
+                        return Err(err("terminal fixture state leaked commands or proof"));
+                    }
                 }
             }
             _ => return Err(err("unknown fixture control step")),

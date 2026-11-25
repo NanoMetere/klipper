@@ -193,20 +193,27 @@ enable_object_processing: False
             assert initial["mode"]=="simulation" and initial["state"]=="ready"
             assert initial["active_tool"]==2 and initial["peer_proof"] is None
             assert subscribed["result"]["status"]["fan"] == {"speed": 0.0}
-            for step in (1,2,3,4,5):
+            generations = []
+            for step in range(1, 10):
                 set_program(step)
                 pushed=await receive(lambda v: v.get("method")=="notify_status_update" and
                                     v.get("params") and v["params"][0].get("virtual_fixture",{})
                                     .get("fixture_step")==step)
                 changed = pushed["params"][0]
                 diff = changed.get("virtual_mixed_job",{})
-                if step < 5:
+                if step != 5:
                     assert "fan" not in changed, changed
                 if step==3:
                     assert diff["state"]=="waiting_for_motion_proof"
                     assert [r["peer"] for r in diff["peer_proof"]["requirements"]]==[0,1]
-                elif step==4:
-                    assert not diff
+                elif step in (4, 8):
+                    assert not diff, changed
+                elif step == 7:
+                    assert diff["state"] == "waiting_for_motion_proof"
+                    assert [r["peer"] for r in diff["peer_proof"]["requirements"]] == [0, 2]
+                elif step == 9:
+                    assert diff["state"] == "finished" and diff["peer_proof"] is None
+                    assert diff["line"] is None
                 elif step==5:
                     assert diff["active_tool"]==5 and diff["print_fan_demand"]==0.4
                     assert changed["fan"] == {"speed": 0.4}, changed
@@ -215,20 +222,29 @@ enable_object_processing: False
                 job=row["status"]["virtual_mixed_job"]
                 if step in (1,5):
                     assert job["state"]=="waiting_for_temperature"
-                elif step==2:
+                elif step in (2, 6):
                     assert job["state"]=="running"
+                elif step == 9:
+                    assert job["state"] == "finished" and job["peer_proof"] is None
+                    assert job["pending_stages"] == 0 and job["line"] is None
                 else:
                     assert job["state"]=="waiting_for_motion_proof"
                     requirements=job["peer_proof"]["requirements"]
-                    assert [(p["peer"],p["accepted_commands"]) for p in requirements]==[(0,10),(1,3)]
+                    expected = [(0, 10), (1, 3)] if step in (3, 4) else [(0, 10), (2, 3)]
+                    assert [(p["peer"],p["accepted_commands"]) for p in requirements] == expected
+                    generations.append(job["peer_proof"]["generation"])
                 if step<5:
                     assert job["active_tool"]==2 and job["print_fan_demand"] == 0.0
                 else:
                     assert job["active_tool"]==5 and job["print_fan_demand"]==0.4
-                    assert job["heater_targets_c"]==[210.,220.] and job["peer_proof"] is None
+                    assert job["heater_targets_c"]==[210.,220.]
+                    if step not in (7, 8):
+                        assert job["peer_proof"] is None
+            first_gen, same_first, second_gen, same_second = generations
+            assert first_gen == same_first and first_gen < second_gen == same_second
             check_fan((await get(fan_query))["status"], 0.4)
-            print("Moonraker streamed real virtual Program states; held partial proof, "
-                  "then updated tool, cached fan demand and heater target",flush=True)
+            print("Moonraker streamed two virtual phases; partial and stale proofs left status unchanged, "
+                  "and the exact second receipt completed the job", flush=True)
         await subscribe(1,10)
         set_state("ready",11)
         await updated(11)
@@ -256,6 +272,8 @@ enable_object_processing: False
         await subscribe(2,21,require_clean=True)
         if with_program:
             check_fan((await get(fan_query))["status"], 0.0)
+            fresh = (await get("/printer/objects/query?virtual_mixed_job"))["status"]["virtual_mixed_job"]
+            assert fresh["state"] == "ready" and fresh["peer_proof"] is None and fresh["active_tool"] == 2
             await ws.write_message(json.dumps({
                 "jsonrpc":"2.0","id":101,"method":"printer.objects.subscribe",
                 "params":{"objects":{"fan":["speed"], "toolhead":["position"]}},

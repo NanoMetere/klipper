@@ -23,6 +23,7 @@ them as changes in the elapsed time of a real print.
 | Offline Rust CLI, same three-tool workload and four workers on both sides | Fixed lane stripes 17.490 → dynamic scheduling 14.111 ms median elapsed; repeat 16.154 → 13.045 ms | 19.1% paired median reduction on both CPU-affinity sets, byte-identical JSON; not a Klippy or hardware result |
 | Offline Rust CLI, same workload after pressure-advance gain preparation | One worker: 34.461 → 29.679 ms and 30.985 → 27.041 ms median elapsed | 10.3–11.5% paired reduction with one worker; 5.9–7.5% with four workers; byte-identical JSON, not a live host result |
 | Offline Rust CLI, same three-tool path with prepared pressure integration terms | One worker: 2.9% and 3.9% lower paired elapsed; four workers: 2.7% and 0.9% lower | Two 45-pair runs per worker count against B118, 21,683 exact records and byte-identical JSON; four-worker benefit is smaller and less stable |
+| Offline Rust CLI, reusing per-phase raw-event buffers | XYZ 5.0% lower in both runs; layered 5.1–6.5% lower; shaped extrusion 2.9–4.6% lower; three virtual tools 1.6–2.4% lower | Against the earlier Rust CLI, two 60-pair runs for each fixture, including JSON output. Complete output matched for 16,379 / 14,935 / 16,576 / 21,683 records, respectively. No change to stock C or print speed evidence. |
 | Two GPIO-free software MCUs | 168 → 24 frames, 3.464 → 0.533 ms median enqueue through last software ACK | Same order, same five motor counters; this is Rust before/after framing, not physical transport or stock Klippy |
 | Mixed virtual job across two software MCUs, 39 commands | 39 → 9 frames; host enqueue through ACK 0.967 → 0.278 ms; single-CPU repeat 0.232 → 0.062 ms | 71–73% less enqueue time in this fixture, identical command order and counters, not real print duration |
 | Offline status polling, 8 subscriptions × 12,000 polls | Prior Rust 394.226 → 84.094 ms and 392.586 → 81.125 ms median CPU; 3,432 byte-identical frames | About 79% less CPU by avoiding copies of unchanged fields; synthetic sparse updates, not whole-host, Moonraker frontend or print speed |
@@ -130,6 +131,23 @@ used as benchmark results. No total-host speedup is claimed for the
 look-ahead-only bridge. The separate opt-in dispatch experiment above
 is limited to the tested dense debug-file workload.
 
+### Experiments kept out of the default path
+
+The exact uniform-stride compression experiment was implemented in C
+and Rust against their respective earlier versions. The isolated kernel
+improved by 4.10% in C and 7.32% in Rust on the corpus containing a
+65,535-step uniform run; excluding that run left changes of only 1.49%
+and 1.39%. In full drained stock debug jobs the C variant improved
+elapsed time by 1.45–2.06%; the full Rust CLI ranged from 0.7% faster
+to 2.2% slower. Output matched throughout, but the gains were too small
+or inconsistent to adopt.
+
+A second experiment skipped input-shaper neighbor traversal when all
+pulses were in one move. C and Rust reproduced their original outputs,
+but whole-process elapsed increased by 0.90–2.65% in C and 0.25–1.89%
+in Rust. Neither implementation was adopted. These are measured
+software workloads, not printer benchmarks.
+
 ## Verified scope
 
 - Configuration and motion: bounded Cartesians/CoreXY, stock move
@@ -140,7 +158,10 @@ is limited to the tested dense debug-file workload.
   matched stock. Combined with a single modeled positive fixed-window
   extruder, 4,640 XYZ/E records matched stock across reloads and gain
   changes. With three virtual shaped lanes and named pressure updates,
-  the same feature matched 9,934 timed XYZ/E records. A motion-only
+  the same feature matched 9,934 timed XYZ/E records. Scripted X/Y lookup
+  offsets matched 7,614 XYZ and 9,920 shaped sparse XYZ/E records;
+  following ZFADE comparisons matched 8,638 XYZ and 9,866 shaped sparse
+  XYZ/E records. A motion-only
   job can use distinct extruder lanes for sparse physical tool IDs.
   With explicit opt-in, positive pressure-advance gain updates preserve
   the stock queue boundary and configured smoothing independently for
@@ -150,6 +171,20 @@ is limited to the tested dense debug-file workload.
   updates to inactive virtual lanes at the global queue boundary;
   the stock mux comparator matched 9,889 records. No live calibration,
   dynamic smoothing or docking is supported by this option.
+- Long offline motion: the separate Cargo feature and explicit
+  `--long-step-preview` flag use the pinned C queue horizon and bounded
+  extension/trim policy. The ordinary build retains the short event cap.
+  Stock matched 257,111 layered and 115,855 shaped extrusion records at
+  3,000 moves each, and 304,753 records in a three-tool trace with named
+  pressure updates. A 43-second dwell matched; intervals not representable
+  in the offline 32-bit format are rejected instead of wrapping. In the
+  long mode, scripted saved-mesh load/clear and X/Y/ZFADE offsets matched
+  174,305 XYZ, 176,641 single-extruder XYZ/E, and 309,466 three-tool
+  records. The build supports no more than six sequential lanes, six
+  million total raw events, and 1,572,864 retained output records. It
+  excludes static profile-only mesh, live probing, homing/calibration,
+  saving a profile, physical tooling, parallel workers, mixed heater
+  plans, macro expansion, and virtual SD. See [README](README.md#opt-in-longer-offline-traces).
 - Tool exchange: the inert program separates outbound and inbound
   extrusion, verifies supplied pickup evidence and validates the
   staged coordinates before exposing a trace. The modern stock Klippy
@@ -172,8 +207,11 @@ is limited to the tested dense debug-file workload.
   installation are not verified. The same loopback fixture can stream
   a real simulated Rust program's read-only proof, tool, fan demand and
   temperature gate; the driver supplies only synthetic observations
-  and exposes no control endpoint. The fixture provides read-only
-  objects for the fan configuration and speed used
+  and exposes no control endpoint. The loopback lifecycle also follows
+  the second phase through completion: a receipt carrying an old phase
+  generation cannot change read-only HTTP or WebSocket job status;
+  the right generation completes it, and reconnection starts fresh.
+  The fixture provides read-only objects for the fan configuration and speed used
   by frontend subscribers, with 0% on startup, 40% when virtual
   demand changes, and 0% after a fresh peer reconnect. Tachometer RPM
   is unavailable; no frontend UI or fan hardware is exercised. The
@@ -201,7 +239,10 @@ is limited to the tested dense debug-file workload.
 A deployable host still needs a long-running runtime and independently
 verified real transport scheduling, pin/peripheral integration, clock
 fault and emergency-stop behavior, broader macro/plugin compatibility
-and end-to-end Moonraker interoperability. Actual printer timing,
+and end-to-end Moonraker interoperability. Named Unix socket dialing
+has not been verified; the managed test runner rejected opening that
+socket, and all positive Moonraker results still use the explicitly
+injected local socket pair. Actual printer timing,
 power/heat shutdown and mechanical docking need separate hardware
 validation. Do not use the offline fixtures as installation or
 calibration instructions.
