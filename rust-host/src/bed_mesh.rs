@@ -273,21 +273,28 @@ impl Transform {
     }
 
     /// Reinterpret the current physical point with updated lookup offsets.
-    /// Do not copy the interpolation grid; roll back the offset if either
+    /// Do not copy the interpolation grid; roll offsets back if either
     /// transform or coordinate validation fails.
     pub(crate) fn with_lookup_offsets<T, E>(
         &mut self,
         updates: [Option<f64>; 2],
+        tool_z: Option<f64>,
         map_error: impl FnOnce(Error) -> E,
         validate: impl FnOnce(&Self) -> Result<T, E>,
     ) -> Result<T, E> {
         let old = self.mesh.offset;
+        let old_z = self.tool_z;
+        if tool_z.is_some_and(|z| !z.is_finite()) {
+            return Err(map_error(Error::Input));
+        }
         self.mesh
             .set_offsets(std::array::from_fn(|i| updates[i].unwrap_or(old[i])))
             .map_err(map_error)?;
+        self.tool_z = tool_z.unwrap_or(old_z);
         let result = validate(self);
         if result.is_err() {
             self.mesh.offset = old;
+            self.tool_z = old_z;
         }
         result
     }
@@ -403,20 +410,28 @@ mod tests {
         let position = [1., 2., 0.4, 0.];
         let original = transform.reported(position).unwrap();
         let updated = transform
-            .with_lookup_offsets([Some(3.), Some(4.)], |e| e, |t| t.reported(position))
+            .with_lookup_offsets(
+                [Some(3.), Some(4.)],
+                Some(0.25),
+                |e| e,
+                |t| t.reported(position),
+            )
             .unwrap();
         assert_ne!(updated, original);
         let failed = transform.with_lookup_offsets(
             [Some(9.), None],
+            Some(1.25),
             |e| e,
             |candidate| {
                 assert_eq!(candidate.mesh.offset, [9., 4.]);
+                assert_eq!(candidate.tool_z, 1.25);
                 assert_ne!(candidate.reported(position), Ok(updated));
                 Err::<(), _>(Error::Input)
             },
         );
         assert_eq!(failed, Err(Error::Input));
         assert_eq!(transform.mesh.offset, [3., 4.]);
+        assert_eq!(transform.tool_z, 0.25);
         assert_eq!(transform.reported(position), Ok(updated));
     }
 

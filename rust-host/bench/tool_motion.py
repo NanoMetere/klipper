@@ -247,9 +247,10 @@ def compare_runtime(upstream, executable, cli, directory):
         assert [lane["tool"] for lane in trace["extruder_lanes"]] == [0, 2, 6]
         return trace
 
-    for count, named, mesh, offset in ((8, False, False, False), (96, False, False, False),
-                                       (96, True, False, False), (96, True, True, False),
-                                       (96, True, True, True)):
+    for count, named, mesh_mode in ((8, False, ""), (96, False, ""), (96, True, ""),
+                                    (96, True, "load"), (96, True, "xy"), (96, True, "zfade")):
+        mesh = bool(mesh_mode)
+        offset = mesh_mode in ("xy", "zfade")
         moves = list(line for line in long_gcode(count, True) if line.startswith("G1"))
         def block(tag):
             # Preserve legal positive paths across repetitions without
@@ -289,7 +290,7 @@ def compare_runtime(upstream, executable, cli, directory):
         flags = ("--fixed-pressure-script",)
         if mesh:
             profile = (base / "mesh.cfg").read_text().split("[bed_mesh]", 1)[1]
-            if not offset:
+            if mesh_mode == "load":
                 profile_path.write_text(profile_path.read_text() + "\n[bed_mesh]" + profile)
             flags += ("--mesh-script", "--mesh-profile", PROFILE)
             lines.insert(lines.index("G1 X11 F1500"), f"BED_MESH_PROFILE LOAD={PROFILE}")
@@ -302,6 +303,14 @@ def compare_runtime(upstream, executable, cli, directory):
                 ("SET_PRESSURE_ADVANCE ADVANCE=.055", "BED_MESH_OFFSET X=-4"),
                 ("G4 P41", "BED_MESH_OFFSET Y=73"),
                 ("T0", "BED_MESH_OFFSET Y=5.5"),
+            ):
+                lines.insert(lines.index(anchor), op)
+        if mesh_mode == "zfade":
+            i = lines.index("BED_MESH_OFFSET X=7 Y=-3")
+            lines[i] += " ZFADE=0.94"
+            for anchor, op in (
+                ("SET_PRESSURE_ADVANCE ADVANCE=.055", "BED_MESH_OFFSET ZFADE=-0.7"),
+                ("T0", "BED_MESH_OFFSET ZFADE=3"),
             ):
                 lines.insert(lines.index(anchor), op)
         result = decode(run(lines, flags=flags))
@@ -321,6 +330,9 @@ def compare_runtime(upstream, executable, cli, directory):
             no_offset = decode(run([line for line in lines if not line.startswith("BED_MESH_OFFSET")],
                                    flags=flags))
             assert result["motors"][2] != no_offset["motors"][2]
+        if mesh_mode == "zfade":
+            xy_only = decode(run([line.split(" ZFADE=")[0] for line in lines], flags=flags))
+            assert result["motors"][2] != xy_only["motors"][2]
         if named:
             only_t6_removed = decode(run([line for line in lines if line !=
                                        "SET_PRESSURE_ADVANCE EXTRUDER=extruder2 ADVANCE=.071"], flags=flags))
@@ -332,7 +344,7 @@ def compare_runtime(upstream, executable, cli, directory):
         assert threaded == result
         sizes = [len(lane) for lane in result["motors"]] + [
             len(lane["commands"]) for lane in result["extruder_lanes"]]
-        print(f"Sparse runtime gain (named={named}, mesh={mesh}, offset={offset}), {(10 + named)*count} shaped fixture moves: {sum(sizes)} exact timed stock "
+        print(f"Sparse runtime gain (named={named}, mesh={mesh_mode or 'off'}), {(10 + named)*count} shaped fixture moves: {sum(sizes)} exact timed stock "
               f"records (XYZ, T0/T2/T6: {sizes})")
 
     mesh_flags = ("--fixed-pressure-script", "--mesh-script", "--mesh-profile", PROFILE)

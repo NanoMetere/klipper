@@ -259,12 +259,54 @@ def main():
         assert json.loads(subprocess.check_output(cmd)) == offset_result
         print(f"runtime saved mesh XY offsets: {len(offset_rows)-3} exact timed stock motor records")
 
+        faded = {
+            before_load: f"{before_load} ZFADE=4",
+            "BED_MESH_OFFSET X=7.25 Y=-3.5": "BED_MESH_OFFSET X=7.25 Y=-3.5 ZFADE=0.8",
+            "G1 X50 Y32": "BED_MESH_OFFSET ZFADE=-1.25\nG1 X50 Y32",
+            while_clear: f"{while_clear} ZFADE=-4",
+            "BED_MESH_OFFSET Y=4.5": "BED_MESH_OFFSET Y=4.5 ZFADE=3",
+        }
+        fade_commands = [faded.get(line, line) for line in offset_commands]
+        path.write_text("\n".join(fade_commands) + "\n")
+        fade_expected, fade_duration = reference(upstream, c, cfg, path, runtime=True)
+        fade_result = json.loads(subprocess.check_output(cmd))
+        assert math.isclose(fade_result["planned_duration_seconds"], fade_duration, rel_tol=1e-12, abs_tol=1e-12)
+        fade_rows = cli_rows(fade_result)
+        for i, (want, row) in enumerate(zip(fade_expected, fade_rows, strict=True)):
+            assert want == row, (i, want, row)
+        assert fade_result["motors"][2] != offset_result["motors"][2]
+        # XY-only updates retain ZFADE; reloading an already-active mesh
+        # discards all offsets, not just X/Y. Inactive commands are inert.
+        explicit_fade = {
+            faded[before_load]: "", faded[while_clear]: "",
+            "BED_MESH_OFFSET X=-4": "BED_MESH_OFFSET X=-4 ZFADE=0.8",
+            "G1 X57 Y37": "BED_MESH_OFFSET ZFADE=0\nG1 X57 Y37",
+        }
+        path.write_text("\n".join(explicit_fade.get(line, line) for line in fade_commands) + "\n")
+        assert json.loads(subprocess.check_output(cmd)) == fade_result
+        print(f"runtime saved mesh ZFADE: {len(fade_rows)-3} exact timed stock motor records")
+
+        disabled_root = Path(d)
+        for name in ("printer.cfg", "rails.cfg"):
+            (disabled_root / name).write_text((fixture / name).read_text())
+        disabled = disabled_root / "disabled-fade.cfg"
+        disabled.write_text((fixture / "mesh.cfg").read_text().replace("fade_end: 3.5", "fade_end: 0.0"))
+        dc = [*cmd[:4], disabled_root, disabled.name, *cmd[6:]]
+        path.write_text("\n".join(fade_commands) + "\n")
+        off_expected, off_duration = reference(upstream, c, disabled, path, runtime=True)
+        off = json.loads(subprocess.check_output(dc))
+        assert math.isclose(off["planned_duration_seconds"], off_duration, rel_tol=1e-12, abs_tol=1e-12)
+        assert cli_rows(off) == off_expected
+        path.write_text("\n".join(offset_commands) + "\n")
+        assert json.loads(subprocess.check_output(dc)) == off
+
         path.write_text("G90\nBED_MESH_OFFSET X=2\n")
         denied = subprocess.run([x for x in cmd if x != "--mesh-script"], capture_output=True)
         assert denied.returncode and not denied.stdout
         for invalid in ("BED_MESH_PROFILE LOAD=missing", f"BED_MESH_PROFILE SAVE={PROFILE}",
                         f"BED_MESH_PROFILE REMOVE={PROFILE}", "BED_MESH_CALIBRATE",
-                        "BED_MESH_CLEAR X=1", "BED_MESH_OFFSET ZFADE=1",
+                        "BED_MESH_CLEAR X=1", "BED_MESH_OFFSET ZFADE=1001",
+                        "BED_MESH_OFFSET ZFADE=nan", "BED_MESH_OFFSET ZFADE=one",
                         "BED_MESH_OFFSET Y=infinity", "BED_MESH_OFFSET X=nan",
                         "BED_MESH_OFFSET X=bad", "BED_MESH_OFFSET X=1 X=2",
                         "BED_MESH_OFFSET X", "BED_MESH_OFFSET EXTRA=2"):

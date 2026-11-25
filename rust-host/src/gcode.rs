@@ -444,13 +444,20 @@ impl Preview {
             }
             self.install_bed_mesh(mesh.clone())?;
         } else if offset {
-            if args.keys().any(|key| key != "X" && key != "Y") {
+            if args
+                .keys()
+                .any(|key| !matches!(key.as_str(), "X" | "Y" | "ZFADE"))
+            {
                 return Err(Error::InvalidParameter);
             }
             let updates = [extended::float(&args, "X")?, extended::float(&args, "Y")?];
+            let zfade = extended::float(&args, "ZFADE")?;
+            if zfade.is_some_and(|z| z.abs() > 1000.0) {
+                return Err(Error::InvalidParameter);
+            }
             if let Some((active, last)) = &mut self.mesh {
                 let (candidate, intermediate) =
-                    active.with_lookup_offsets(updates, Error::Mesh, |mesh| {
+                    active.with_lookup_offsets(updates, zfade, Error::Mesh, |mesh| {
                         let intermediate = mesh.reported(self.toolhead).map_err(Error::Mesh)?;
                         let mut candidate = self.coords;
                         candidate.last = self.transform.reported(intermediate)?;

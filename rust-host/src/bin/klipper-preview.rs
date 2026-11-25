@@ -36,7 +36,7 @@ const HELP: &str =
     --initial-tool defaults to 0. Bare T lines only switch offline lanes; no docking.\n\
     --lane-workers sets 1–8 motion workers for long multi-tool previews (default 1).\n\
     --mesh-profile uses a saved Klipper mesh for this offline preview.\n\
-    --mesh-script permits load, clear, and XY lookup offsets for the supplied profile in XYZ or fixed-window PA motion previews.\n\
+    --mesh-script permits load, clear, and X/Y/ZFADE offsets for the supplied profile in XYZ or fixed-window PA motion previews.\n\
     --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.
 \
     A multi-tool mixed plan requires --initial-tool and every modeled tool temperature.\n\
