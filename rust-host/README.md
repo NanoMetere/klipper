@@ -2178,6 +2178,44 @@ python3 bench/file_debug_queue_proof.py UPSTREAM UPSTREAM/out/klipper.dict \
   --cores 0 --rounds 120
 ```
 
+The separately gated `shaped-file-debug-preview` feature adds fixed
+X/Y input shaping to this offline workflow. The first two arguments
+stay the same. The third is a standalone regular file containing only
+`[input_shaper]` settings, with one or both X/Y frequencies enabled:
+
+```ini
+[input_shaper]
+shaper_type_x: mzv
+shaper_freq_x: 45
+shaper_type_y: ei
+shaper_freq_y: 39
+```
+
+```sh
+cargo run --locked --release --features shaped-file-debug-preview \
+  --bin klipper-shaped-file-debug-preview -- \
+  bench/shared_extruder_fixture/offline_model.json \
+  bench/shared_extruder_fixture/path.gcode shape.cfg
+```
+
+Output uses `klipper.shared-corexy.shaped-file-debug.v1` with the same
+four ordered lanes. The shaped runner is serial; it keeps the stock
+generation and transmission windows separate. Includes, Z shaping,
+shaper updates during a job, calibration, and device I/O are outside
+this mode. The ordinary and unshaped previews do not acquire a shaper
+from the new feature.
+
+```sh
+python3 bench/shaped_file_debug.py UPSTREAM UPSTREAM/out/klipper.dict \
+  target/release/klipper-shaped-file-debug-preview
+```
+
+The parity test compares deterministic drained stock debug runs, pinned
+native C replay of captured windows, and independent Rust output from
+the original G-code. Add `--rounds 20 --cores 0` to time the first shaper
+setup from process startup to identical normalized JSON. As above, this
+compares offline debug tools, not real print duration or two full hosts.
+
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

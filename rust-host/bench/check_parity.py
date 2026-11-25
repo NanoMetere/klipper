@@ -167,6 +167,12 @@ def main():
                                                       upstream, "--dictionary", dictionary,
                                                       "--shared-preview", target / "release/klipper-shared-preview",
                                                       "--file-debug-preview", target / "file-debug-preview/release/klipper-file-debug-preview"]))
+        shaped = target / "shaped-file-debug-preview"
+        phases.append(("build_shaped_file_debug_preview", ["cargo", "build", "--locked",
+                       "--release", "--features", "shaped-file-debug-preview", "--bin",
+                       "klipper-shaped-file-debug-preview", "--target-dir", shaped]))
+        phases.append(("stock_shaped_file_debug", [sys.executable, ROOT/"bench/shaped_file_debug.py",
+                       upstream, dictionary, shaped / "release/klipper-shaped-file-debug-preview"]))
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
         phases.append(("mcu_config_payloads", [sys.executable, ROOT/"bench/mcu_config.py", upstream,

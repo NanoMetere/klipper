@@ -5,6 +5,8 @@
 #[cfg(feature = "file-debug-preview")]
 mod cadence;
 mod render;
+#[cfg(feature = "shaped-file-debug-preview")]
+pub use render::trace_file_debug_shaped;
 pub use render::{trace, MotionTrace, OutputOptions, TraceError};
 #[cfg(feature = "file-debug-preview")]
 pub use render::{trace_file_debug, trace_file_debug_parallel};
@@ -69,6 +71,8 @@ struct OriginClock {
     priming: bool,
     bound: Option<u8>,
     smoothing: f64,
+    #[cfg(feature = "shaped-file-debug-preview")]
+    shape_delay: f64,
     #[cfg(feature = "file-debug-preview")]
     wire: f64,
     #[cfg(feature = "file-debug-preview")]
@@ -79,7 +83,10 @@ struct OriginClock {
 
 impl OriginClock {
     fn delay(&self) -> f64 {
-        self.bound.map_or(0.001, |_| self.smoothing.max(0.001))
+        let delay = self.bound.map_or(0.001, |_| self.smoothing.max(0.001));
+        #[cfg(feature = "shaped-file-debug-preview")]
+        let delay = delay.max(self.shape_delay);
+        delay
     }
 
     fn profile(
@@ -204,55 +211,78 @@ pub fn plan(
     opt: Options,
     geometries: [&Extruder; 2],
 ) -> Result<Vec<Event>, Error> {
-    plan_body(script, start, opt, geometries, 0)
+    plan_body(
+        script,
+        start,
+        opt,
+        geometries,
+        0,
+        #[cfg(feature = "shaped-file-debug-preview")]
+        0.,
+    )
 }
 
 #[cfg(feature = "file-debug-preview")]
-fn plan_file_debug(
-    file: &str,
-    start: [f64; 3],
-    opt: Options,
-    geometries: [&Extruder; 2],
-) -> Result<Vec<Event>, Error> {
-    // Unlike the compact preview, the pinned debug reader batches the
-    // original bytes, including comments. Limit this mode to ASCII LF.
-    if file.len() > 65_536
-        || !file.ends_with('\n')
-        || file.lines().count() > 512
-        || file.lines().any(|line| line.len() >= 4096)
-        || !file
-            .bytes()
-            .all(|b| matches!(b, b'\n' | b'\t' | 0x20..=0x7e))
-    {
-        return Err(Error::Inputs);
-    }
-    let (header, body) = file.split_once('\n').ok_or(Error::Inputs)?;
-    let mut words = header
-        .split(';')
-        .next()
-        .ok_or(Error::Inputs)?
-        .split_ascii_whitespace();
-    if words.next() != Some("SET_KINEMATIC_POSITION") {
-        return Err(Error::Inputs);
-    }
-    for (axis, expected) in ['X', 'Y', 'Z'].into_iter().zip(start) {
-        let value = words
-            .next()
-            .and_then(|w| w.strip_prefix(axis))
-            .and_then(|s| s.strip_prefix('='))
-            .ok_or(Error::Inputs)?;
-        // Stock's extended parameter dispatch is separate from traditional
-        // G-code parsing; use this explicit fixture header only as a check.
-        let position: f64 = value.parse().map_err(|_| Error::Inputs)?;
-        if !position.is_finite() || position != expected {
-            return Err(Error::Inputs);
+macro_rules! file_debug_planner {
+    ($name:ident $(, $shape_delay:ident)?) => {
+        fn $name(
+            file: &str,
+            start: [f64; 3],
+            opt: Options,
+            geometries: [&Extruder; 2],
+            $($shape_delay: f64,)?
+        ) -> Result<Vec<Event>, Error> {
+            // Unlike the compact preview, the pinned debug reader batches the
+            // original bytes, including comments. Limit this mode to ASCII LF.
+            if file.len() > 65_536
+                || !file.ends_with('\n')
+                || file.lines().count() > 512
+                || file.lines().any(|line| line.len() >= 4096)
+                || !file
+                    .bytes()
+                    .all(|b| matches!(b, b'\n' | b'\t' | 0x20..=0x7e))
+            {
+                return Err(Error::Inputs);
+            }
+            let (header, body) = file.split_once('\n').ok_or(Error::Inputs)?;
+            let mut words = header
+                .split(';')
+                .next()
+                .ok_or(Error::Inputs)?
+                .split_ascii_whitespace();
+            if words.next() != Some("SET_KINEMATIC_POSITION") {
+                return Err(Error::Inputs);
+            }
+            for (axis, expected) in ['X', 'Y', 'Z'].into_iter().zip(start) {
+                let value = words
+                    .next()
+                    .and_then(|w| w.strip_prefix(axis))
+                    .and_then(|s| s.strip_prefix('='))
+                    .ok_or(Error::Inputs)?;
+                // Stock's extended parameter dispatch is separate from traditional
+                // G-code parsing; use this explicit fixture header only as a check.
+                let position: f64 = value.parse().map_err(|_| Error::Inputs)?;
+                if !position.is_finite() || position != expected {
+                    return Err(Error::Inputs);
+                }
+            }
+            if words.next().is_some() {
+                return Err(Error::Inputs);
+            }
+            #[cfg(feature = "shaped-file-debug-preview")]
+            let delay = 0.0 $(+ $shape_delay)?;
+            plan_body(
+                body, start, opt, geometries, header.len() + 1,
+                #[cfg(feature = "shaped-file-debug-preview")]
+                delay,
+            )
         }
-    }
-    if words.next().is_some() {
-        return Err(Error::Inputs);
-    }
-    plan_body(body, start, opt, geometries, header.len() + 1)
+    };
 }
+#[cfg(feature = "file-debug-preview")]
+file_debug_planner!(plan_file_debug);
+#[cfg(feature = "shaped-file-debug-preview")]
+file_debug_planner!(plan_file_debug_with_delay, shape_delay);
 
 #[cfg_attr(not(feature = "file-debug-preview"), inline(always))]
 fn plan_body(
@@ -262,6 +292,7 @@ fn plan_body(
     geometries: [&Extruder; 2],
     #[cfg_attr(not(feature = "file-debug-preview"), allow(unused_variables))]
     debug_prefix_bytes: usize,
+    #[cfg(feature = "shaped-file-debug-preview")] shape_delay: f64,
 ) -> Result<Vec<Event>, Error> {
     let inside = |coords: &[f64]| {
         opt.xyz_bounds.iter().zip(coords).all(|(b, v)| {
@@ -292,6 +323,8 @@ fn plan_body(
         priming: true,
         bound: Some(0),
         smoothing: opt.smooth * 0.5,
+        #[cfg(feature = "shaped-file-debug-preview")]
+        shape_delay,
         #[cfg(feature = "file-debug-preview")]
         wire: 0.0,
         #[cfg(feature = "file-debug-preview")]

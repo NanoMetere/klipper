@@ -16,6 +16,7 @@ python-bridge = []
 long-step-preview = []
 capture-replay = []
 file-debug-preview = ["capture-replay"]
+shaped-file-debug-preview = ["file-debug-preview"]
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
@@ -92,3 +93,8 @@ required-features = ["webhooks"]
 [[bin]]
 name = "klipper-file-debug-preview"
 required-features = ["webhooks", "file-debug-preview"]
+
+
+[[bin]]
+name = "klipper-shaped-file-debug-preview"
+required-features = ["webhooks", "shaped-file-debug-preview"]

@@ -139,6 +139,81 @@ pub fn trace_file_debug_parallel(
     })
 }
 
+/// Predict bounded file-debug output with fixed X/Y input shaping.
+#[cfg(feature = "shaped-file-debug-preview")]
+pub fn trace_file_debug_shaped(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    shaper: &crate::input_shaper::Shaper,
+) -> Result<MotionTrace, TraceError> {
+    use crate::{
+        input_shaper::captured::{self, Capture, ReplayError},
+        trajectory::Trapezoid,
+    };
+    if !(1.0..=1e9).contains(&wire.clock_hz) || wire.max_error_ticks > 200_000 {
+        return Err(TraceError::Options);
+    }
+    if shaper.is_enabled_for(Axis::Z) || !shaper.is_enabled_for(Axis::CoreXYPlus) {
+        return Err(TraceError::Options);
+    }
+    let axes = [Axis::CoreXYPlus, Axis::CoreXYMinus, Axis::Z];
+    let delay = axes.iter().fold(0.0_f64, |delay, &lane| {
+        let (pre, post) = shaper.window(lane);
+        delay.max(pre).max(post)
+    });
+    let events = super::plan_file_debug_with_delay(file, start, options, geometries, delay)?;
+    let mut captures = vec![Capture::Bind(start)];
+    for event in &events {
+        match event {
+            Event::Profile {
+                at, movement: p, ..
+            } if p.kinematic => {
+                let cruise = if (-1e-12..0.0).contains(&p.cruise_t) {
+                    0.
+                } else {
+                    p.cruise_t
+                };
+                captures.push(Capture::Profile(Trapezoid {
+                    at: *at,
+                    phase_sec: [p.accel_t, cruise, p.decel_t],
+                    start: p.start[..3].try_into().unwrap(),
+                    direction: p.direction[..3].try_into().unwrap(),
+                    start_velocity: p.start_v,
+                    cruise_velocity: p.cruise_v,
+                    accel: p.accel,
+                }));
+            }
+            Event::DebugTransmit(at) => captures.push(Capture::Transmit(*at)),
+            Event::Generation { at, retirement } => {
+                captures.push(Capture::Generate(*at));
+                captures.push(Capture::Retire(*retirement));
+            }
+            _ => {}
+        }
+    }
+    let lanes = std::array::from_fn(|i| (axes[i], wire.step_distances[i], wire.invert[i]));
+    let [a, b, z] = captured::replay(
+        shaper,
+        &captures,
+        lanes,
+        wire.clock_hz,
+        wire.max_error_ticks,
+    )
+    .map_err(|e| match e {
+        ReplayError::Options => TraceError::Options,
+        ReplayError::Trajectory(e) => TraceError::Trajectory(e),
+        ReplayError::Solver(e) => TraceError::Steps(e),
+        ReplayError::Clock(e) => TraceError::Clock(e),
+    })?;
+    let e = solve_e(&events, options.smooth, wire)?;
+    Ok(MotionTrace {
+        lanes: [a, b, z, e],
+    })
+}
+
 #[cfg(feature = "file-debug-preview")]
 fn solve_xyz(
     events: &[Event],

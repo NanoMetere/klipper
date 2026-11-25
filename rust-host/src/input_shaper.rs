@@ -9,6 +9,9 @@ use crate::{
     trajectory::{Segment, Trajectory},
 };
 
+#[cfg(feature = "shaped-file-debug-preview")]
+pub(crate) mod captured;
+
 const MAX_PULSES: usize = 10;
 const MAX_WINDOW: f64 = 0.5;
 const MAX_PHASES: usize = 16_384;
@@ -236,6 +239,30 @@ pub struct Shaper {
 }
 
 impl Shaper {
+    /// Read a fixed X/Y shaper from an isolated input_shaper section.
+    /// This does not configure a device or read other files.
+    #[cfg(feature = "shaped-file-debug-preview")]
+    pub fn from_file_debug_config(config: &crate::config::Config) -> Result<Self, &'static str> {
+        const KEYS: [&str; 7] = [
+            "shaper_type",
+            "shaper_type_x",
+            "shaper_type_y",
+            "shaper_freq_x",
+            "shaper_freq_y",
+            "damping_ratio_x",
+            "damping_ratio_y",
+        ];
+        if config.sections().ne(["input_shaper"])
+            || config.values("DEFAULT").is_some()
+            || config
+                .values("input_shaper")
+                .is_none_or(|settings| settings.keys().any(|key| !KEYS.contains(&key.as_str())))
+        {
+            return Err("expected only fixed X/Y input_shaper settings");
+        }
+        crate::input_shaper_defs::from_config(config)?.ok_or("no active X/Y shaper")
+    }
+
     pub fn new(axes: [Pulses; 3]) -> Self {
         let (x, y) = (&axes[0], &axes[1]);
         let xy_shared_times = x.len != 0

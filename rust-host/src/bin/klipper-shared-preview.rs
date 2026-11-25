@@ -217,6 +217,14 @@ pub(crate) fn entry<const FILE_DEBUG: bool>() {
     }
 }
 
+#[cfg(feature = "shaped-file-debug-preview")]
+#[allow(dead_code)]
+#[path = "support/shaped_file_debug_entry.rs"]
+mod shaped;
+#[cfg(feature = "shaped-file-debug-preview")]
+#[allow(unused_imports)]
+pub(crate) use shaped::entry as entry_shaped;
+
 // Also included as a module by the separate opt-in binary.
 #[allow(dead_code)]
 fn main() {

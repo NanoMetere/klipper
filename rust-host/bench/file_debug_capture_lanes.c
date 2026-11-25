@@ -16,6 +16,11 @@
 struct stepper_kinematics *corexy_stepper_alloc(char type);
 struct stepper_kinematics *cartesian_stepper_alloc(char axis);
 int run_e(FILE *in, FILE *out, double hz, unsigned error);
+#ifdef CAPTURE_SHAPE
+struct stepper_kinematics *input_shaper_alloc(void);
+int input_shaper_set_sk(struct stepper_kinematics *, struct stepper_kinematics *);
+int input_shaper_set_shaper_params(struct stepper_kinematics *, char, int, double[], double[]);
+#endif
 
 enum { LANES = 4, MAX_INPUT = 2 * 1024 * 1024 };
 struct input { char *text; size_t size; };
@@ -57,17 +62,39 @@ render_xyz(struct lane *lane, FILE *in, FILE *out)
     struct trapq *queue = trapq_alloc();
     struct stepper_kinematics *sk = lane->axis == 2 ? cartesian_stepper_alloc('z')
         : corexy_stepper_alloc(lane->axis == 0 ? '+' : '-');
+    int status = 2;
+#ifdef CAPTURE_SHAPE
+    struct stepper_kinematics *original = sk;
+    sk = input_shaper_alloc();
+    if (input_shaper_set_sk(sk, original))
+        goto done;
+#endif
     stepcompress_fill(sink, 1, lane->tolerance, 3, 4);
     stepcompress_set_invert_sdir(sink, lane->invert);
     stepcompress_set_time(sink, 0., lane->hz);
     itersolve_set_trapq(sk, queue, lane->dist);
     struct clock_estimate ce;
     clock_fill(&ce, lane->hz, 0., 0);
-    int status = 2;
     char op;
     double prior_cutoff = 0.;
     unsigned cutoffs = 0;
     while (fscanf(in, " %c", &op) == 1) {
+#ifdef CAPTURE_SHAPE
+        if (op == 'h') {
+            double a[10], t[10];
+            char axis;
+            int n;
+            if (fscanf(in, " %c %d", &axis, &n) != 2
+                || (axis != 'x' && axis != 'y') || n <= 0 || n > 10)
+                goto done;
+            for (int k = 0; k < n; k++)
+                if (fscanf(in, "%lf %lf", a+k, t+k) != 2)
+                    goto done;
+            if (input_shaper_set_shaper_params(sk, axis, n, a, t))
+                goto done;
+            continue;
+        }
+#endif
         if (op == 'a') {
             double v[13];
             for (int i = 0; i < 13; ++i)
@@ -132,6 +159,9 @@ done:
     message_queue_free(&messages);
     trapq_free(queue);
     free(sk);
+#ifdef CAPTURE_SHAPE
+    free(original);
+#endif
     return status;
 }
 

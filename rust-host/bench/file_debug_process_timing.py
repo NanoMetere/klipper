@@ -25,7 +25,7 @@ OIDS = [3, 6, 9, 0]  # fixed pinned printer.cfg below
 SCHEMA = "klipper.shared-corexy.file-debug.v1"
 
 
-def stock_arm(upstream, dictionary, fixture, model, gcode):
+def stock_arm(upstream, dictionary, fixture, model, gcode, schema=SCHEMA):
     sys.path.insert(0, str(upstream / "klippy"))
     import stepper
     config = json.loads(model.read_text())
@@ -59,7 +59,7 @@ def stock_arm(upstream, dictionary, fixture, model, gcode):
                 lane.append({"kind": "steps", "interval": interval, "count": count,
                              "add": add, "last_clock": last_clock})
         normalized.append(lane)
-    print(json.dumps({"schema": SCHEMA, "clock_hz": hz, "lane_order": LANES,
+    print(json.dumps({"schema": schema, "clock_hz": hz, "lane_order": LANES,
                       "lanes": normalized}, separators=(",", ":")))
 
 
