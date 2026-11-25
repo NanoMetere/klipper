@@ -178,6 +178,9 @@ def file_cli_lanes(a, fixture, temp, path, tol, hz):
     model = temp / "debug-model.json"
     model.write_text(json.dumps(config))
     raw = subprocess.check_output([a.file_debug_preview, model, path], timeout=10)
+    parallel = subprocess.check_output(
+        [a.file_debug_preview, "--lane-workers", "4", model, path], timeout=10)
+    assert parallel == raw
     result = json.loads(raw)
     assert result["schema"] == "klipper.shared-corexy.file-debug.v1"
     assert result["lane_order"] == ["corexy_a", "corexy_b", "z", "shared_e"]
@@ -468,7 +471,20 @@ def main():
             for path in rejected:
                 result = subprocess.run([a.file_debug_preview, model_file, path], capture_output=True, timeout=5)
                 assert result.returncode == 2 and b"non-symlink" in result.stderr and not result.stdout
-            print("Standalone opt-in file-debug CLI matched 22 stock cases; invalid files rejected")
+            for flag in (["--lane-workers", "1"], ["--lane-workers", "2"],
+                         ["--lane-workers", "04"], ["--lane-workers", "5"],
+                         ["--lane-workers=4"]):
+                result = subprocess.run([a.file_debug_preview, *flag, model_file, good],
+                                        capture_output=True, timeout=5)
+                assert result.returncode == 2 and b"Usage:" in result.stderr and not result.stdout
+            result = subprocess.run([a.file_debug_preview, "--lane-workers", "4", model_file, bad],
+                                    capture_output=True, timeout=5)
+            assert result.returncode == 2 and not result.stdout
+            if a.shared_preview:
+                result = subprocess.run([a.shared_preview, "--lane-workers", "4", model_file, good],
+                                        capture_output=True, timeout=5)
+                assert result.returncode == 2 and b"Usage:" in result.stderr and not result.stdout
+            print("Standalone file-debug CLI matched 22 stock cases in both worker modes; invalid files rejected")
 
 
 

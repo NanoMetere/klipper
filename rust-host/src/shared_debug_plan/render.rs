@@ -38,6 +38,9 @@ pub enum TraceError {
     Steps(crate::step_times::Error),
     Clock(crate::step_clock::Error),
     Options,
+    /// A file-debug worker could not be started or joined.
+    #[cfg(feature = "file-debug-preview")]
+    Worker,
 }
 
 macro_rules! convert {
@@ -88,6 +91,143 @@ pub fn trace_file_debug(
     }
     let events = plan_file_debug(file, start, options, geometries)?;
     render(events, start, options.smooth, wire)
+}
+
+/// File-debug preview using four independent lanes. Use only when multiple
+/// CPU cores are available; the ordinary preview remains serial.
+#[cfg(feature = "file-debug-preview")]
+pub fn trace_file_debug_parallel(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+) -> Result<MotionTrace, TraceError> {
+    if !(1.0..=1e9).contains(&wire.clock_hz) || wire.max_error_ticks > 200_000 {
+        return Err(TraceError::Options);
+    }
+    let events = plan_file_debug(file, start, options, geometries)?;
+    let events = &events;
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(3);
+        for (lane, axis) in [Axis::CoreXYPlus, Axis::CoreXYMinus, Axis::Z]
+            .into_iter()
+            .enumerate()
+        {
+            match std::thread::Builder::new()
+                .spawn_scoped(scope, move || solve_xyz(events, start, wire, lane, axis))
+            {
+                Ok(handle) => handles.push(handle),
+                Err(_) => break,
+            }
+        }
+        let extruder = if handles.len() == 3 {
+            solve_e(events, options.smooth, wire)
+        } else {
+            Err(TraceError::Worker)
+        };
+        // Always join all spawned threads, even if another lane failed.
+        let mut results = std::array::from_fn(|_| Err(TraceError::Worker));
+        for (result, worker) in results[..3].iter_mut().zip(handles) {
+            *result = worker.join().unwrap_or(Err(TraceError::Worker));
+        }
+        results[3] = extruder;
+        let [a, b, z, e] = results;
+        Ok(MotionTrace {
+            lanes: [a?, b?, z?, e?],
+        })
+    })
+}
+
+#[cfg(feature = "file-debug-preview")]
+fn solve_xyz(
+    events: &[Event],
+    start: [f64; 3],
+    wire: OutputOptions,
+    lane: usize,
+    axis: Axis,
+) -> Result<Vec<Command>, TraceError> {
+    let clock = Clock {
+        last_encoded: 0,
+        time_origin: 0.0,
+        hz: wire.clock_hz,
+    };
+    let mut xyz = Trajectory::new(1024)?;
+    let mut solver = Solver::new(axis, wire.step_distances[lane], start)?;
+    let mut encoder = TraceEncoder::new(clock, wire.max_error_ticks, wire.invert[lane]);
+    let mut from = 0.0_f64;
+    let mut scratch = Vec::new();
+    for event in events {
+        match *event {
+            Event::Profile { at, movement, .. } => xyz.append_profile(at, &movement)?,
+            Event::DebugTransmit(at) => {
+                encoder.flush_before(crate::step_clock::captured_cutoff(at, clock.hz)?)?
+            }
+            Event::Generation { at, retirement } => {
+                for phase in xyz.segments() {
+                    let lo = from.max(phase.at);
+                    let hi = at.min(phase.end());
+                    if lo < hi {
+                        scratch.clear();
+                        solver.crossing_events_into(phase, lo..hi, MAX_EVENTS, &mut scratch)?;
+                        encoder.push(&scratch)?;
+                    }
+                }
+                from = at;
+                prune_prepared(&mut xyz, retirement)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(encoder.finish()?)
+}
+
+#[cfg(feature = "file-debug-preview")]
+fn solve_e(events: &[Event], smooth: f64, wire: OutputOptions) -> Result<Vec<Command>, TraceError> {
+    let clock = Clock {
+        last_encoded: 0,
+        time_origin: 0.0,
+        hz: wire.clock_hz,
+    };
+    let mut e = WindowStepper::new(wire.step_distances[3], smooth)?;
+    let mut encoder = TraceEncoder::new(clock, wire.max_error_ticks, wire.invert[3]);
+    let mut queues = [Trajectory::new(1024)?, Trajectory::new(1024)?];
+    let mut gains = Vec::new();
+    let mut bound = None;
+    for event in events {
+        match *event {
+            Event::Profile {
+                at,
+                movement,
+                queue,
+            } => append_nominal(&mut queues[usize::from(queue)], at, &movement)?,
+            Event::Bind { queue, anchor } => {
+                bound = queue.map(usize::from);
+                if bound.is_some() {
+                    e.rebase_after_flush(anchor)?;
+                }
+            }
+            Event::Gain { at, advance } => {
+                if let Some(last) = gains.last_mut().filter(|(t, _)| *t == at) {
+                    last.1 = advance;
+                } else {
+                    gains.push((at, advance));
+                }
+            }
+            Event::DebugTransmit(at) => {
+                encoder.flush_before(crate::step_clock::captured_cutoff(at, clock.hz)?)?
+            }
+            Event::Generation { at, retirement } => {
+                let advance = Advance::new(smooth, &gains)?;
+                let steps = e.flush(bound.map(|i| &queues[i]), &advance, at, MAX_EVENTS)?;
+                encoder.push(&steps)?;
+                for queue in &mut queues {
+                    prune_prepared(queue, retirement)?;
+                }
+            }
+        }
+    }
+    Ok(encoder.finish()?)
 }
 
 #[cfg_attr(not(feature = "file-debug-preview"), inline(always))]
@@ -237,7 +377,12 @@ mod tests {
             let debug = |script: &str| {
                 trace_file_debug(script, [10., 10., 1.], options, [&geometry; 2], output)
             };
+            let parallel = |script: &str| {
+                trace_file_debug_parallel(script, [10., 10., 1.], options, [&geometry; 2], output)
+            };
             let header = "SET_KINEMATIC_POSITION X=10 Y=10 Z=1";
+            let valid = format!("{header}\nM83\nG1 X12 Y11 Z1.1 E.08 F600\nM400\n");
+            assert_eq!(parallel(&valid).unwrap(), debug(&valid).unwrap());
             assert!(debug(&format!("{header} ; virtual origin\nM400\n")).is_ok());
             for invalid in [
                 "M400\n".into(),
@@ -253,6 +398,10 @@ mod tests {
             ] {
                 assert!(matches!(
                     debug(&invalid),
+                    Err(TraceError::Plan(Error::Inputs))
+                ));
+                assert!(matches!(
+                    parallel(&invalid),
                     Err(TraceError::Plan(Error::Inputs))
                 ));
             }

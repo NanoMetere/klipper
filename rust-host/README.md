@@ -2138,6 +2138,31 @@ same JSON, while the Rust program models only the bounded offline motion
 subset and emits JSON directly. This is a comparison of two tools for
 an offline result, not a comparison of two full printer hosts.
 
+The file-debug CLI defaults to serial processing. On a machine with at
+least four available CPU cores, pass `--lane-workers 4` before the two
+paths to use one independent solver and encoder for each lane. It still
+emits A, B, Z, E in that order with identical JSON. The optional library
+entry point is `shared_debug_plan::trace_file_debug_parallel`. Leave the
+flag off for a single-core environment, where thread startup and scheduling
+can make it slower.
+
+The lane timing benchmark compares serial and parallel **within** each
+implementation, checking every result against the recorded stock debug
+trace. Its C counterpart replays captured windows using the pinned,
+unchanged C helper code and includes process startup, parsing the captured
+windows, solving, compression and writing the ordered text records. The
+Rust arms include full offline G-code planning through JSON output. The
+different boundaries do not support an absolute C-versus-Rust speed claim.
+
+```sh
+python3 bench/file_debug_lane_timing.py UPSTREAM UPSTREAM/out/klipper.dict \
+  --file-debug-preview target/release/klipper-file-debug-preview \
+  --rounds 120 --cores 0,1,2,3
+```
+
+Use four CPUs available to the process for a parallel run, then rerun
+with one CPU to check the serial default remains the better choice there.
+
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

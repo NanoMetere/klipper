@@ -5,9 +5,9 @@
 #[cfg(feature = "file-debug-preview")]
 mod cadence;
 mod render;
-#[cfg(feature = "file-debug-preview")]
-pub use render::trace_file_debug;
 pub use render::{trace, MotionTrace, OutputOptions, TraceError};
+#[cfg(feature = "file-debug-preview")]
+pub use render::{trace_file_debug, trace_file_debug_parallel};
 
 use crate::{
     extrusion::Extruder,

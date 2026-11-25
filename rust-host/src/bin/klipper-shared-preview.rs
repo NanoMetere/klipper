@@ -129,7 +129,7 @@ fn read(path: &Path, cap: u64) -> Result<String, String> {
 #[inline(always)]
 fn run<const FILE_DEBUG: bool>() -> Result<(), String> {
     let help = if FILE_DEBUG {
-        "Usage: klipper-file-debug-preview MODEL.json GCODE\nRender pinned offline file-debug timing; requires the checked virtual-start header. No device access."
+        "Usage: klipper-file-debug-preview [--lane-workers 4] MODEL.json GCODE\nRender pinned offline file-debug timing; requires the checked virtual-start header. Default is serial; use four workers only with multiple CPU cores. No device access."
     } else {
         HELP
     };
@@ -143,8 +143,14 @@ fn run<const FILE_DEBUG: bool>() -> Result<(), String> {
         println!("{help}");
         return Ok(());
     }
-    let [model, gcode] = &args[..] else {
-        return Err(help.into());
+    let (model, gcode, _parallel) = match &args[..] {
+        [model, gcode] => (model, gcode, false),
+        [flag, workers, model, gcode]
+            if FILE_DEBUG && flag == "--lane-workers" && workers == "4" =>
+        {
+            (model, gcode, true)
+        }
+        _ => return Err(help.into()),
     };
     let raw = read(Path::new(model), MAX_MODEL)?;
     let m: Model = serde_json::from_str(&raw).map_err(|e| format!("Model: {e}"))?;
@@ -160,10 +166,10 @@ fn run<const FILE_DEBUG: bool>() -> Result<(), String> {
     )
     .map_err(|e| format!("Motion limits: {e:?}"))?;
     #[cfg(feature = "file-debug-preview")]
-    let predictor = if FILE_DEBUG {
-        klipper_host_protocol::shared_debug_plan::trace_file_debug
-    } else {
-        trace
+    let predictor = match (FILE_DEBUG, _parallel) {
+        (true, true) => klipper_host_protocol::shared_debug_plan::trace_file_debug_parallel,
+        (true, false) => klipper_host_protocol::shared_debug_plan::trace_file_debug,
+        (false, _) => trace,
     };
     #[cfg(not(feature = "file-debug-preview"))]
     let predictor = trace;

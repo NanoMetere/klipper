@@ -149,6 +149,9 @@ impl TraceEncoder {
         }
     }
 
+    // The optional workers add more call sites. Keep this body shared rather
+    // than letting their inclusion split the hot serial compression path.
+    #[cfg_attr(feature = "file-debug-preview", inline(never))]
     fn flush(&mut self) -> Result<(), Error> {
         if !self.run.is_empty() {
             compress_each(

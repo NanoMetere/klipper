@@ -69,9 +69,12 @@ pub fn compress_run(base: u64, clocks: &[u64], max_error: u32) -> Result<Vec<Blo
     Ok(blocks)
 }
 
+// Keep the encoder's emission closure in the compression loop when the
+// optional lane workers change which call sites the compiler sees.
 /// As `compress_run`, but hands each verified block to a consumer immediately
 /// without building an intermediate Vec. If this returns an error, discard
 /// the output of this entire run. Do not use it as a device write callback.
+#[cfg_attr(feature = "file-debug-preview", inline(always))]
 pub fn compress_each(
     mut base: u64,
     clocks: &[u64],

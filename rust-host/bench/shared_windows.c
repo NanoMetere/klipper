@@ -27,22 +27,24 @@ struct stepper_kinematics *extruder_stepper_alloc(void);
 void extruder_stepper_free(struct stepper_kinematics *sk);
 void extruder_set_pressure_advance(struct stepper_kinematics *, double, double, double);
 
-int main(int argc, char *argv[])
+#ifdef CAPTURE_LANES
+int run_e(FILE *in, FILE *out, double hz, unsigned error)
+#else
+static int run(FILE *in, FILE *out, double hz, unsigned error)
+#endif
 {
     const double dist = 22.17 / 3200.;
 #ifdef WIRE
     struct list_head messages;
     list_init(&messages);
     struct stepcompress *sink = stepcompress_alloc(&messages);
-    unsigned error = argc >= 3 ? strtoul(argv[2], NULL, 10) : 0;
     stepcompress_fill(sink, 1, error, 3, 4);
-    double hz = argc >= 2 ? strtod(argv[1], NULL) : 20000000.;
     if (!isfinite(hz) || !(hz > 0.))
         return 2;
     stepcompress_set_time(sink, 0., hz);
 #else
-    (void)argc;
-    (void)argv;
+    (void)hz;
+    (void)error;
     struct stepcompress raw = {0};
     struct stepcompress *sink = &raw;
 #endif
@@ -51,37 +53,39 @@ int main(int argc, char *argv[])
     char op;
     double prior_cutoff = 0.;
     unsigned cutoff_count = 0;
-    while (scanf(" %c", &op) == 1) {
+    while (fscanf(in, " %c", &op) == 1) {
         if (op == 'a') {
             int q, pa;
             double at, ta, tc, td, x, sv, cv, acc;
-            if (scanf(" %d %d %lf %lf %lf %lf %lf %lf %lf %lf",
+            if (fscanf(in, " %d %d %lf %lf %lf %lf %lf %lf %lf %lf",
                       &q, &pa, &at, &ta, &tc, &td, &x, &sv, &cv, &acc) != 10 || q < 0 || q > 1)
                 return 2;
             trapq_append(queue[q], at, ta, tc, td, x, 0., 0., 1., pa, 0., sv, cv, acc);
         } else if (op == 'p') {
             double at, amount;
-            if (scanf("%lf %lf", &at, &amount) != 2)
+            if (fscanf(in, "%lf %lf", &at, &amount) != 2)
                 return 2;
             extruder_set_pressure_advance(sk, at, amount, .04);
         } else if (op == 'b') {
             int q;
             double x;
-            if (scanf("%d %lf", &q, &x) != 2 || q < -1 || q > 1)
+            if (fscanf(in, "%d %lf", &q, &x) != 2 || q < -1 || q > 1)
                 return 2;
             if (q >= 0)
                 itersolve_set_position(sk, x, 0., 0.);
             itersolve_set_trapq(sk, q >= 0 ? queue[q] : NULL, dist);
-            printf("bind %d %.17g\n", q, sk->commanded_pos);
+#ifndef CAPTURE_LANES
+            fprintf(out, "bind %d %.17g\n", q, sk->commanded_pos);
+#endif
         } else if (op == 't') {
             int q;
             double before, clear;
-            if (scanf("%d %lf %lf", &q, &before, &clear) != 3 || q < 0 || q > 1)
+            if (fscanf(in, "%d %lf %lf", &q, &before, &clear) != 3 || q < 0 || q > 1)
                 return 2;
             trapq_finalize_moves(queue[q], before, clear);
         } else if (op == 'w') {
             double cutoff;
-            if (++cutoff_count > 512 || scanf("%lf", &cutoff) != 1
+            if (++cutoff_count > 512 || fscanf(in, "%lf", &cutoff) != 1
                 || !isfinite(cutoff) || cutoff < prior_cutoff)
                 return 2;
             prior_cutoff = cutoff;
@@ -95,13 +99,15 @@ int main(int argc, char *argv[])
 #endif
         } else if (op == 'f') {
             double end;
-            if (scanf("%lf", &end) != 1)
+            if (fscanf(in, "%lf", &end) != 1)
                 return 2;
             for (int q = 0; q < 2; ++q)
                 trapq_check_sentinels(queue[q]);
             if (itersolve_generate_steps(sk, sink, end))
                 return 3;
-            printf("flush %.17g %.17g\n", end, sk->commanded_pos);
+#ifndef CAPTURE_LANES
+            fprintf(out, "flush %.17g %.17g\n", end, sk->commanded_pos);
+#endif
         } else {
             return 2;
         }
@@ -117,11 +123,11 @@ int main(int argc, char *argv[])
         memcpy(framed + MESSAGE_HEADER_SIZE, m->msg, m->len);
         int len = m->len + MESSAGE_MIN;
         if (!msgblock_decode(fields, 3, framed, len) && fields[0] == 4) {
-            printf("d %u\n", fields[2]);
+            fprintf(out, "d %u\n", fields[2]);
         } else if (!msgblock_decode(fields, 5, framed, len) && fields[0] == 3) {
             int64_t count = fields[3], add = (int32_t)fields[4];
             tick += fields[2] * count + add * count * (count - 1) / 2;
-            printf("s %u %" PRId64 " %" PRId64 " %" PRIu64 "\n",
+            fprintf(out, "s %u %" PRId64 " %" PRId64 " %" PRIu64 "\n",
                    fields[2], count, add, tick);
         } else {
             return 5;
@@ -135,3 +141,13 @@ int main(int argc, char *argv[])
     trapq_free(queue[1]);
     return 0;
 }
+
+
+#ifndef CAPTURE_LANES
+int main(int argc, char *argv[])
+{
+    double hz = argc >= 2 ? strtod(argv[1], NULL) : 20000000.;
+    unsigned error = argc >= 3 ? strtoul(argv[2], NULL, 10) : 0;
+    return run(stdin, stdout, hz, error);
+}
+#endif
