@@ -159,7 +159,7 @@ def main():
     if dictionary.is_file():
         phases.append(("shared_extruder_binding", [sys.executable, ROOT/"bench/shared_extruder.py",
                                                   upstream, "--dictionary", dictionary]))
-        phases.append(("stock_captured_shared_e", [sys.executable, ROOT/"bench/shared_window_capture.py",
+        phases.append(("stock_captured_shared_axes", [sys.executable, ROOT/"bench/shared_window_capture.py",
                                                       upstream, "--dictionary", dictionary]))
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))

@@ -5,13 +5,15 @@ from pathlib import Path
 import runpy
 import sys
 
-capture_windows = sys.argv[1] == "--capture-windows"
+capture_windows = sys.argv[1] in ("--capture-windows", "--capture-default-windows")
+zero_error = sys.argv[1] == "--capture-windows"
 entry, stock, *args = sys.argv[2 if capture_windows else 1:]
 sys.path[:0] = [str(Path(stock).parent), str(Path(entry).parent)]
 from kinematics.extruder import ExtruderStepper, PrinterExtruder
 from extras.motion_queuing import PrinterMotionQueuing
+from toolhead import ToolHead
 import stepper as stepper_module
-if capture_windows:
+if zero_error:
     # Exact debug-output diagnostic only: this is a new file-output process.
     stepper_module.MAX_STEPCOMPRESS_ERROR = 0.0
 
@@ -108,10 +110,14 @@ def setup_mq(self, config):
     generate = self.steppersyncmgr_gen_steps
     def capture(*args):
         emit("WINDOW", op="f", cutoff=args[1], at=args[2], history=args[3])
+        emit("XYZ", op="f", at=args[2])
         return generate(*args)
     self.steppersyncmgr_gen_steps = capture
     trim = self.trapq_finalize_moves
     def capture_trim(trapq, cutoff, clear):
+        th = self.printer.lookup_object("toolhead", None)
+        if th is not None and trapq == th.get_trapq():
+            emit("XYZ", op="t", cutoff=cutoff)
         for i, name in enumerate(("extruder", "extruder1")):
             obj = self.printer.lookup_object(name, None)
             if obj is not None and trapq == obj.get_trapq():
@@ -140,8 +146,30 @@ def capture_gain(self, gain, smooth):
     if not registered:
         emit("WINDOW", op="p", at=0., gain=gain, smooth=smooth)
 
+old_toolhead = ToolHead.__init__
+def setup_toolhead(self, config):
+    old_toolhead(self, config)
+    append = self.trapq_append
+    def capture_append(q, at, ta, tc, td, x, y, z, rx, ry, rz, sv, cv, acc):
+        emit("XYZ", op="a", at=at, ta=ta, tc=tc, td=td,
+             x=x, y=y, z=z, rx=rx, ry=ry, rz=rz, sv=sv, cv=cv, acc=acc)
+        return append(q, at, ta, tc, td, x, y, z, rx, ry, rz, sv, cv, acc)
+    self.trapq_append = capture_append
+
+old_set_position = ToolHead.set_position
+def capture_start(self, newpos, homing_axes=""):
+    old_set_position(self, newpos, homing_axes)
+    motors = self.get_kinematics().get_steppers()
+    emit("XYZ_BIND", oids=[m.get_oid() for m in motors],
+         d=[m.get_step_dist() for m in motors],
+         inverted=[m.get_dir_inverted()[0] for m in motors],
+         max_error=motors[0].get_mcu().seconds_to_clock(stepper_module.MAX_STEPCOMPRESS_ERROR))
+    emit("XYZ", op="b", x=newpos[0], y=newpos[1], z=newpos[2])
+
 if capture_windows:
     PrinterMotionQueuing.__init__ = setup_mq
+    ToolHead.__init__ = setup_toolhead
+    ToolHead.set_position = capture_start
     ExtruderStepper._set_pressure_advance = capture_gain
 ExtruderStepper.sync_to_extruder = capture_sync
 ExtruderStepper.cmd_SET_PRESSURE_ADVANCE = capture_pa

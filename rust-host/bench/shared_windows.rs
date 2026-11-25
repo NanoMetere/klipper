@@ -14,6 +14,7 @@ fn main() {
     let hz = args
         .next()
         .map_or(20_000_000., |s| s.parse::<f64>().unwrap());
+    let max_error = args.next().map_or(0, |s| s.parse::<u32>().unwrap());
     let mut all = Vec::new();
     let mut motor = WindowStepper::new(22.17 / 3200., 0.04).unwrap();
     let mut queues = [
@@ -91,7 +92,7 @@ fn main() {
             time_origin: 0.,
             hz,
         };
-        for command in encode_trace(clock, &all, 0, false).unwrap() {
+        for command in encode_trace(clock, &all, max_error, false).unwrap() {
             match command {
                 Command::SetDirection(v) => println!("d {}", v as u8),
                 Command::Steps(b) => {

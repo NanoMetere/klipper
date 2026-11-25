@@ -272,14 +272,15 @@ justify changing either solver. No live performance claim follows.
   stepper's direction and clock across rebind/detach and roll back on
   an invalid or over-cap window. This is not full configured
   Klippy-to-Rust XYZ/E time parity; no CLI path calls this kernel.
-  The actual pinned stock debug process also supplies phase records,
-  effective pressure timestamps, generation cutoffs and queue retirement
-  for two configured shared-stepper fixtures. In zero-compression-error
-  file output at 50 MHz, Rust and unchanged C both match all 1,410
-  direction/compressed-step records (3,005 individual ticks) for the
-  shared E OID across positive/negative rebind and detach. The other
-  three OIDs are observed, not independently replayed. This fixture
-  still does not independently plan G-code or support a physical
+  The actual pinned stock debug process also supplies XYZ and E phase
+  records, effective pressure timestamps, generation cutoffs and queue
+  retirement for two configured shared-stepper fixtures. Rust reproduces
+  all four OIDs at 50 MHz, including 43,981 individual step ticks per
+  compression mode. That is 15,566 exact compressed/direction records
+  with zero error and 429 with the stock default 25 μs tolerance.
+  The one shared E OID also matches unchanged C replay across positive
+  and negative rebinds and detach. This captures stock look-ahead
+  inputs; it does not independently plan G-code or support a physical
   nozzle changer.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and

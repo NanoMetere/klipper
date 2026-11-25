@@ -33,8 +33,9 @@ int main(int argc, char *argv[])
     struct list_head messages;
     list_init(&messages);
     struct stepcompress *sink = stepcompress_alloc(&messages);
-    stepcompress_fill(sink, 1, 0, 3, 4);
-    double hz = argc == 2 ? strtod(argv[1], NULL) : 20000000.;
+    unsigned error = argc >= 3 ? strtoul(argv[2], NULL, 10) : 0;
+    stepcompress_fill(sink, 1, error, 3, 4);
+    double hz = argc >= 2 ? strtod(argv[1], NULL) : 20000000.;
     if (!(hz > 0.))
         return 2;
     stepcompress_set_time(sink, 0., hz);
