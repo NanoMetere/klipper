@@ -364,6 +364,9 @@ justify changing either solver. No live performance claim follows.
   A fifth job checks leading, fractional mid-job, zero and trailing `G4`
   dwells with all 21,738 steps matching on all four lanes at both tolerances.
   Dwell changes simulated timestamps only and does not block the preview.
+  A sixth job interleaves both M204 forms and SET_VELOCITY_LIMIT with
+  queued XYZ/E and pressure changes. All 21,730 steps match on the
+  four lanes at both tolerances without an extra generation boundary.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

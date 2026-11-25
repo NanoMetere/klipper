@@ -2092,6 +2092,9 @@ flush look-ahead but do not introduce wall-clock waits in this offline mode.
 `G4 P<number>` adds a nonnegative decimal dwell in milliseconds to the
 simulated timeline (plain `G4` is zero); neither command pauses the preview.
 The total simulated motion timeline remains under 120 seconds.
+`M204 S…` (or `M204 P… T…`) and `SET_VELOCITY_LIMIT` update limits for
+subsequent moves without flushing queued moves. These affect only the
+virtual machine; they do not change the modeled Z limit or printer settings.
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

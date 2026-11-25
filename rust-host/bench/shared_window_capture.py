@@ -151,6 +151,17 @@ def main():
          .replace("G1 Z1.17 F360\n", "G1 Z1.17 F360\nG4 P37.5\n", 1)
          .replace("M400\n", "G4\nG4 P11\nM400\n", 1),
          (578, 113), 1250, (7080, 100)),
+        ("runtime-limits", source.replace("G1 Z1.17 F360\n",
+         "M204 S105\nG1 Z1.17 F360\n", 1)
+         .replace("G1 X46 Y21 E1.24 F900\n",
+         "M204 P155 T210\nG1 X46 Y21 E1.24 F900\n", 1)
+         .replace("G1 X70 Y41 E0.83 F840\n",
+         "SET_VELOCITY_LIMIT VELOCITY=13 ACCEL=185 SQUARE_CORNER_VELOCITY=3 MINIMUM_CRUISE_RATIO=0.3\n"
+         "G1 X70 Y41 E0.83 F840\n", 1)
+         .replace("G1 Z1.42 F360\n",
+         "SET_VELOCITY_LIMIT VELOCITY=250 ACCEL=4000 SQUARE_CORNER_VELOCITY=5 MINIMUM_CRUISE_RATIO=0.5\n"
+         "G1 Z1.42 F360\n", 1),
+         (584, 130), 1242, (7612, 206)),
     )
     with tempfile.TemporaryDirectory(prefix="klipper-captured-window-") as d:
         temp = Path(d)
@@ -250,12 +261,14 @@ def main():
             rejected(body, b"Offline preview")
             body.write_text("G1 X11\nG4 P-1\nM400\n")
             rejected(body, b"Offline preview")
+            body.write_text("G1 X11\nSET_VELOCITY_LIMIT ACCEL=0\nM400\n")
+            rejected(body, b"Offline preview")
             symlink = temp / "symlink.gcode"
             symlink.symlink_to(body)
             rejected(symlink, b"non-symlink")
             body.write_bytes(b" " * 65_537)
             rejected(body, b"exceeds 65536 bytes")
-            print("Standalone shared preview matched all ten stock file cases; invalid inputs rejected")
+            print("Standalone shared preview matched all twelve stock file cases; invalid inputs rejected")
 
 
 

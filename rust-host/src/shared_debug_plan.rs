@@ -276,7 +276,17 @@ pub fn plan(
                     continue;
                 }
                 if ![
-                    "G0", "G1", "G90", "G91", "G92", "M82", "M83", "M220", "M221",
+                    "G0",
+                    "G1",
+                    "G90",
+                    "G91",
+                    "G92",
+                    "M82",
+                    "M83",
+                    "M220",
+                    "M221",
+                    "M204",
+                    "SET_VELOCITY_LIMIT",
                 ]
                 .iter()
                 .any(|code| code.eq_ignore_ascii_case(opcode))
@@ -344,6 +354,9 @@ mod tests {
             "M400\nG1 X11",
             "G28\nM400",
             "G4 P-1\nM400",
+            "M204 S0\nM400",
+            "SET_VELOCITY_LIMIT ACCEL=0\nM400",
+            "SET_VELOCITY_LIMIT ACCEL=900 ACCEL=1000\nM400",
             "G4 PNaN\nM400",
             "G4 P1e2\nM400",
             "G4 S10\nM400",
