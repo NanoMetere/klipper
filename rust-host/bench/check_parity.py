@@ -72,6 +72,11 @@ def main():
     if a.dispatch_bridge:
         phases.append(("canonical_dispatch", [sys.executable, ROOT/"bench/hybrid_dispatch_parity.py",
                                                upstream, a.dispatch_bridge.resolve()]))
+        if dictionary.is_file():
+            phases.append(("dispatch_factorial", [sys.executable, ROOT/"bench/hybrid_process_timing.py",
+                                                  upstream, dictionary, a.dispatch_bridge.resolve(),
+                                                  "--factorial", "--moves", "1200", "--rounds", "4",
+                                                  "--profile", "layered", "--wait-interval", "160"]))
     if a.macro_reference:
         phases.append(("gcode_macros", [sys.executable, ROOT/"bench/gcode_macros.py", upstream]))
     phases.extend([

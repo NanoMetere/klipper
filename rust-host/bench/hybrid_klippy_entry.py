@@ -51,8 +51,13 @@ def main():
     dispatch = prefix[:1] == ["--rust-dispatch"]
     if dispatch:
         prefix = prefix[1:]
+    scanner_only = prefix[:1] == ["--scanner-only"]
+    if scanner_only:
+        prefix = prefix[1:]
+        if not (dispatch and drain):
+            raise SystemExit("--scanner-only requires --drain-debug-output and --rust-dispatch")
     if len(prefix) < 3:
-        raise SystemExit("usage: hybrid_klippy_entry.py [--drain-debug-output] [--rust-dispatch] KLIPPY.py LIBRARY [debug arguments]")
+        raise SystemExit("usage: hybrid_klippy_entry.py [--drain-debug-output] [--rust-dispatch [--scanner-only]] KLIPPY.py LIBRARY [debug arguments]")
     klippy = Path(prefix[0]).resolve()
     library = None if prefix[1] == "--stock-only" else Path(prefix[1]).resolve()
     if dispatch and library is None:
@@ -76,7 +81,7 @@ def main():
     draining = install_debug_drain() if drain else None
     stats = None
     dispatch_stats = None
-    if library is not None:
+    if library is not None and not scanner_only:
         from klipper_rust_lookahead import install
         stats = install(toolhead, library)
     if dispatch:

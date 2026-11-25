@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Benchmark stock vs Rust look-ahead inside the whole Klippy debug process."""
+"""Benchmark optional Rust paths inside the whole pinned Klippy debug process."""
 import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import resource
 import statistics
@@ -126,7 +127,8 @@ def main():
     p.add_argument("upstream", type=Path, help=f"stock checkout at {PIN}")
     p.add_argument("dictionary", type=Path)
     p.add_argument("library", type=Path)
-    p.add_argument("--rounds", type=int, default=9)
+    p.add_argument("--rounds", type=int,
+                   help="timed blocks (defaults to 9, or 12 in factorial mode)")
     p.add_argument("--moves", type=int, default=12000)
     p.add_argument("--profile", choices=("xyz", "shaped-extrusion", "layered"), default="xyz")
     p.add_argument("--wait-interval", type=int, default=80,
@@ -135,10 +137,18 @@ def main():
                    help="compare against a prior Rust bridge using the same Python adapter")
     p.add_argument("--rust-dispatch", action="store_true",
                    help="enable the optional dispatch scanner for the candidate only")
+    p.add_argument("--factorial", action="store_true",
+                   help="compare stock, look-ahead only, scanner only, and both with identical draining")
     p.add_argument("--json", type=Path, help="write raw sample pairs and verified coverage")
     a = p.parse_args()
+    if a.rounds is None:
+        a.rounds = 12 if a.factorial else 9
+    if a.factorial and a.rounds % 4:
+        p.error("--factorial needs a multiple of four rounds for balanced order")
     if not 1 <= a.rounds <= 40 or not 1200 <= a.moves <= 40000:
         p.error("--rounds must be 1–40 and --moves must be 1,200–40,000")
+    if a.factorial and (a.baseline_library or a.rust_dispatch):
+        p.error("--factorial sets the four arms; do not combine with --baseline-library or --rust-dispatch")
     if a.wait_interval < 0:
         p.error("--wait-interval must be non-negative")
     upstream, dictionary, library = [p.resolve() for p in (a.upstream, a.dictionary, a.library)]
@@ -149,14 +159,23 @@ def main():
     klippy = upstream / "klippy/klippy.py"
     entry = ROOT / "bench/hybrid_klippy_entry.py"
     baseline = a.baseline_library.resolve() if a.baseline_library else None
-    entries = {"prior bridge" if baseline else "stock": baseline, "adapter": library}
+    # A tuple binds the path and both independent code-path switches.
+    arms = ({"stock": (None, False, False),
+             "look-ahead only": (library, True, False),
+             "scanner only": (library, False, True),
+             "both": (library, True, True)}
+            if a.factorial else
+            {"prior bridge" if baseline else "stock": (baseline, bool(baseline), False),
+             "adapter": (library, True, a.rust_dispatch)})
     hashes = {label: hashlib.sha256(path.read_bytes()).hexdigest()
-              for label, path in entries.items() if path}
-    times = {label: [] for label in entries}
-    coverage = {label: [] for label in hashes}
-    dispatch = []
+              for label, (path, _, _) in arms.items() if path}
+    times = {label: [] for label in arms}
+    coverage = {label: [] for label, (_, planner_on, _) in arms.items() if planner_on}
+    scanner_coverage = {label: [] for label, (_, _, scanner_on) in arms.items() if scanner_on}
+    drain_output = a.rust_dispatch or a.factorial
     print(f"{a.profile}: {a.moves} moves; intermediate wait interval {a.wait_interval}")
-    baseline_label = next(iter(entries))
+    baseline_label = next(iter(arms))
+    labels = tuple(arms)
     with tempfile.TemporaryDirectory(prefix="klippy-process-time-") as d:
         root = Path(d)
         cfg, script = root / "printer.cfg", root / "input.gcode"
@@ -165,21 +184,30 @@ def main():
         script_digest = hashlib.sha256(script.read_bytes()).hexdigest()
         reference = None
         for r in range(a.rounds + 1):
-            for label in tuple(times)[::(1 if r % 2 == 0 else -1)]:
+            if a.factorial:
+                # Each group of four blocks balances position and immediate
+                # predecessor; warmup is not counted in timed blocks.
+                order = [labels[(idx + (r - 1)) % 4] for idx in (0, 1, 3, 2)]
+            else:
+                order = labels[::(1 if r % 2 == 0 else -1)]
+            for label in order:
+                lib, planner_on, scanner_on = arms[label]
                 output, log = root / f"{label}.out", root / f"{label}.log"
                 cpu, wall = child_cpu(), time.perf_counter()
-                flags = ["--drain-debug-output"] if a.rust_dispatch else []
-                if a.rust_dispatch and label == "adapter":
+                flags = ["--drain-debug-output"] if drain_output else []
+                if scanner_on:
                     flags.append("--rust-dispatch")
+                    if not planner_on:
+                        flags.append("--scanner-only")
                 proc = subprocess.run(
-                    [sys.executable, entry, *flags, klippy, entries[label] or "--stock-only",
+                    [sys.executable, entry, *flags, klippy, lib or "--stock-only",
                      cfg, "-i", script, "-o", output, "-d", dictionary, "-l", log],
                     capture_output=True, text=True, timeout=120,
                 )
                 elapsed = (child_cpu() - cpu, time.perf_counter() - wall)
                 if proc.returncode:
                     raise RuntimeError(proc.stdout + proc.stderr + log.read_text()[-5000:])
-                if a.rust_dispatch:
+                if drain_output:
                     drain = next(line for line in proc.stdout.splitlines() if line.startswith("FILE_OUTPUT_DRAIN "))
                     assert json.loads(drain.split(" ", 1)[1]) == [str(output)], drain
                 got = motor_trace(upstream, dictionary, output.read_bytes())
@@ -188,13 +216,15 @@ def main():
                 assert reference.keys() == got.keys(), (label, r, got.keys())
                 for key, commands in got.items():
                     assert commands == reference[key], (label, r, key, len(commands), len(reference[key]))
-                if entries[label]:
+                assert ("RUST_LOOKAHEAD_STATS " in proc.stdout) == planner_on, (label, proc.stdout)
+                assert ("RUST_DISPATCH_STATS " in proc.stdout) == scanner_on, (label, proc.stdout)
+                if planner_on:
                     row = next(line for line in proc.stdout.splitlines() if line.startswith("RUST_LOOKAHEAD_STATS "))
                     stats = json.loads(row.split(" ", 1)[1])
                     assert stats["planned"] == a.moves and stats["fallbacks"] == 0, stats
                     if r:
                         coverage[label].append(stats)
-                if label == "adapter" and a.rust_dispatch:
+                if scanner_on:
                     row = next(line for line in proc.stdout.splitlines() if line.startswith("RUST_DISPATCH_STATS "))
                     stats = json.loads(row.split(" ", 1)[1])
                     if a.profile == "layered":
@@ -202,7 +232,7 @@ def main():
                     else:
                         assert stats["canonical"] == a.moves and stats["stock"] > 0, stats
                     if r:
-                        dispatch.append(stats)
+                        scanner_coverage[label].append(stats)
                 if r:
                     times[label].append(elapsed)
             print(f"round {r}: all {sum(map(len, reference.values()))} motor records match", flush=True)
@@ -215,29 +245,41 @@ def main():
             wall = [round(1000 * value[1], 3) for value in values]
             print(f"{label}: median CPU {statistics.median(cpu):.3f} ms {cpu}; "
                   f"median elapsed {statistics.median(wall):.3f} ms {wall}")
-        for column, kind in [(0, "CPU"), (1, "elapsed")]:
-            ratios = [new[column] / old[column]
-                      for old, new in zip(times[baseline_label], times["adapter"], strict=True)]
-            deltas = [new[column] - old[column]
-                      for old, new in zip(times[baseline_label], times["adapter"], strict=True)]
-            print(f"{kind} paired median change {(statistics.median(ratios)-1)*100:+.2f}% "
-                  f"({statistics.median(deltas)*1000:+.3f} ms; "
-                  f"{sum(r < 1 for r in ratios)}/{len(ratios)} adapter wins)")
-    for label, path in entries.items():
+        contrasts = ([(baseline_label, arm) for arm in labels[1:]]
+                     + [("look-ahead only", "both"), ("scanner only", "both")]
+                     if a.factorial else [(baseline_label, "adapter")])
+        for old_label, new_label in contrasts:
+            for column, kind in [(0, "CPU"), (1, "elapsed")]:
+                ratios = [new[column] / old[column]
+                          for old, new in zip(times[old_label], times[new_label], strict=True)]
+                deltas = [new[column] - old[column]
+                          for old, new in zip(times[old_label], times[new_label], strict=True)]
+                prefix = f"{new_label} vs {old_label}: " if a.factorial else ""
+                print(f"{prefix}{kind} paired median change {(statistics.median(ratios)-1)*100:+.2f}% "
+                      f"({statistics.median(deltas)*1000:+.3f} ms; "
+                      f"{sum(r < 1 for r in ratios)}/{len(ratios)} {new_label} wins)")
+    for label, (path, _, _) in arms.items():
         if path and hashlib.sha256(path.read_bytes()).hexdigest() != hashes[label]:
             raise RuntimeError(f"{label} library changed during the benchmark")
-    if dispatch:
-        print(f"Rust scanner canonical moves: {min(s['canonical'] for s in dispatch)}"
-              f"–{max(s['canonical'] for s in dispatch)} of {a.moves}")
+    for label, scanned in scanner_coverage.items():
+        prefix = f"{label}: " if a.factorial else ""
+        print(f"{prefix}Rust scanner canonical moves: {min(s['canonical'] for s in scanned)}"
+              f"–{max(s['canonical'] for s in scanned)} of {a.moves}")
     if a.json:
         report = {"stock_pin": pin, "profile": a.profile, "moves": a.moves,
                   "gcode_sha256": script_digest,
                   "wait_interval": a.wait_interval, "motor_count": lanes,
                   "exact_motor_records": motor_records, "bridge_coverage": coverage,
-                  "dispatch_coverage": dispatch,
-                  "debug_output_drained": a.rust_dispatch,
+                  "dispatch_coverage": scanner_coverage if a.factorial else scanner_coverage.get("adapter", []),
+                  "debug_output_drained": drain_output,
                   "library_sha256": hashes,
                   "sample_fields": ["process_cpu_seconds", "elapsed_seconds"], "samples": times}
+        if a.factorial:
+            if hasattr(os, "sched_getaffinity"):
+                report["cpu_affinity"] = sorted(os.sched_getaffinity(0))
+            report["rounds_per_arm"] = a.rounds
+            report["arms"] = {label: {"rust_lookahead": planner_on, "rust_scanner": scanner_on}
+                              for label, (_, planner_on, scanner_on) in arms.items()}
         a.json.write_text(json.dumps(report, indent=2) + "\n")
 
 

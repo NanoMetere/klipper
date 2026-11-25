@@ -980,6 +980,21 @@ taskset -c 2 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
   --rust-dispatch --moves 12000 --rounds 20 --profile layered --wait-interval 1024 --json layered.json
 ```
 
+Use `--factorial` to measure the scanner separately from the look-ahead
+bridge. It runs stock, look-ahead only, scanner only and both against
+one pinned fixture. All four modes drain debug output, check every
+timed motor record and rotate through a balanced run order. Use a
+multiple of four timed blocks. The JSON preserves the per-block
+process CPU time, elapsed time, mode switches and actual coverage.
+This option does not enable either path outside the offline harness.
+
+```sh
+taskset -c 2 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
+  /path/to/pinned/klipper/out/klipper.dict target/release/libklipper_host_protocol.so \
+  --factorial --moves 40000 --rounds 12 --profile shaped-extrusion --wait-interval 0 \
+  --json factorial.json
+```
+
 Step timing now retains the clock epoch until compression advances it,
 rather than revalidating and recomputing it on every crossing. Two
 60-round rotating-order runs matched the same 6,835 records and modeled

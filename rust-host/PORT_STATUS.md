@@ -31,6 +31,28 @@ sides within a run, and no printing hardware. The platform is Linux
 x86-64 (AMD EPYC 9V74), not a Raspberry Pi. Use the runnable commands in
 [README](README.md) to reproduce the individual measurements.
 
+### Separating scanner and look-ahead costs
+
+Each table cell is the paired median elapsed change relative to stock
+Klippy, across two 12-block runs pinned separately to CPU 2 and CPU 8.
+Each block includes all four modes in balanced order, after warmup.
+Every mode drained the same debug writer and matched all timed motor
+records; neither mode is installed on a printer.
+
+| Profile | Exact records | Look-ahead only | Scanner only | Both |
+| --- | ---: | ---: | ---: | ---: |
+| Shaped extrusion, 40,000 moves, final wait only | 186,972 | +4.21% / +2.53% | −8.16% / −8.06% | −6.05% / −2.96% |
+| Layered, 12,000 moves, wait every 1,024 | 60,602 | −0.47% / −8.44% | −3.38% / −1.05% | +0.30% / −0.23% |
+
+With the scanner alone, the shaped fixture was faster in 12/12 and
+9/12 blocks; both scanner arms recognized all 40,000 moves. Layered
+coverage was 11,727/12,000 in both scanner arms, but scanner-only
+elapsed wins fell from 11/12 to 6/12 across repeats. No dependable
+layered acceleration or look-ahead-only acceleration is established.
+A separate prototype that unrolled the Python parameter loop was not
+adopted: whole-process elapsed changed by −0.69% layered and +1.55%
+shaped relative to the existing scanner, despite a dispatch-only gain.
+
 ### Expanded whole-process comparison
 
 Each cell is the median elapsed change in 15 alternating stock/bridge
