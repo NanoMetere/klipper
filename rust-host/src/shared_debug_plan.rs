@@ -2,6 +2,9 @@
 //! Prototype: independent planning for a bounded pin-free stock debug slice.
 //! It is not exposed by the CLI and requires a caller-chosen virtual origin.
 
+mod render;
+pub use render::{trace, MotionTrace, OutputOptions, TraceError};
+
 use crate::{
     extrusion::Extruder,
     gcode::{self, Preview},

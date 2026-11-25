@@ -153,6 +153,9 @@ def main():
         plan = temp / "plan"
         subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_independent_plan.rs",
                         "--extern", f"klipper_host_protocol={lib}", "-o", plan], check=True)
+        integrated = temp / "integrated"
+        subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_integrated_render.rs",
+                        "--extern", f"klipper_host_protocol={lib}", "-o", integrated], check=True)
         for zero_error in (True, False):
             mode = 0 if zero_error else 1
             for name, script, e_counts, e_ticks, xyz_counts in cases:
@@ -176,6 +179,12 @@ def main():
                 xyz_args = [xyz, hz, tol, *map(str, meta["d"]), *(str(int(v)) for v in meta["inverted"])]
                 init, executable = script.split("\n", 1)
                 assert init == "SET_KINEMATIC_POSITION X=10 Y=10 Z=1"
+                full = subprocess.check_output([integrated, tol], input=executable, text=True, timeout=15)
+                lanes = full.split("end\n")
+                assert lanes[-1] == "" and len(lanes) == 5
+                for i, stock_axis in enumerate([*xyz_stock_files, stock_file]):
+                    expected, _ = flatten_file(stock_axis)
+                    assert expected == wire_records(lanes[i]), (name, tol, i)
                 independently_planned_e = subprocess.check_output([plan], input=executable, text=True,
                                                                   timeout=10)
                 independently_planned_xyz = subprocess.check_output([plan, "--xyz"], input=executable,

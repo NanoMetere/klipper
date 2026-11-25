@@ -280,9 +280,13 @@ justify changing either solver. No live performance claim follows.
   flushes). The four OIDs match at 50 MHz: 65,699 individual step events per
   compression mode, 23,168 exact compressed/direction records with zero
   error and 641 with stock's default 25 μs tolerance. The shared E
-  stream also matches unchanged C replay. This bounded no-pacing debug
-  planner requires a final M400 and fixed positive smoothing; it is not
-  a live scheduler or physical nozzle-changer support.
+  stream also matches unchanged C replay. The typed offline
+  `shared_debug_plan::trace` call directly renders the four complete
+  lanes from G-code without a phase-capture or text adapter; the same
+  reference test verifies that path record-for-record. Its bounded
+  no-pacing debug planner requires a final M400 and fixed positive
+  smoothing; it is not a live scheduler or physical nozzle-changer
+  support.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented
