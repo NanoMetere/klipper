@@ -378,7 +378,7 @@ pub fn trace_file_debug_runtime_pickup_mesh(
         #[cfg(feature = "runtime-pickup-pressure-preview")]
         false,
         #[cfg(feature = "runtime-pickup-extended-preview")]
-        false,
+        (false, false),
     )
 }
 
@@ -405,7 +405,7 @@ pub fn trace_file_debug_runtime_pickup_mesh_bank(
         #[cfg(feature = "runtime-pickup-pressure-preview")]
         false,
         #[cfg(feature = "runtime-pickup-extended-preview")]
-        false,
+        (false, false),
     )
 }
 
@@ -431,7 +431,7 @@ pub fn trace_file_debug_runtime_pickup_pressure(
         Some(bank),
         true,
         #[cfg(feature = "runtime-pickup-extended-preview")]
-        false,
+        (false, false),
     )
 }
 
@@ -456,7 +456,35 @@ pub fn trace_file_debug_runtime_pickup_extended(
         None,
         Some(bank),
         true,
+        (true, false),
+    )
+}
+
+/// Predict a longer offline pickup with optional lane parallelism.
+///
+/// Short captures or hosts reporting fewer than four available logical CPUs
+/// keep the serial path. It uses the same math, limits, and result order.
+#[cfg(feature = "runtime-pickup-extended-preview")]
+pub fn trace_file_debug_runtime_pickup_extended_parallel(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    initial: &config::Config,
+    bank: &crate::bed_mesh::profile_bank::Bank,
+) -> Result<MotionTrace, TraceError> {
+    trace_pickup_with_mesh(
+        file,
+        start,
+        options,
+        geometries,
+        wire,
+        initial,
+        None,
+        Some(bank),
         true,
+        (true, true),
     )
 }
 
@@ -478,7 +506,7 @@ fn trace_pickup_with_mesh(
         &crate::bed_mesh::profile_bank::Bank,
     >,
     #[cfg(feature = "runtime-pickup-pressure-preview")] dynamic_pressure: bool,
-    #[cfg(feature = "runtime-pickup-extended-preview")] extended_pickup: bool,
+    #[cfg(feature = "runtime-pickup-extended-preview")] (extended_pickup, parallel): (bool, bool),
 ) -> Result<MotionTrace, TraceError> {
     let shaper = Shaper::from_file_debug_config(initial).map_err(|_| TraceError::Options)?;
     let (_, body) = file.split_once('\n').ok_or(TraceError::Options)?;
@@ -513,6 +541,45 @@ fn trace_pickup_with_mesh(
             pressure: Some(&mut pressure),
         }),
     )?;
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    if parallel
+        && pickup_parallel_eligible(
+            captures.len(),
+            std::thread::available_parallelism().ok().map(usize::from),
+        )
+    {
+        let replay = |lane| {
+            captured::replay(
+                &shaper,
+                &captures,
+                [lane],
+                wire.clock_hz,
+                wire.max_error_ticks,
+                Some(captured::ReplayUpdates {
+                    extended_pickup,
+                    positions: &positions,
+                    shapes: &updates,
+                }),
+            )
+            .map(|[lane]| lane)
+            .map_err(replay_error)
+        };
+        let e = || {
+            super::render::solve_e_pickup(
+                &events,
+                if options.initial_advance == 0. {
+                    0.
+                } else {
+                    options.smooth
+                },
+                &pressure,
+                wire,
+                dynamic_pressure,
+                extended_pickup,
+            )
+        };
+        return pickup_parallel(lanes.map(|lane| move || replay(lane)), e);
+    }
     let [a, b, z] = captured::replay(
         &shaper,
         &captures,
@@ -544,4 +611,51 @@ fn trace_pickup_with_mesh(
     Ok(MotionTrace {
         lanes: [a, b, z, e],
     })
+}
+
+// Gate on real captured work; comments do not move a job into parallel mode.
+#[cfg(feature = "runtime-pickup-extended-preview")]
+fn pickup_parallel_eligible(captures: usize, available: Option<usize>) -> bool {
+    captures >= 768 && available.is_some_and(|workers| workers >= 4)
+}
+
+#[cfg(feature = "runtime-pickup-extended-preview")]
+#[inline(never)]
+fn pickup_parallel(
+    xyz: [impl FnOnce() -> Result<Vec<crate::step_clock::Command>, TraceError> + Send; 3],
+    e: impl FnOnce() -> Result<Vec<crate::step_clock::Command>, TraceError>,
+) -> Result<MotionTrace, TraceError> {
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(3);
+        for task in xyz {
+            match std::thread::Builder::new().spawn_scoped(scope, task) {
+                Ok(handle) => handles.push(handle),
+                Err(_) => break,
+            }
+        }
+        let e = if handles.len() == 3 {
+            e()
+        } else {
+            Err(TraceError::Worker)
+        };
+        // Join all spawned workers even if an early lane fails.
+        let mut xyz = std::array::from_fn(|_| Err(TraceError::Worker));
+        for (slot, handle) in xyz.iter_mut().zip(handles) {
+            *slot = handle.join().unwrap_or(Err(TraceError::Worker));
+        }
+        let [a, b, z] = xyz;
+        Ok(MotionTrace {
+            lanes: [a?, b?, z?, e?],
+        })
+    })
+}
+
+#[cfg(all(test, feature = "runtime-pickup-extended-preview"))]
+#[test]
+fn pickup_parallel_requires_work_and_four_cpus() {
+    assert!(!pickup_parallel_eligible(767, Some(4)));
+    assert!(!pickup_parallel_eligible(768, Some(1)));
+    assert!(!pickup_parallel_eligible(768, Some(3)));
+    assert!(!pickup_parallel_eligible(768, None));
+    assert!(pickup_parallel_eligible(768, Some(4)));
 }

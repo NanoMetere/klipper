@@ -4,7 +4,7 @@
 import argparse
 import sys
 from pathlib import Path
-import json, os, shutil, subprocess, tempfile
+import json, os, shutil, subprocess, tempfile, time, statistics, hashlib
 from file_debug_lane_timing import rows_with_prefix,timeline
 from runtime_shaper import START, CONFIG0, PROFILE0, PROFILE1, HOOK, SCHEMA, shape_rows, wire_records
 from file_debug_process_timing import stock_arm
@@ -24,11 +24,23 @@ def main(argv):
         parser.add_argument(name, type=lambda v: Path(v).resolve())
     parser.add_argument("--rounds", type=int, default=0)
     parser.add_argument("--core", type=int)
+    parser.add_argument("--parallel-rounds", type=int, default=0)
+    parser.add_argument("--affinity", type=int, nargs="+")
+    parser.add_argument("--parallel-jsonl", type=Path)
+    parser.add_argument("--baseline-cli", type=Path)
     args = parser.parse_args(argv)
     if not 0 <= args.rounds <= 80:
         parser.error("--rounds must be 0–80")
+    if not 0 <= args.parallel_rounds <= 80:
+        parser.error("--parallel-rounds must be 0–80")
+    if args.parallel_rounds and not args.parallel_jsonl:
+        parser.error("--parallel-rounds requires --parallel-jsonl")
+    if args.parallel_jsonl and args.parallel_jsonl.exists():
+        parser.error("--parallel-jsonl must be a new file")
     if args.core is not None:
         os.sched_setaffinity(0, {args.core})
+    if args.affinity:
+        os.sched_setaffinity(0, set(args.affinity))
     stock, dictionary, cli = args.stock, args.dictionary, args.cli
     assert subprocess.check_output(["git", "-C", stock, "rev-parse", "HEAD"],
                                    text=True).strip() == PIN
@@ -129,7 +141,9 @@ def main(argv):
                 m.write_text(json.dumps(md))
                 old = [cli, "--dynamic-pressure", m, g, settings]
                 rust_args = [cli, "--extended-pickup", m, g, settings]
+                parallel_args = [cli, "--extended-pickup-parallel", m, g, settings]
                 data = subprocess.check_output([*rust_args, meshfile, *names], timeout=25)
+                assert subprocess.check_output([*parallel_args, meshfile, *names], timeout=25) == data
                 want = [packets for packets, _ in lanes]
                 assert wire_records(data, hz) == want, (label, tol)
                 narrow = subprocess.run([*old, meshfile, *names], capture_output=True, timeout=25)
@@ -143,6 +157,8 @@ def main(argv):
                     assert saved_gold == gold
                     assert subprocess.check_output(
                         [*rust_args, path, *names], timeout=25) == data
+                    assert subprocess.check_output(
+                        [*parallel_args, path, *names], timeout=25) == data
                 cfg.write_text(base + explicit)
                 cap = 512 if rounds == 4 else 1024
                 target = old if rounds == 4 else rust_args
@@ -153,6 +169,10 @@ def main(argv):
                     g.write_text(source)
                     rejected = subprocess.run([*entry, meshfile, *names], capture_output=True, timeout=25)
                     assert rejected.returncode == 2 and not rejected.stdout
+                if rounds == 16:
+                    assert subprocess.check_output([*parallel_args, meshfile, *names], timeout=25) == data
+                    reject(padded + ";\n", parallel_args)
+                    reject(script.replace("M400\n", PROFILE0+"M400\n", 1), parallel_args)
                 reject(padded + ";\n", target)
                 reject(script + "; " + "x"*4096 + "\n")
                 reject(script + "; unicode é\n")
@@ -163,6 +183,49 @@ def main(argv):
                 g.write_text(script)
                 print(label, tol, sum(a for _,a in lanes),
                       "steps; pinned stock, native C 1/4, and Rust exact", flush=True)
+                if args.parallel_rounds:
+                    frozen = [args.baseline_cli or cli, *rust_args[1:], meshfile, *names]
+                    candidate = [*parallel_args, meshfile, *names]
+                    assert subprocess.check_output(frozen) == data
+                    assert subprocess.check_output(candidate) == data
+                    for command in (frozen, candidate):
+                        for path in (savedfile, mixedfile):
+                            alt = command.copy()
+                            alt[-3] = path
+                            assert subprocess.check_output(alt) == data
+                    output = (t/"whole.json")
+                    def elapsed(command, expected):
+                        with output.open("wb") as dest:
+                            started = time.perf_counter_ns()
+                            # A Python subprocess timeout polls with exponential
+                            # sleeps and quantizes sub-100 ms measurements.
+                            subprocess.run(command, stdout=dest, check=True)
+                            elapsed_ns = time.perf_counter_ns() - started
+                        assert output.read_bytes() == expected
+                        return elapsed_ns / 1e6
+                    for name, commands, expected_data in (
+                        ("rust", [frozen, candidate], data),
+                        ("native_c", [[exe,"1",*c_args], [exe,"4",*c_args]], expect),
+                    ):
+                        for _ in range(3):
+                            for cmd in commands:
+                                elapsed(cmd, expected_data)
+                        times = [[], []]
+                        win = 0
+                        for index in range(args.parallel_rounds):
+                            order = (0,1) if index % 2 == 0 else (1,0)
+                            pair = [0,0]
+                            for arm in order:
+                                pair[arm] = elapsed(commands[arm], expected_data)
+                                times[arm].append(pair[arm])
+                            win += pair[1] < pair[0]
+                            with args.parallel_jsonl.open("a") as out:
+                                print(json.dumps({"engine":name, "case":label, "tolerance":tol,
+                                      "cores":sorted(os.sched_getaffinity(0)), "round":index,
+                                      "order":order, "ms":pair,
+                                      "sha256":hashlib.sha256(expected_data).hexdigest()}),file=out)
+                        print(name, label, tol, [round(statistics.median(v),3) for v in times],
+                              "candidate wins",win,"of",args.parallel_rounds,flush=True)
                 if args.rounds:
                     stock_run = [sys.executable, Path(__file__).resolve(), "--stock-arm",
                                  stock, dictionary, f, m, g]

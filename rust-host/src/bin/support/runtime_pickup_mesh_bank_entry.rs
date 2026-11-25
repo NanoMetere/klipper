@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::*;
-#[cfg(feature = "runtime-pickup-extended-preview")]
-use klipper_host_protocol::shared_debug_plan::trace_file_debug_runtime_pickup_extended;
 #[cfg(feature = "runtime-pickup-pressure-preview")]
 use klipper_host_protocol::shared_debug_plan::trace_file_debug_runtime_pickup_pressure;
+#[cfg(feature = "runtime-pickup-extended-preview")]
+use klipper_host_protocol::shared_debug_plan::{
+    trace_file_debug_runtime_pickup_extended, trace_file_debug_runtime_pickup_extended_parallel,
+};
 use klipper_host_protocol::{
     bed_mesh::profile_bank::Bank, config,
     shared_debug_plan::trace_file_debug_runtime_pickup_mesh_bank,
@@ -17,7 +19,10 @@ fn run() -> Result<(), String> {
     if args.len() == 1 && args[0] == "--help" {
         println!("{HELP}");
         #[cfg(feature = "runtime-pickup-extended-preview")]
-        println!("Use --extended-pickup for the extended offline motion preview (includes dynamic pressure).");
+        {
+            println!("Use --extended-pickup for the extended offline motion preview (includes dynamic pressure).");
+            println!("Use --extended-pickup-parallel for the same preview with optional parallel lanes on long jobs.");
+        }
         #[cfg(feature = "runtime-pickup-pressure-preview")]
         println!(
             "Optional --dynamic-pressure before MODEL.json enables bounded SMOOTH_TIME updates."
@@ -26,10 +31,10 @@ fn run() -> Result<(), String> {
     }
     let args = &args[..];
     #[cfg(feature = "runtime-pickup-extended-preview")]
-    let (extended_pickup, args) = if args.first().is_some_and(|x| x == "--extended-pickup") {
-        (true, &args[1..])
-    } else {
-        (false, args)
+    let (extended_pickup, parallel, args) = match args.first() {
+        Some(opt) if opt == "--extended-pickup" => (true, false, &args[1..]),
+        Some(opt) if opt == "--extended-pickup-parallel" => (true, true, &args[1..]),
+        _ => (false, false, args),
     };
     #[cfg(feature = "runtime-pickup-pressure-preview")]
     let (dynamic_pressure, args) = if args.first().is_some_and(|x| x == "--dynamic-pressure") {
@@ -73,7 +78,9 @@ fn run() -> Result<(), String> {
         trace
     };
     #[cfg(feature = "runtime-pickup-extended-preview")]
-    let trace = if extended_pickup {
+    let trace = if parallel {
+        trace_file_debug_runtime_pickup_extended_parallel
+    } else if extended_pickup {
         trace_file_debug_runtime_pickup_extended
     } else {
         trace

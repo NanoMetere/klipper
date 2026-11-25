@@ -738,7 +738,9 @@ pub use runtime_shaper::trace_file_debug_runtime_pickup_mesh_bank;
 pub use runtime_shaper::trace_file_debug_runtime_pickup_pressure;
 
 #[cfg(feature = "runtime-pickup-extended-preview")]
-pub use runtime_shaper::trace_file_debug_runtime_pickup_extended;
+pub use runtime_shaper::{
+    trace_file_debug_runtime_pickup_extended, trace_file_debug_runtime_pickup_extended_parallel,
+};
 
 #[cfg(test)]
 mod tests {

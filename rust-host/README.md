@@ -2434,3 +2434,22 @@ The fixture `bench/runtime_pickup_extended.py` uses repeated A/B/A
 pickups and verifies exact output against the pinned stock/C replay in
 both ordinary and zero compression-error modes. These are offline
 preview limits, not changes to Klipper's production C or hardware.
+
+
+For long captures on a host reporting at least four available logical CPUs,
+replace `--extended-pickup` with `--extended-pickup-parallel` to opt in to
+parallel replay of the same four output lanes. The serial renderer remains
+the default; the parallel option also uses serial rendering below 768
+captured XYZ events or when the host reports fewer than four available
+logical CPUs. G-code comments do not count toward that threshold. Both modes
+share the motion math, bounds, output format, and lane order. This mode is an
+offline preview, not a change to printer firmware or the live host path.
+
+To measure whole offline processes and keep the individual pairs, pass
+`--parallel-rounds 20 --affinity CPU CPU CPU CPU --parallel-jsonl PATH` to the
+fixture. It compares byte-identical outputs for serial and requested parallel
+Rust, and separately measures the equivalent serial/four-worker C capture
+replay against the pinned stock outputs. The C capture replay does not
+include planning or normalization, so do not compare its raw times to the
+whole Rust times. Optionally pass `--baseline-cli PATH` to use a previously
+built serial Rust binary for the baseline.
