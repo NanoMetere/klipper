@@ -21,7 +21,41 @@ import uuid
 from moonraker_connection import PIN
 
 
-async def exercise(root, fixture, with_program=False, delay_ready=False):
+def stock_display_timeline(upstream):
+    """Take byte/active fields from stock VirtualSD, then drive stock DisplayStatus."""
+    from display_status import stock as display_stock
+    from planner import PIN as KLIPPY_PIN
+    from virtual_sd import stock as sd_stock
+
+    revision = subprocess.check_output(["git", "-C", upstream, "rev-parse", "HEAD"], text=True).strip()
+    assert revision == KLIPPY_PIN, revision
+    subprocess.run(["git", "-C", upstream, "diff", "--quiet", "HEAD", "--"], check=True)
+    sys.path.insert(0, str(upstream / "klippy"))
+    from extras.virtual_sdcard import VirtualSD
+
+    body = "; 한글\r\nG90\n".encode()
+    def capture(cancel):
+        rows = sd_stock(VirtualSD, body, 0, 1, 0, 0, with_status=True, with_cancel=cancel,
+                        fixture_path="/virtual/상태.gcode")
+        return [json.loads(row[7:]) for row in rows if row.startswith("STATUS ")]
+    selected, running, pending, paused, resumed, complete = capture(False)
+    *_, canceled, reset = capture(True)
+    sd = [selected, running, pending, paused, paused, resumed, complete,
+          selected, canceled, reset]
+    commands = {1: ["M73 P40", "M117 준비 중"], 5: ['SET_DISPLAY_TEXT MSG=""'], 6: ["M117"]}
+    rows = [(8.5 if step == 2 else step * 3., status["is_active"], status["progress"], command)
+            for step, status in enumerate(sd) for command in commands.get(step, [None])]
+    samples = list(display_stock(upstream, rows))
+    end = 0
+    pairs = []
+    for step, status in enumerate(sd):
+        end += len(commands.get(step, [None]))
+        pairs.append((status, samples[end - 1]))
+    assert len(pairs) == 10 and all(pair[1] is not None for pair in pairs)
+    return pairs
+
+
+async def exercise(root, fixture, with_program=False, delay_ready=False, stock_timeline=None):
     from moonraker.server import Server
     from moonraker.eventloop import EventLoop
     from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest
@@ -151,7 +185,7 @@ enable_object_processing: False
         objects = {"webhooks", "toolhead"}
         if with_program:
             objects.update(("configfile", "fan", "virtual_mixed_job", "virtual_fixture",
-                            "virtual_sdcard", "print_stats"))
+                            "virtual_sdcard", "print_stats", "display_status"))
         assert set((await get("/printer/objects/list"))["objects"]) == objects
         ws=await websocket_connect(HTTPRequest(base.replace("http:","ws:")+"/websocket",headers=headers))
         async def receive(predicate):
@@ -188,14 +222,14 @@ enable_object_processing: False
                 "jsonrpc":"2.0","id":100,"method":"printer.objects.subscribe",
                 "params":{"objects":{"virtual_mixed_job":None,"virtual_fixture":None,
                                      "fan":["speed"], "virtual_sdcard": None,
-                                     "print_stats": ["state", "filename"]}},
+                                     "print_stats": ["state", "filename"], "display_status": None}},
             }))
             subscribed=await receive(lambda v:v.get("id")==100)
             initial=subscribed["result"]["status"]["virtual_mixed_job"]
             assert initial["mode"]=="simulation" and initial["state"]=="ready"
             assert initial["active_tool"]==2 and initial["peer_proof"] is None
             assert subscribed["result"]["status"]["fan"] == {"speed": 0.0}
-            sd_query = "/printer/objects/query?print_stats&virtual_sdcard"
+            sd_query = "/printer/objects/query?print_stats&virtual_sdcard&display_status"
             sd_path = "/virtual/상태.gcode"
             states = ["standby", "printing", "printing", "paused", "paused", "printing",
                       "complete", "standby", "cancelled", "standby"]
@@ -210,6 +244,13 @@ enable_object_processing: False
                               "progress": position / size if size else 0.,
                               "is_active": step in active_steps}, (step, sd)
                 assert stats["state"] == states[step] and stats["filename"] == ("" if step == 9 else "상태.gcode"), stats
+                expected_progress = .4 if step in (1, 2) else (position / size if size else 0.0)
+                expected_message = "준비 중" if 1 <= step <= 4 else ("" if step == 5 else None)
+                display = status["display_status"]
+                assert display == {"progress": expected_progress, "message": expected_message}, (step, display)
+                if stock_timeline is not None:
+                    expected_sd, expected_display = stock_timeline[step]
+                    assert sd == expected_sd and display == expected_display, (step, status)
             check_sd((await get(sd_query))["status"], 0)
             assert subscribed["result"]["status"]["print_stats"] == {
                 "state": "standby", "filename": "상태.gcode"
@@ -230,6 +271,7 @@ enable_object_processing: False
                 diff = changed.get("virtual_mixed_job",{})
                 check_sd((await get(sd_query))["status"], step)
                 if step in (2, 4):
+                    assert "display_status" not in changed, changed
                     assert "virtual_sdcard" not in changed and "print_stats" not in changed, changed
                 elif step in (3, 6):
                     assert changed["virtual_sdcard"]["file_position"] == positions[step], changed
@@ -240,6 +282,12 @@ enable_object_processing: False
                 elif step == 9:
                     assert "virtual_sdcard" not in changed, changed
                     assert changed["print_stats"] == {"state": "standby", "filename": ""}, changed
+                if step == 3:
+                    assert changed["display_status"] == {"progress": 10 / 14}, changed
+                elif step == 5:
+                    assert changed["display_status"] == {"message": ""}, changed
+                elif step == 6:
+                    assert changed["display_status"] == {"progress": 1.0, "message": None}, changed
                 if step != 5:
                     assert "fan" not in changed, changed
                 if step==3:
@@ -328,6 +376,8 @@ enable_object_processing: False
                   "and a fresh 0% on reconnect; no tachometer or control", flush=True)
         set_state("ready",22)
         await updated(22)
+        if stock_timeline is not None:
+            print("All ten composed virtual SD/display snapshots matched pinned Klippy handlers", flush=True)
         print("Moonraker read-only frontend: auth, HTTP readiness/query, WebSocket changes, "
               "shutdown/disconnect and renewed subscription verified on loopback",flush=True)
     finally:
@@ -350,14 +400,19 @@ def main():
     parser.add_argument("fixture", type=lambda s: Path(s).resolve())
     parser.add_argument("--program",action="store_true",help="also stream the routed virtual job state")
     parser.add_argument("--delay-ready", action="store_true", help="exercise a slow stock initialization callback")
+    parser.add_argument("--stock-klippy", type=lambda s: Path(s).resolve(),
+                        help="compare the --program display/SD timeline to these pinned stock handlers")
     args = parser.parse_args()
+    if args.stock_klippy and not args.program:
+        parser.error("--stock-klippy requires --program")
+    timeline = stock_display_timeline(args.stock_klippy) if args.stock_klippy else None
     pin = subprocess.check_output(["git","-C",args.moonraker,"rev-parse","HEAD"],text=True).strip()
     if pin != PIN:
         parser.error(f"Moonraker checkout must be {PIN}")
     subprocess.run(["git","-C",args.moonraker,"diff","--quiet","HEAD","--"],check=True)
     sys.path.insert(0,str(args.moonraker))
     with tempfile.TemporaryDirectory(prefix="klipper-moonraker-frontend-") as d:
-        asyncio.run(asyncio.wait_for(exercise(Path(d),args.fixture,args.program,args.delay_ready),23))
+        asyncio.run(asyncio.wait_for(exercise(Path(d),args.fixture,args.program,args.delay_ready,timeline),23))
 
 
 if __name__ == "__main__":

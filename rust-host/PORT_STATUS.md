@@ -217,7 +217,11 @@ software workloads, not printer benchmarks.
   The existing socket-pair/loopback fixture confirmed projected HTTP
   snapshots and WebSocket diffs for pending pause, completion,
   cancel, reset and reconnect, while G-code remains unavailable. The
-  file path is caller-supplied metadata and is never opened.
+  file path is caller-supplied metadata and is never opened. A composed
+  read-only display fixture matched ten pinned DisplayStatus and VirtualSD
+  observations: an M73 override survives an in-flight pause, then falls
+  back to committed UTF-8 byte progress once idle and expired.
+  Empty and null display messages remain distinguishable.
   The fixture provides read-only objects for the fan configuration and speed used
   by frontend subscribers, with 0% on startup, 40% when virtual
   demand changes, and 0% after a fresh peer reconnect. Tachometer RPM

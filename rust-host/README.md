@@ -1912,7 +1912,11 @@ The pinned handlers matched 17,784 SD and 12,480 print accounting status
 snapshots through the Rust query handler. The pinned Moonraker loopback
 fixture with `--program --delay-ready` additionally verifies HTTP,
 projected WebSocket diffs, an unavailable G-code endpoint and fresh
-reconnect. These are injected socket-pair software fixtures, not live
+reconnect. Adding the `--stock-klippy /path/to/pinned/klipper` option
+compares the combined display/SD timeline with ten actual stock observations:
+an expired M73 remains visible through the in-flight pause, falls back to
+committed SD bytes when idle, and does not conflate empty with null text.
+These are injected socket-pair software fixtures, not live
 printing or named Klippy socket compatibility.
 
 ## Opt-in Python plugin compatibility bridge

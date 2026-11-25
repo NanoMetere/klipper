@@ -68,6 +68,16 @@ impl<'a> Job<'a> {
         }
     }
 
+    /// Byte progress at the last commit. Issuing a line does not advance
+    /// this value, and cancellation is exposed as an empty SD slot.
+    pub fn committed_progress(&self) -> f64 {
+        if self.state == State::Cancelled {
+            0.0
+        } else {
+            fraction(self.position, self.source.len())
+        }
+    }
+
     /// Render a Klippy-compatible read-only status object for this in-memory
     /// job. The supplied path is metadata only; it is never opened.
     #[cfg(feature = "webhooks")]
@@ -220,10 +230,18 @@ fn project_status(
     size: usize,
 ) -> bool {
     let fields = serde_json::json!({
-        "file_path": path, "progress": if size == 0 { 0.0 } else { position as f64 / size as f64 },
+        "file_path": path, "progress": fraction(position, size),
         "is_active": active, "file_position": position, "file_size": size,
     });
     output.set_object("virtual_sdcard".into(), fields.as_object().unwrap().clone())
+}
+
+fn fraction(position: usize, size: usize) -> f64 {
+    if size == 0 {
+        0.0
+    } else {
+        position as f64 / size as f64
+    }
 }
 
 #[cfg(test)]

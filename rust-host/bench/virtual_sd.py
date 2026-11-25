@@ -19,11 +19,12 @@ class GcodeError(Exception):
     pass
 
 
-def stock(impl, content, start, pause, rewind, fail, with_status=False, with_cancel=False):
+def stock(impl, content, start, pause, rewind, fail, with_status=False, with_cancel=False,
+          fixture_path="/virtual/input.gcode"):
     records = []
     sd = impl.__new__(impl)
     storage = io.BytesIO(content)
-    storage.name = "/virtual/input.gcode"
+    storage.name = fixture_path
     sd.current_file = io.TextIOWrapper(storage, newline="")
     sd.file_position = 0
     sd.file_size = len(content)
