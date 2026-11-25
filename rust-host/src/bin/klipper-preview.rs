@@ -26,7 +26,7 @@ use std::{
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 const HELP: &str =
-    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] [--mesh-profile NAME] [--mixed-plan] [--fixed-pressure-script] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
+    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] [--mesh-profile NAME] [--mesh-script] [--mixed-plan] [--fixed-pressure-script] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
     ROOT contains config files; ENTRY and INCLUDE paths must be relative to it.\n\
     List every included file needed, including matches for wildcard includes.\n\
     XYZ is the explicit virtual starting position in millimeters.\n\
@@ -36,6 +36,7 @@ const HELP: &str =
     --initial-tool defaults to 0. Bare T lines only switch offline lanes; no docking.\n\
     --lane-workers sets 1–8 motion workers for long multi-tool previews (default 1).\n\
     --mesh-profile uses a saved Klipper mesh for this offline preview.\n\
+    --mesh-script permits XYZ-only load and clear of the one supplied profile.\n\
     --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.
 \
     A multi-tool mixed plan requires --initial-tool and every modeled tool temperature.\n\
@@ -151,6 +152,8 @@ struct PreviewOutput<'a> {
     extruder_lanes: Option<Vec<ToolOutput<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mesh_profile: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mesh_script_profile: Option<&'a str>,
     mode: &'static str,
     motor_step_distances_mm: [f64; 3],
     motors: [Records<'a>; 3],
@@ -295,6 +298,7 @@ fn run() -> Result<(), String> {
     let mut initial_tool = None;
     let mut workers = None;
     let mut mesh_profile = None;
+    let mut mesh_script = false;
     let mut mixed_plan = false;
     let mut fixed_pressure = false;
     let mut args = args.as_slice();
@@ -328,6 +332,8 @@ fn run() -> Result<(), String> {
             mixed_plan = true;
         } else if flag == "--fixed-pressure-script" && !fixed_pressure {
             fixed_pressure = true;
+        } else if flag == "--mesh-script" && !mesh_script {
+            mesh_script = true;
         } else if flag == "--mesh-profile" && mesh_profile.is_none() {
             mesh_profile = Some(args.get(1).ok_or("missing bed mesh profile name")?.as_str());
             args = &args[1..];
@@ -412,10 +418,24 @@ fn run() -> Result<(), String> {
     let mut machine = Machine::from_config(&parsed)
         .and_then(|m| m.with_lane_workers(workers.unwrap_or(1)))
         .map_err(|e| format!("machine: {e:?}"))?;
+    if mesh_script
+        && (mesh_profile.is_none()
+            || tool_temps.is_some()
+            || mixed_plan
+            || initial_tool.is_some()
+            || fixed_pressure
+            || parsed.values("toolchanger").is_some())
+    {
+        return Err("--mesh-script requires one --mesh-profile and an XYZ-only motion plan".into());
+    }
     if let Some(name) = mesh_profile {
         let transform = bed_mesh::profile::load(&parsed, &files[entry], name)
             .map_err(|e| format!("mesh profile: {e:?}"))?;
-        machine = machine.with_bed_mesh(transform);
+        machine = if mesh_script {
+            machine.with_script_bed_mesh(name.to_owned(), transform)
+        } else {
+            machine.with_bed_mesh(transform)
+        };
     }
     if mixed_plan {
         if workers.is_some() {
@@ -671,7 +691,8 @@ fn run() -> Result<(), String> {
     let out = PreviewOutput {
         clock_hz: hz,
         extruder_lanes,
-        mesh_profile,
+        mesh_profile: mesh_profile.filter(|_| !mesh_script),
+        mesh_script_profile: mesh_profile.filter(|_| mesh_script),
         mode: "offline",
         motor_step_distances_mm: machine.step_distances(),
         motors: std::array::from_fn(|i| Records(&motors[i])),

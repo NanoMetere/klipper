@@ -61,6 +61,7 @@ pub struct Machine {
     arc_resolution: Option<f64>,
     fixed_shaper: Option<Shaper>,
     fixed_mesh: Option<bed_mesh::Transform>,
+    script_mesh: Option<(String, bed_mesh::Transform)>,
     lane_workers: usize,
     virtual_tool_pressure_script: bool,
     pressure_tool_names: Vec<(String, u8)>,
@@ -227,6 +228,7 @@ impl Machine {
             fixed_shaper: input_shaper_defs::from_config(config)
                 .map_err(|field| config_error("input_shaper", field))?,
             fixed_mesh: None,
+            script_mesh: None,
             lane_workers: 1,
             virtual_tool_pressure_script: false,
             pressure_tool_names: Vec::new(),
@@ -290,6 +292,14 @@ impl Machine {
             Axis::X => Kinematics::Cartesian,
             _ => Kinematics::CoreXy,
         }
+    }
+
+    /// Permit load and clear of exactly one validated mesh during a single
+    /// offline motion trace. Do not load it before reading the script.
+    pub fn with_script_bed_mesh(mut self, name: String, mesh: bed_mesh::Transform) -> Self {
+        self.fixed_mesh = None;
+        self.script_mesh = Some((name, mesh));
+        self
     }
 
     /// Create a gate using this machine's geometry. No G28 command, firmware
@@ -968,6 +978,14 @@ impl Machine {
             n += 1;
             if n > MAX_LINES {
                 return Err(Error::MaximumLines);
+            }
+            if let Some((name, mesh)) = &self.script_mesh {
+                if preview
+                    .saved_mesh_command(line, name, mesh)
+                    .map_err(|error| Error::Gcode { line: n, error })?
+                {
+                    continue;
+                }
             }
             if let Some(gain) = Preview::fixed_pressure_gain(line)
                 .map_err(|error| Error::Gcode { line: n, error })?

@@ -416,6 +416,41 @@ impl Preview {
         Ok(())
     }
 
+    /// Preview only load/clear operations on one prevalidated saved mesh.
+    /// Changing the transform rebases logical coordinates but does not
+    /// flush the shared queue or modify queued physical moves.
+    pub(crate) fn saved_mesh_command(
+        &mut self,
+        line: &str,
+        name: &str,
+        mesh: &bed_mesh::Transform,
+    ) -> Result<bool, Error> {
+        let prefix = line.split(';').next().unwrap_or_default().trim();
+        let end = prefix.find(char::is_whitespace).unwrap_or(prefix.len());
+        let op = &prefix[..end];
+        let load = op.eq_ignore_ascii_case("BED_MESH_PROFILE");
+        let clear = op.eq_ignore_ascii_case("BED_MESH_CLEAR");
+        if !load && !clear {
+            return Ok(false);
+        }
+        if line.len() > MAX_LINE || line.contains(['\n', '\r', '\0']) {
+            return Err(Error::InvalidLine);
+        }
+        let args = extended::tokenize(&prefix[end..])?;
+        if load {
+            if args.len() != 1 || args.get("LOAD").is_none_or(|v| v != name) {
+                return Err(Error::InvalidParameter);
+            }
+            self.install_bed_mesh(mesh.clone())?;
+        } else {
+            if !args.is_empty() {
+                return Err(Error::InvalidParameter);
+            }
+            self.clear_bed_mesh()?;
+        }
+        Ok(true)
+    }
+
     /// Rebase from the commanded physical position. Unapply the bed mesh
     /// first, then outer tool offsets, without emitting any move.
     pub fn reset_last_position(&mut self) -> Result<(), Error> {

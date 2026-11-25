@@ -575,14 +575,24 @@ and emits a preview constrained by the simulated physical travel after
 mesh compensation. In an interpolation/fade fixture, both config forms
 produced the same 8,797 motor records and 5.781542142 modeled seconds as
 stock ProfileManager + GCodeMove and the C step solver. This does not
-probe a bed, change a profile at runtime, or compose a mesh with scripted
-dock motion.
+probe a bed or compose a mesh with scripted dock motion.
 
 ```sh
 cargo run --locked --release --bin klipper-preview -- --mesh-profile test_surface \
   examples/preview mesh-saved.cfg examples/preview/path_mesh.gcode \
   20000000 1 1 .2 printer.cfg rails.cfg
 ```
+
+In XYZ-only preview, `--mesh-script --mesh-profile test_surface`
+instead starts unmeshed and lets the script load its one allowed saved
+profile with `BED_MESH_PROFILE LOAD=test_surface` or disable compensation
+with `BED_MESH_CLEAR`. It reinterprets logical coordinates at the current
+physical position; it neither moves the toolhead nor flushes look-ahead.
+The output's `mesh_script_profile` records the allowed name, not the
+profile active at the end. A pinned stock handler comparison across
+load, clear and reload matched all 8,804 timed motor records. This mode
+rejects unknown profiles, saving/removing profiles, calibration, mixed
+heater stages, and multi-tool previews.
 
 ## Inert multiple-extruder coordinates
 

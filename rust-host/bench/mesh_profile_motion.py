@@ -17,11 +17,12 @@ from planner import PIN, ROOT
 PROFILE = "test_surface"
 
 
-def reference(upstream, executable, cfg, script):
+def reference(upstream, executable, cfg, script, runtime=False):
     sys.path.insert(0, str(upstream/"klippy"))
     from configfile import ConfigAutoSave, ConfigFileReader, ConfigWrapper
     from extras.bed_mesh import BedMesh, MoveSplitter
     from extras.bed_mesh import ProfileManager
+    from gcode import GCodeCommand, GCodeDispatch
     from kinematics.corexy import CoreXYKinematics
     from stepper import parse_step_distance
 
@@ -37,9 +38,25 @@ def reference(upstream, executable, cfg, script):
                 180.,3100.,5.,.5,9.,160.,origin)
     rows, clock = [], 2.
 
+    bed = None
+
     def activated(line, coords, head):
+        nonlocal bed
+        if line.startswith("!mesh_cmd "):
+            assert runtime and bed is not None
+            cmd = line.removeprefix("!mesh_cmd ")
+            name = cmd.split()[0]
+            dispatcher = object.__new__(GCodeDispatch)
+            handlers = {"BED_MESH_PROFILE": bed.pmgr.cmd_BED_MESH_PROFILE,
+                        "BED_MESH_CLEAR": bed.cmd_BED_MESH_CLEAR}
+            command = GCodeCommand(bed.gcode, name, cmd, {}, False)
+            saved_pos, saved_queue = list(head.commanded_pos), tuple(head.lookahead.queue)
+            handlers[name](dispatcher._get_extended_params(command))
+            assert head.commanded_pos == saved_pos and tuple(head.lookahead.queue) == saved_queue
+            return
         assert line == "!use_profile"
-        real_gcode = SimpleNamespace(register_command=lambda *a, **kw: None, error=ValueError)
+        real_gcode = SimpleNamespace(register_command=lambda *a, **kw: None, error=ValueError,
+                                     respond_info=lambda *_a, **_kw: None, respond_raw=lambda _: None)
         objects = {"gcode_move": coords, "gcode": real_gcode}
         printer = SimpleNamespace(lookup_object=objects.__getitem__)
         mc = wrap("bed_mesh",printer)
@@ -54,10 +71,14 @@ def reference(upstream, executable, cfg, script):
         bed.base_fade_target = mc.getfloat("fade_target",None)
         bed.last_position = [0.]*4
         bed.z_mesh = None
+        bed.log_fade_complete = False
         bed.splitter = MoveSplitter(mc, real_gcode)
         coords.set_move_transform(bed, force=True)
         bed.pmgr = ProfileManager(mc, bed)
-        bed.pmgr.load_profile(PROFILE)
+        if runtime:
+            bed.set_mesh(None)
+        else:
+            bed.pmgr.load_profile(PROFILE)
         assert head.commanded_pos[:3] == list(origin)
 
     def moves(items, dwell):
@@ -71,7 +92,10 @@ def reference(upstream, executable, cfg, script):
             clock += m.decel_t
         clock += dwell
 
-    stock(["!use_profile", *script.read_text().splitlines()], False,
+    commands = script.read_text().splitlines()
+    if runtime:
+        commands = [f"!mesh_cmd {line}" if line.startswith("BED_MESH_") else line for line in commands]
+    stock(["!use_profile", *commands], False,
           settings=settings, emit_profiles=moves, extend_directive=activated)
     for (axis,distance) in zip(("+","-","z"),distances,strict=True):
         rows.append(("s", axis, *origin, distance, clock+.01,20e6,0,0))
@@ -116,6 +140,38 @@ def main():
             seen.append(wire)
             print(f"{cfg}: {len(actual)-3} exact motor records; {duration:.9f} simulated seconds")
         assert seen[0] == seen[1], "explicit and autosaved mesh differ"
+
+        path = Path(d)/"runtime.gcode"
+        commands = ["G90", "G1 X15 Y12 Z0.32 F1800", f"BED_MESH_PROFILE LOAD={PROFILE}",
+                    "G1 X30 Y24 Z0.5", "G1 X50 Y32", "BED_MESH_CLEAR", "G1 X72 Y45",
+                    "G91", "G1 X12 Y-3 Z.1", f"BED_MESH_PROFILE LOAD={PROFILE}",
+                    "G1 X23 Y10 Z-.2", "G90", "G1 X130 Y60 Z1.3", "BED_MESH_CLEAR",
+                    "G1 X125 Y78 Z2.3", "M400", "BED_MESH_CLEAR"]
+        path.write_text("\n".join(commands) + "\n")
+        cfg = fixture/"mesh-saved.cfg"
+        cmd = [a.binary, "--mesh-script", "--mesh-profile", PROFILE, fixture,
+               cfg.name, path, "20000000", "1", "1", ".2", "printer.cfg", "rails.cfg"]
+        expected, duration = reference(upstream, c, cfg, path, runtime=True)
+        got = json.loads(subprocess.check_output(cmd))
+        assert got["mesh_script_profile"] == PROFILE and "mesh_profile" not in got
+        assert math.isclose(got["planned_duration_seconds"], duration, rel_tol=1e-12, abs_tol=1e-12)
+        actual = []
+        for lane in got["motors"]:
+            for row in lane:
+                if row["kind"] == "direction":
+                    actual.append(f'd {int(row["positive"])}')
+                else:
+                    actual.append(f's {row["interval"]} {row["count"]} {row["add"]} {row["last_clock"]}')
+            actual.append("end")
+        for i, (want, actual_row) in enumerate(zip(expected, actual, strict=True)):
+            assert want == actual_row, (i, want, actual_row)
+        print(f"runtime saved mesh load/clear: {len(actual)-3} exact timed stock motor records")
+        for invalid in ("BED_MESH_PROFILE LOAD=missing", f"BED_MESH_PROFILE SAVE={PROFILE}",
+                        f"BED_MESH_PROFILE REMOVE={PROFILE}", "BED_MESH_CALIBRATE",
+                        "BED_MESH_CLEAR X=1"):
+            path.write_text(f"G90\n{invalid}\n")
+            denied = subprocess.run(cmd, capture_output=True)
+            assert denied.returncode and not denied.stdout, (invalid, denied.stdout)
 
 
 if __name__ == "__main__":
