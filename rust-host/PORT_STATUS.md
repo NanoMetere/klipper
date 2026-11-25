@@ -33,6 +33,49 @@ sides within a run, and no printing hardware. The platform is Linux
 x86-64 (AMD EPYC 9V74), not a Raspberry Pi. Use the runnable commands in
 [README](README.md) to reproduce the individual measurements.
 
+### Shared traversal for matching X/Y input shapers
+
+The Rust offline CoreXY preview shares the phase walk and distance
+evaluation only when the configured X and Y pulse times match bit for
+bit. Each axis still accumulates with its own amplitudes in the
+original order. The old path is selected once per lane for all other
+configurations; no shaper policy is changed.
+
+Paired median elapsed changes compare candidates with their own
+original implementations. Rust measurements ran the full release CLI
+including byte-identical JSON (two 80-pair runs). The C counterpart
+ran actual drained stock Klippy debug jobs with a temporary helper
+(two 24-pair runs); it is not a timing comparison between languages.
+
+| Candidate and configured pulse times | Layered elapsed | Shaped extrusion elapsed |
+| --- | ---: | ---: |
+| Rust, matching | −1.71% / −1.29% | −5.15% / −4.27% |
+| Rust, different | −1.20% / −1.11% | +0.01% / −1.83% |
+| Shadow C, matching | −2.11% / −5.68% | −3.87% / −3.55% |
+| Shadow C, different | −1.51% / −3.24% | +1.74% / +2.51% |
+
+The matching Rust workloads verified 14,937 and 16,774 timed records.
+The matching C workloads verified 54,083 and 70,156 timed records;
+C runtime transitions matching → different → matching → disabled X
+→ matching also reproduced stock. Two quiet 88-pair Rust repeats on the
+unshaped 2,500-move control were unchanged or 0.5% faster in paired
+elapsed (16,379 exact records). Same-time MZV and 3HUMP_EI fixtures
+also match pinned Cartesian/CoreXY reference output with shaped Z and
+pressure advance. The opt-in long preview matched 658,497 stock C timed
+records with matching pulse schedules across eight workloads. Only Rust's
+bounded offline path is changed; the
+C implementation stays a benchmark-only patch because of the regression
+when X/Y pulse schedules differ. These are not real-print timings.
+
+Reproduce the C comparison from `rust-host` using the pinned Linux
+software-MCU dictionary and the same Python environment as the parity
+suite; `different` and `changing` are additional accepted modes:
+
+```sh
+python3 bench/shaper_shared_xy.py /path/to/pinned-klipper \
+  --pulse-times matching --rounds 24
+```
+
 ### Same pressure algorithm in C and Rust
 
 Two 48-block comparisons of the B119 coefficient-preparation change

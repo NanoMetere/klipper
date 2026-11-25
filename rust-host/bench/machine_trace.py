@@ -340,11 +340,15 @@ def main():
                     assert x == y, ("shaped", kin, extra, i, x, y)
                 print(f"Shaped {kin}, pressure={extra}: {len(got) - 3 - extra} exact commands")
         for kin in ("cartesian", "corexy"):
-            for kinds in (("mzv", "2hump_ei", "3hump_ei"), ("ei", "zvd", "zv")):
+            for kinds, freqs, damps in (
+                (("mzv", "2hump_ei", "3hump_ei"), (53.4, 66.2, 41.3), (.13, .06, .17)),
+                (("ei", "zvd", "zv"), (53.4, 66.2, 41.3), (.13, .06, .17)),
+                (("mzv", "mzv", "zvd"), (45., 45., 41.3), (.13, .13, .17)),
+                (("3hump_ei", "3hump_ei", "zv"), (55., 55., 41.3), (.06, .06, .17)),
+            ):
                 shape_cfg = "[input_shaper]\n" + "\n".join(
                     f"shaper_type_{axis}: {kind}\nshaper_freq_{axis}: {freq}\ndamping_ratio_{axis}: {damp}"
-                    for axis, kind, freq, damp in zip("xyz", kinds,
-                                                       [53.4, 66.2, 41.3], [.13, .06, .17], strict=True))
+                    for axis, kind, freq, damp in zip("xyz", kinds, freqs, damps, strict=True))
                 cfg.write_text(CONFIG.format(kinematics=kin) + shape_cfg + "\n")
                 script = WITH_E
                 want, want_duration, _ = traced(cfg, c, script, True, True)

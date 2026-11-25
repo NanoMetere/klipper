@@ -137,6 +137,62 @@ impl Pulses {
         }
         value.is_finite().then_some(value).ok_or(Error::Time)
     }
+
+    // Keep both axes' independent summation order while choosing the
+    // adjacent phase and evaluating the scalar distance only once.
+    fn convolve_xy(
+        &self,
+        y: &Self,
+        phases: &Phases<'_>,
+        index: isize,
+        time: f64,
+    ) -> Result<[f64; 3], Error> {
+        let mut value = [0.0, 0.0, 0.0];
+        let mut accumulate = |segment: &Segment, t: f64, x: &Pulse, y: &Pulse| {
+            let distance = (segment.start_velocity + segment.half_acceleration * t) * t;
+            value[0] += x.amplitude * (segment.position[0] + segment.direction[0] * distance);
+            value[1] += y.amplitude * (segment.position[1] + segment.direction[1] * distance);
+        };
+        let current = phases.pick(index);
+        let (mut i, mut t, mut segment) = (index, time, current);
+        // Each independent axis already has the same visited phase count.
+        let mut budget = MAX_PHASES;
+        let xy = self.values[..self.len].iter().zip(&y.values[..y.len]);
+        for (x, y) in xy.clone().take(self.split).rev() {
+            let offset = x.time;
+            t += offset;
+            while t < 0.0 {
+                if i <= -1 {
+                    return Err(Error::Time);
+                }
+                budget = budget.checked_sub(1).ok_or(Error::Time)?;
+                i -= 1;
+                segment = phases.pick(i);
+                t += segment.duration;
+            }
+            accumulate(segment, t, x, y);
+            t -= offset;
+        }
+        (i, t, segment) = (index, time, current);
+        for (x, y) in xy.skip(self.split) {
+            let offset = x.time;
+            t += offset;
+            while t > segment.duration {
+                if i >= phases.segments.len() as isize {
+                    return Err(Error::Time);
+                }
+                budget = budget.checked_sub(1).ok_or(Error::Time)?;
+                t -= segment.duration;
+                i += 1;
+                segment = phases.pick(i);
+            }
+            accumulate(segment, t, x, y);
+            t -= offset;
+        }
+        (value[0].is_finite() && value[1].is_finite())
+            .then_some(value)
+            .ok_or(Error::Time)
+    }
 }
 
 struct Phases<'a> {
@@ -176,11 +232,20 @@ impl<'a> Phases<'a> {
 #[derive(Clone, Default)]
 pub struct Shaper {
     axes: [Pulses; 3],
+    xy_shared_times: bool,
 }
 
 impl Shaper {
     pub fn new(axes: [Pulses; 3]) -> Self {
-        Self { axes }
+        let (x, y) = (&axes[0], &axes[1]);
+        let xy_shared_times = x.len != 0
+            && x.len == y.len
+            && x.split == y.split
+            && (0..x.len).all(|i| x.values[i].time.to_bits() == y.values[i].time.to_bits());
+        Self {
+            axes,
+            xy_shared_times,
+        }
     }
 
     pub fn is_enabled_for(&self, lane: Axis) -> bool {
@@ -234,10 +299,36 @@ impl Shaper {
         index: isize,
         local: f64,
     ) -> Result<f64, Error> {
+        if self.xy_shared_times && matches!(lane, Axis::CoreXYPlus | Axis::CoreXYMinus) {
+            self.sample_relative_xy(phases, lane, index, local)
+        } else {
+            self.sample_relative_independent(phases, lane, index, local)
+        }
+    }
+
+    fn sample_relative_independent(
+        &self,
+        phases: &Phases<'_>,
+        lane: Axis,
+        index: isize,
+        local: f64,
+    ) -> Result<f64, Error> {
         let mut coord = [0.0; 3];
         for &i in selected(lane) {
             coord[i] = self.axes[i].convolve(phases, index, local, i)?;
         }
+        let value = lane.position(coord);
+        value.is_finite().then_some(value).ok_or(Error::Time)
+    }
+
+    fn sample_relative_xy(
+        &self,
+        phases: &Phases<'_>,
+        lane: Axis,
+        index: isize,
+        local: f64,
+    ) -> Result<f64, Error> {
+        let coord = self.axes[0].convolve_xy(&self.axes[1], phases, index, local)?;
         let value = lane.position(coord);
         value.is_finite().then_some(value).ok_or(Error::Time)
     }
@@ -271,6 +362,39 @@ impl Shaper {
         distance: f64,
         start: [f64; 3],
         #[cfg(feature = "long-step-preview")] limit: Option<usize>,
+        visit: impl FnMut(&mut Vec<Event>) -> Result<(), E>,
+    ) -> Result<Vec<Event>, E> {
+        if self.xy_shared_times && matches!(lane, Axis::CoreXYPlus | Axis::CoreXYMinus) {
+            self.crossing_batches_impl::<true, E>(
+                timeline,
+                lane,
+                distance,
+                start,
+                #[cfg(feature = "long-step-preview")]
+                limit,
+                visit,
+            )
+        } else {
+            self.crossing_batches_impl::<false, E>(
+                timeline,
+                lane,
+                distance,
+                start,
+                #[cfg(feature = "long-step-preview")]
+                limit,
+                visit,
+            )
+        }
+    }
+
+    #[inline(never)]
+    fn crossing_batches_impl<const SHARED: bool, E: From<step_times::Error>>(
+        &self,
+        timeline: &Trajectory,
+        lane: Axis,
+        distance: f64,
+        start: [f64; 3],
+        #[cfg(feature = "long-step-preview")] limit: Option<usize>,
         mut visit: impl FnMut(&mut Vec<Event>) -> Result<(), E>,
     ) -> Result<Vec<Event>, E> {
         let Some(phases) = Phases::new(timeline) else {
@@ -298,8 +422,12 @@ impl Shaper {
             #[cfg(not(feature = "long-step-preview"))]
             let room = remaining;
             solver.solve_range_into(segment, lo..hi, room, &mut events, |local| {
-                self.sample_relative(&phases, lane, i, local)
-                    .map_err(|_| step_times::Error::Invalid)
+                let sample = if SHARED {
+                    self.sample_relative_xy(&phases, lane, i, local)
+                } else {
+                    self.sample_relative_independent(&phases, lane, i, local)
+                };
+                sample.map_err(|_| step_times::Error::Invalid)
             })?;
             remaining -= events.len() - before;
             visit(&mut events)
@@ -352,6 +480,66 @@ fn selected(lane: Axis) -> &'static [usize] {
 mod tests {
     use super::*;
     use crate::trajectory::Trapezoid;
+
+    #[test]
+    fn shared_times_keep_independent_amplitudes_and_crossings() {
+        let x = Pulses::new(&[(0., 1.), (0.02, 2.), (0.04, 1.)]).unwrap();
+        let mut y = x.clone();
+        for (pulse, amplitude) in y.values.iter_mut().zip([0.125, 0.75, 0.125]) {
+            pulse.amplitude = amplitude;
+        }
+        let shaper = Shaper::new([x.clone(), y.clone(), Pulses::default()]);
+        assert!(shaper.xy_shared_times);
+        let mut q = Trajectory::new(16).unwrap();
+        for (at, start, direction) in [
+            (2.0, [12., 8., 0.], [0.6, -0.8, 0.]),
+            (2.12, [12.036, 7.952, 0.], [-0.8, -0.6, 0.]),
+            (2.24, [11.988, 7.916, 0.], [-0.6, 0.8, 0.]),
+        ] {
+            q.append(Trapezoid {
+                at,
+                phase_sec: [0.03, 0.05, 0.01],
+                start,
+                direction,
+                start_velocity: 0.3,
+                cruise_velocity: 0.6,
+                accel: 10.0,
+            })
+            .unwrap();
+        }
+        let phases = Phases::new(&q).unwrap();
+        for lane in [Axis::CoreXYPlus, Axis::CoreXYMinus] {
+            for (i, m) in phases.segments.iter().enumerate() {
+                for k in 0..=101 {
+                    let at = m.duration * k as f64 / 101.;
+                    let a = shaper
+                        .sample_relative_xy(&phases, lane, i as isize, at)
+                        .unwrap();
+                    let b = shaper
+                        .sample_relative_independent(&phases, lane, i as isize, at)
+                        .unwrap();
+                    assert_eq!(a.to_bits(), b.to_bits(), "{i}, {at}");
+                }
+            }
+            let start = phases.segments.first().unwrap().position;
+            let a = shaper.crossings(&q, lane, 0.005, start).unwrap();
+            let b = shaper
+                .crossing_batches_impl::<false, step_times::Error>(
+                    &q,
+                    lane,
+                    0.005,
+                    start,
+                    #[cfg(feature = "long-step-preview")]
+                    None,
+                    |_| Ok(()),
+                )
+                .unwrap();
+            assert_eq!(a, b);
+            assert!(a.iter().any(|e| matches!(e, Event::Crossing { .. })));
+        }
+        y.values[0].time = f64::from_bits(y.values[0].time.to_bits() + 1);
+        assert!(!Shaper::new([x, y, Pulses::default()]).xy_shared_times);
+    }
 
     #[test]
     fn weighted_time_center_preserves_linear_time_and_boundaries_hold() {

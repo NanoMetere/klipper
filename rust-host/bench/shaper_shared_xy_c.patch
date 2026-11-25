@@ -1,0 +1,72 @@
+--- a/klippy/chelper/kin_shaper.c
++++ b/klippy/chelper/kin_shaper.c
+@@ -131,0 +132,49 @@
++// Convolve two axes with bit-identical pulse times. Each accumulator
++// uses the same operations and sequence as its independent traversal.
++static void
++calc_position_xy(struct move *m, double move_time, struct input_shaper *is)
++{
++    struct shaper_pulses *sx = &is->sp[0], *sy = &is->sp[1];
++    struct move *p = m;
++    double x = 0., y = 0., t = move_time;
++    int i;
++    for (i = sx->p_ind - 1; i >= 0; --i) {
++        t += sx->pulses[i].t;
++        while (likely(t < 0.)) {
++            p = list_prev_entry(p, node);
++            t += p->move_t;
++        }
++        double d = move_get_distance(p, t);
++        x += sx->pulses[i].a * (p->start_pos.x + p->axes_r.x * d);
++        y += sy->pulses[i].a * (p->start_pos.y + p->axes_r.y * d);
++        t -= sx->pulses[i].t;
++    }
++    t = move_time;
++    for (i = sx->p_ind; i < sx->num_pulses; ++i) {
++        t += sx->pulses[i].t;
++        while (likely(t > m->move_t)) {
++            t -= m->move_t;
++            m = list_next_entry(m, node);
++        }
++        double d = move_get_distance(m, t);
++        x += sx->pulses[i].a * (m->start_pos.x + m->axes_r.x * d);
++        y += sy->pulses[i].a * (m->start_pos.y + m->axes_r.y * d);
++        t -= sx->pulses[i].t;
++    }
++    is->m.start_pos.x = x;
++    is->m.start_pos.y = y;
++}
++
++static int
++shaper_match_xy_times(struct input_shaper *is)
++{
++    struct shaper_pulses *x = &is->sp[0], *y = &is->sp[1];
++    if (!x->num_pulses || x->num_pulses != y->num_pulses || x->p_ind != y->p_ind)
++        return 0;
++    for (int i = 0; i < x->num_pulses; ++i) {
++        if (memcmp(&x->pulses[i].t, &y->pulses[i].t, sizeof(double)))
++            return 0;
++    }
++    return 1;
++}
++
+@@ -188,0 +238,13 @@
++// Selected only after both configured XY pulse schedules match at setup.
++static double
++shaper_shared_xy_calc_position(struct stepper_kinematics *sk, struct move *m
++                               , double move_time)
++{
++    struct input_shaper *is = container_of(sk, struct input_shaper, sk);
++    is->m.start_pos = move_get_coord(m, move_time);
++    calc_position_xy(m, move_time, is);
++    if (is->sp[2].num_pulses)
++        is->m.start_pos.z = calc_position(m, 'z', move_time, &is->sp[2]);
++    return is->orig_sk->calc_position_cb(is->orig_sk, &is->m, DUMMY_T);
++}
++
+@@ -236,0 +299,2 @@
++    else if (shaper_match_xy_times(is))
++        is->sk.calc_position_cb = shaper_shared_xy_calc_position;
+@@ -282 +346 @@
+-        shaper_note_generation_time(is);
++        input_shaper_update_sk(sk);
