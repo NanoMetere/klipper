@@ -1444,6 +1444,19 @@ wins), a smaller and less stable effect. All 21,683 timed records and
 the complete JSON file remained identical. This is additional offline
 preview processing improvement, not a real-print speed measurement.
 
+The prepared-phase algorithm also has a benchmark-only C counterpart.
+The script applies [the C patch](bench/pa_prepared_c.patch) to a
+temporary copy of the pinned helpers, never to the checkout. It tests
+positive runtime gain changes and benchmarks a shaped repeated path
+with a balanced three-way order. See [results](PORT_STATUS.md#same-pressure-algorithm-in-c-and-rust)
+for the native-C and full offline measurements. The stock C route is
+unchanged; the C patch is not a streaming or printer installation.
+
+```sh
+taskset -c 5 python3 bench/pa_three_way.py /path/to/pinned/klipper \
+  --rounds 48 --json pa-comparison.json
+```
+
 ## Bounded slicer display status
 
 The offline preview accepts unnumbered `M73 P<percent>` (optional

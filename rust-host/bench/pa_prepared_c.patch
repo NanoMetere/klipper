@@ -1,0 +1,112 @@
+--- a/trapq.h
++++ b/trapq.h
+@@ -19,0 +20,2 @@
++    // Experimental offline phase coefficients (unused by stock baseline).
++    double pa_base_shift, pa_half_v, pa_third_v, pa_third_a, pa_quarter_a;
+--- a/kin_extruder.c
++++ b/kin_extruder.c
+@@ -34,2 +34,2 @@
+-// Calculate the definitive integral of the motion formula:
+-//   position(t) = base + t * (start_v + t * half_accel)
++// Same weighted integral, but gain and phase-only coefficients are prepared
++// once over the already assembled queue. This is an offline benchmark seam.
+@@ -37,26 +37,2 @@
+-extruder_integrate(double base, double start_v, double half_accel
+-                   , double start, double end)
+-{
+-    double half_v = .5 * start_v, sixth_a = (1. / 3.) * half_accel;
+-    double si = start * (base + start * (half_v + start * sixth_a));
+-    double ei = end * (base + end * (half_v + end * sixth_a));
+-    return ei - si;
+-}
+-
+-// Calculate the definitive integral of time weighted position:
+-//   weighted_position(t) = t * (base + t * (start_v + t * half_accel))
+-static double
+-extruder_integrate_time(double base, double start_v, double half_accel
+-                        , double start, double end)
+-{
+-    double half_b = .5 * base, third_v = (1. / 3.) * start_v;
+-    double eighth_a = .25 * half_accel;
+-    double si = start * start * (half_b + start * (third_v + start * eighth_a));
+-    double ei = end * end * (half_b + end * (third_v + end * eighth_a));
+-    return ei - si;
+-}
+-
+-// Calculate the definitive integral of extruder for a given move
+-static double
+-pa_move_integrate(struct move *m, struct list_head *pa_list
+-                  , double base, double start, double end, double time_offset)
++pa_move_integrate(struct move *m, double base, double start, double end
++                  , double time_offset)
+@@ -68,19 +44,7 @@
+-    // Determine pressure_advance value
+-    int can_pressure_advance = m->axes_r.y != 0.;
+-    double pressure_advance = 0.;
+-    if (can_pressure_advance) {
+-        struct pa_params *pa = list_last_entry(pa_list, struct pa_params, node);
+-        while (unlikely(pa->active_print_time > m->print_time) &&
+-                !list_is_first(&pa->node, pa_list)) {
+-            pa = list_prev_entry(pa, node);
+-        }
+-        pressure_advance = pa->pressure_advance;
+-    }
+-    // Calculate base position and velocity with pressure advance
+-    base += pressure_advance * m->start_v;
+-    double start_v = m->start_v + pressure_advance * 2. * m->half_accel;
+-    // Calculate definitive integral
+-    double ha = m->half_accel;
+-    double iext = extruder_integrate(base, start_v, ha, start, end);
+-    double wgt_ext = extruder_integrate_time(base, start_v, ha, start, end);
+-    return wgt_ext - time_offset * iext;
++    base += m->pa_base_shift;
++    double half_b = .5 * base;
++    double si = start * (base + start * (m->pa_half_v + start * m->pa_third_a));
++    double ei = end * (base + end * (m->pa_half_v + end * m->pa_third_a));
++    double sw = start * start * (half_b + start * (m->pa_third_v + start * m->pa_quarter_a));
++    double ew = end * end * (half_b + end * (m->pa_third_v + end * m->pa_quarter_a));
++    return (ew - sw) - time_offset * (ei - si);
+@@ -92 +56 @@
+-                   , struct list_head *pa_list, double hst)
++                   , double hst)
+@@ -97,2 +61,2 @@
+-    res += pa_move_integrate(m, pa_list, 0., start, move_time, start);
+-    res -= pa_move_integrate(m, pa_list, 0., move_time, end, end);
++    res += pa_move_integrate(m, 0., start, move_time, start);
++    res -= pa_move_integrate(m, 0., move_time, end, end);
+@@ -105 +69 @@
+-        res += pa_move_integrate(prev, pa_list, base, start
++        res += pa_move_integrate(prev, base, start
+@@ -113 +77 @@
+-        res -= pa_move_integrate(m, pa_list, base, 0., end, end);
++        res -= pa_move_integrate(m, base, 0., end, end);
+@@ -123,0 +88,26 @@
++void
++extruder_prepare_pressure_advance(struct stepper_kinematics *sk, struct trapq *q)
++{
++    struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
++    if (!es->half_smooth_time)
++        return;
++    struct list_head *schedule = &es->pa_list;
++    struct pa_params *pa = list_first_entry(schedule, struct pa_params, node);
++    struct move *m;
++    list_for_each_entry(m, &q->moves, node) {
++        while (!list_is_last(&pa->node, schedule)) {
++            struct pa_params *next = list_next_entry(pa, node);
++            if (next->active_print_time > m->print_time)
++                break;
++            pa = next;
++        }
++        double gain = m->axes_r.y != 0. ? pa->pressure_advance : 0.;
++        double v = m->start_v + gain * 2. * m->half_accel;
++        m->pa_base_shift = gain * m->start_v;
++        m->pa_half_v = .5 * v;
++        m->pa_third_v = (1. / 3.) * v;
++        m->pa_third_a = (1. / 3.) * m->half_accel;
++        m->pa_quarter_a = .25 * m->half_accel;
++    }
++}
++
+@@ -134 +124 @@
+-    double area = pa_range_integrate(m, move_time, &es->pa_list, hst);
++    double area = pa_range_integrate(m, move_time, hst);

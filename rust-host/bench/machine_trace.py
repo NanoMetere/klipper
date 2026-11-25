@@ -133,7 +133,8 @@ SHAPES = [
 ]
 
 
-def traced(config_path, c, script, use_extruder, pressure, shaped=False, runtime_pressure=False):
+def traced(config_path, c, script, use_extruder, pressure, shaped=False, runtime_pressure=False,
+           native_samples=None):
     from configfile import ConfigFileReader, ConfigWrapper
     from kinematics.cartesian import CartKinematics
     from kinematics.corexy import CoreXYKinematics
@@ -240,6 +241,8 @@ def traced(config_path, c, script, use_extruder, pressure, shaped=False, runtime
     run = subprocess.run([c], text=True, capture_output=True, check=True,
                          input="\n".join(" ".join(map(str, r)) for r in rows)+"\n")
     native_ns = int(run.stderr.split()[1])
+    if native_samples is not None:
+        native_samples.append(native_ns)
     return run.stdout.splitlines(), elapsed, python_ns+native_ns
 
 

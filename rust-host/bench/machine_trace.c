@@ -22,6 +22,10 @@ void extruder_stepper_free(struct stepper_kinematics *sk);
 void extruder_set_pressure_advance(struct stepper_kinematics *sk, double print_time,
                                     double pressure_advance, double smooth_time);
 
+#ifdef PREPARED_PA
+void extruder_prepare_pressure_advance(struct stepper_kinematics *, struct trapq *);
+#endif
+
 uint64_t machine_trace_cpu_ns(void)
 {
     struct timespec c;
@@ -100,6 +104,10 @@ int main(void)
                 for (int i = 0; i < n_params; i++)
                     extruder_set_pressure_advance(sk, params[i][0], params[i][1], params[i][2]);
             trapq_check_sentinels(trajectory);
+#ifdef PREPARED_PA
+            if (axis == 'e')
+                extruder_prepare_pressure_advance(sk, trajectory);
+#endif
             if (itersolve_generate_steps(sk, sc, last) || stepcompress_flush(sc, UINT64_MAX))
                 return 3;
             processing += machine_trace_cpu_ns() - started;

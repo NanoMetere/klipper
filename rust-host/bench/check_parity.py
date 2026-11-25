@@ -69,6 +69,8 @@ def main():
         phases.append((name, [runtime, ROOT/"bench"/name, upstream, *extra]))
     phases.append(("shaped_machine_trace", [sys.executable, ROOT/"bench/machine_trace.py",
                                             upstream, "--shape-timing"]))
+    phases.append(("pressure_advance_three_way", [sys.executable, ROOT/"bench/pa_three_way.py",
+                                                  upstream, "--rounds", "6"]))
     if a.dispatch_bridge:
         phases.append(("canonical_dispatch", [sys.executable, ROOT/"bench/hybrid_dispatch_parity.py",
                                                upstream, a.dispatch_bridge.resolve()]))

@@ -32,6 +32,24 @@ sides within a run, and no printing hardware. The platform is Linux
 x86-64 (AMD EPYC 9V74), not a Raspberry Pi. Use the runnable commands in
 [README](README.md) to reproduce the individual measurements.
 
+### Same pressure algorithm in C and Rust
+
+Two 48-block comparisons of the B119 coefficient-preparation change
+used the same pinned shaped CoreXY config and input. All results matched
+6,835 timed motor records and the modeled elapsed time. The two C modes
+use the same stock Python planner and C generation setup. The prototype
+C change is confined to a disposable copy of Klippy helpers.
+
+| Comparison against stock | CPU paired change, core 5 / core 7 |
+| --- | ---: |
+| Prepared C, native stage (trapq and step generation) | −2.12% / −1.86% |
+| Prepared C with stock Python, offline config-to-steps | −1.54% / −0.89% |
+| Prepared Rust, offline config-to-steps | −43.12% / −42.23% |
+
+The C result is modest, so stock C is unchanged. The Rust numbers
+include different planning and record-generation implementations; they
+are not a language-only comparison or measured live print speed.
+
 ### Separating scanner and look-ahead costs
 
 Each table cell is the paired median elapsed change relative to stock
