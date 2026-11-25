@@ -2113,6 +2113,31 @@ line matching the virtual origin and a terminal newline. The header is
 checked and never executed against a device. This models the pinned
 stock `-i` debug input timing, not virtual SD or a live printer; it does
 not alter the ordinary preview CLI.
+
+The feature also enables a separate CLI with the same offline JSON model.
+Pass the original file with its header, rather than stripping the first line:
+
+```sh
+cargo run --locked --release --features file-debug-preview --bin klipper-file-debug-preview -- \
+  bench/shared_extruder_fixture/offline_model.json bench/shared_extruder_fixture/path.gcode
+```
+
+Its output schema is `klipper.shared-corexy.file-debug.v1` with the same
+four JSON lane names and records. No device is opened by this mode.
+Run the pinned whole-process JSON comparison (single-core Linux affinity
+optional) after building this binary:
+
+```sh
+python3 bench/file_debug_process_timing.py UPSTREAM UPSTREAM/out/klipper.dict \
+  target/release/klipper-file-debug-preview --rounds 20 --cores 0
+```
+
+Add `--zero-error` to compare at zero timing tolerance. The stock
+arm initializes its debug host and decodes its native file format to the
+same JSON, while the Rust program models only the bounded offline motion
+subset and emits JSON directly. This is a comparison of two tools for
+an offline result, not a comparison of two full printer hosts.
+
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

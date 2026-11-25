@@ -126,14 +126,25 @@ fn read(path: &Path, cap: u64) -> Result<String, String> {
     Ok(data)
 }
 
-fn run() -> Result<(), String> {
+#[inline(always)]
+fn run<const FILE_DEBUG: bool>() -> Result<(), String> {
+    let help = if FILE_DEBUG {
+        "Usage: klipper-file-debug-preview MODEL.json GCODE\nRender pinned offline file-debug timing; requires the checked virtual-start header. No device access."
+    } else {
+        HELP
+    };
+    let schema = if FILE_DEBUG {
+        "klipper.shared-corexy.file-debug.v1"
+    } else {
+        "klipper.shared-corexy.offline.v1"
+    };
     let args = env::args_os().skip(1).collect::<Vec<_>>();
     if args.len() == 1 && args[0] == "--help" {
-        println!("{HELP}");
+        println!("{help}");
         return Ok(());
     }
     let [model, gcode] = &args[..] else {
-        return Err(HELP.into());
+        return Err(help.into());
     };
     let raw = read(Path::new(model), MAX_MODEL)?;
     let m: Model = serde_json::from_str(&raw).map_err(|e| format!("Model: {e}"))?;
@@ -148,7 +159,15 @@ fn run() -> Result<(), String> {
         m.min_cruise_ratio,
     )
     .map_err(|e| format!("Motion limits: {e:?}"))?;
-    let t = trace(
+    #[cfg(feature = "file-debug-preview")]
+    let predictor = if FILE_DEBUG {
+        klipper_host_protocol::shared_debug_plan::trace_file_debug
+    } else {
+        trace
+    };
+    #[cfg(not(feature = "file-debug-preview"))]
+    let predictor = trace;
+    let t = predictor(
         &script,
         m.virtual_start_mm,
         Options {
@@ -170,7 +189,7 @@ fn run() -> Result<(), String> {
     )
     .map_err(|e| format!("Offline preview: {e:?}"))?;
     let p = Preview {
-        schema: "klipper.shared-corexy.offline.v1",
+        schema,
         clock_hz: m.clock_hz,
         lane_order: ["corexy_a", "corexy_b", "z", "shared_e"],
         lanes: t
@@ -185,9 +204,15 @@ fn run() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn main() {
-    if let Err(err) = run() {
+pub(crate) fn entry<const FILE_DEBUG: bool>() {
+    if let Err(err) = run::<FILE_DEBUG>() {
         eprintln!("{err}");
         std::process::exit(2);
     }
+}
+
+// Also included as a module by the separate opt-in binary.
+#[allow(dead_code)]
+fn main() {
+    entry::<false>();
 }

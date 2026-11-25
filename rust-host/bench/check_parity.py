@@ -87,6 +87,10 @@ def main():
         phases.append(("gcode_macros", [sys.executable, ROOT/"bench/gcode_macros.py", upstream]))
     phases.extend([
         ("build_fixture_binaries", ["cargo", "build", "--locked", "--release", "--examples", "--bins"]),
+        ("build_file_debug_preview", ["cargo", "build", "--locked", "--release", "--features",
+                                      "file-debug-preview", "--bin", "klipper-file-debug-preview",
+                                      "--target-dir", target/"file-debug-preview"]),
+
         ("webhooks", [sys.executable, ROOT/"bench/webhooks.py", upstream, examples/"webhook_replay"]),
         ("trigger_timing", [sys.executable, ROOT/"bench/trigger_sync.py", upstream,
                             "--binary", examples/"trigger_sync_replay"]),
@@ -161,7 +165,8 @@ def main():
                                                   upstream, "--dictionary", dictionary]))
         phases.append(("stock_captured_shared_axes", [sys.executable, ROOT/"bench/shared_window_capture.py",
                                                       upstream, "--dictionary", dictionary,
-                                                      "--shared-preview", target / "release/klipper-shared-preview"]))
+                                                      "--shared-preview", target / "release/klipper-shared-preview",
+                                                      "--file-debug-preview", target / "file-debug-preview/release/klipper-file-debug-preview"]))
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
         phases.append(("mcu_config_payloads", [sys.executable, ROOT/"bench/mcu_config.py", upstream,

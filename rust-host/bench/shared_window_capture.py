@@ -172,6 +172,23 @@ def independent_cases(source, fixture, long_case):
     yield "waits-and-dwell", source.replace("M400\n", waits, 1), 29994
 
 
+def file_cli_lanes(a, fixture, temp, path, tol, hz):
+    config = json.loads((fixture / "offline_model.json").read_text())
+    config["max_error_ticks"] = int(tol)
+    model = temp / "debug-model.json"
+    model.write_text(json.dumps(config))
+    raw = subprocess.check_output([a.file_debug_preview, model, path], timeout=10)
+    result = json.loads(raw)
+    assert result["schema"] == "klipper.shared-corexy.file-debug.v1"
+    assert result["lane_order"] == ["corexy_a", "corexy_b", "z", "shared_e"]
+    assert result["clock_hz"] == float(hz)
+    return [
+        [f"d {int(row['positive'])}" if row["kind"] == "direction" else
+         "s {interval} {count} {add} {last_clock}".format(**row) for row in lane]
+        for lane in result["lanes"]
+    ]
+
+
 def check_independent(a, fixture, temp, integrated, name, script, count, zero_error, hz):
     path = temp / "independent.gcode"
     path.write_text(script)
@@ -193,6 +210,9 @@ def check_independent(a, fixture, temp, integrated, name, script, count, zero_er
         assert expected == wire_records(lane), (name, zero_error, oid)
         observed_count += steps
     assert observed_count == count, (name, zero_error, observed_count)
+    if a.file_debug_preview:
+        assert file_cli_lanes(a, fixture, temp, path, tol, hz) == [wire_records(l) for l in direct[:-1]]
+
     print(f"Independent file debug, {name}, {tol} ticks: {count} exact stock steps")
 
 
@@ -201,6 +221,7 @@ def main():
     p.add_argument("upstream", type=lambda s: Path(s).resolve())
     p.add_argument("--dictionary", required=True, type=lambda s: Path(s).resolve())
     p.add_argument("--shared-preview", type=lambda s: Path(s).resolve())
+    p.add_argument("--file-debug-preview", type=lambda s: Path(s).resolve())
     a = p.parse_args()
     actual = subprocess.check_output(["git", "-C", a.upstream, "rev-parse", "HEAD"], text=True).strip()
     assert actual == PIN
@@ -325,6 +346,10 @@ def main():
                     for stock_axis, lane in zip([*xyz_stock_files, stock_file], direct_lanes[:-1], strict=True):
                         expected, _ = flatten_file(stock_axis)
                         assert expected == wire_records(lane), (name, tol, "independent debug")
+                    if a.file_debug_preview:
+                        assert file_cli_lanes(a, fixture, temp, path, tol, hz) == [
+                            wire_records(lane) for lane in direct_lanes[:-1]
+                        ]
                     replay = subprocess.check_output(xyz_args, input=xyz_events, text=True, timeout=20)
                     fields = replay.split("end\n")
                     assert len(fields) == 4 and fields[-1] == ""
@@ -425,6 +450,26 @@ def main():
             body.write_bytes(b" " * 65_537)
             rejected(body, b"exceeds 65536 bytes")
             print("Standalone shared preview matched 20 stock cases; 4 longer captured cases replayed exactly")
+        if a.file_debug_preview:
+            help_text = subprocess.check_output([a.file_debug_preview, "--help"], text=True, timeout=5)
+            assert help_text.startswith("Usage: klipper-file-debug-preview ")
+            model_file = temp / "debug-model.json"
+            good = temp / "debug-valid.gcode"
+            good.write_text(source)
+            bad = temp / "debug-invalid.gcode"
+            symlink = temp / "debug-symlink.gcode"
+            symlink.symlink_to(good)
+            rejected = [symlink]
+            for data in (b"M400\n", source.encode()+b"\x00", source.rstrip("\n").encode(),
+                         b";"+b" "*65536):
+                bad.write_bytes(data)
+                result = subprocess.run([a.file_debug_preview, model_file, bad], capture_output=True, timeout=5)
+                assert result.returncode == 2 and not result.stdout, result.stderr
+            for path in rejected:
+                result = subprocess.run([a.file_debug_preview, model_file, path], capture_output=True, timeout=5)
+                assert result.returncode == 2 and b"non-symlink" in result.stderr and not result.stdout
+            print("Standalone opt-in file-debug CLI matched 22 stock cases; invalid files rejected")
+
 
 
 

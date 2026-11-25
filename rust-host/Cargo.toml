@@ -88,3 +88,7 @@ required-features = ["webhooks"]
 [[bin]]
 name = "klipper-shared-preview"
 required-features = ["webhooks"]
+
+[[bin]]
+name = "klipper-file-debug-preview"
+required-features = ["webhooks", "file-debug-preview"]

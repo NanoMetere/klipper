@@ -403,6 +403,17 @@ justify changing either solver. No live performance claim follows.
   compares the same boundary algorithm with an isolated C shadow across
   3,004 bounded states; it measures only the cadence test executables,
   including trace formatting, not whole printer processing.
+  The separate `klipper-file-debug-preview` CLI also matched the same
+  packets as the typed API in all 22 stock layout/tolerance combinations.
+  Twenty alternating process pairs per fixture, tolerance and single-CPU
+  affinity (two different CPUs) returned byte-identical JSON on every run.
+  Median elapsed ranges at 25 µs were stock normalized debug **195–245 ms**
+  and Rust offline preview **4.3–5.5 ms**; at zero they were **261–341 ms**
+  and **7.7–10.6 ms**. Stock includes the full Python/C debug host and
+  decoding of its native file, while Rust directly emits the JSON from a
+  limited model. Both figures include startup and output completion.
+  These are offline tool turnaround times, not a language or print-speed
+  claim. The ordinary preview entry point had no repeatable regression.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented
