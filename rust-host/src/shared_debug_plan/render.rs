@@ -189,6 +189,8 @@ pub(super) struct ShapeCaptureSchedule<'a> {
     pub(super) mesh: Option<(&'a str, &'a crate::bed_mesh::Transform)>,
     pub(super) delays: &'a [(usize, f64)],
     pub(super) positions: &'a mut Vec<(usize, usize)>,
+    #[cfg(feature = "runtime-pickup-preview")]
+    pub(super) pressure: Option<&'a mut Vec<super::PressureBoundary>>,
 }
 
 #[cfg(feature = "shaped-file-debug-preview")]
@@ -222,6 +224,8 @@ pub(super) fn shaped_plan(
         mesh,
         delays,
         positions: output_positions,
+        #[cfg(feature = "runtime-pickup-preview")]
+        pressure,
     }) = updates
     {
         let events = super::plan_file_debug_with_updates(
@@ -235,6 +239,8 @@ pub(super) fn shaped_plan(
                 mesh,
                 updates: delays,
                 positions: &mut positions,
+                #[cfg(feature = "runtime-pickup-preview")]
+                pressure,
             }),
         )?;
         (events, Some(output_positions))
@@ -394,6 +400,71 @@ pub(super) fn solve_e(
                 }
             }
         }
+    }
+    Ok(encoder.finish()?)
+}
+
+#[cfg(feature = "runtime-pickup-preview")]
+pub(super) fn solve_e_pickup(
+    events: &[Event],
+    mut smooth: f64,
+    pressure: &[super::PressureBoundary],
+    wire: OutputOptions,
+) -> Result<Vec<Command>, TraceError> {
+    let clock = Clock {
+        last_encoded: 0,
+        time_origin: 0.0,
+        hz: wire.clock_hz,
+    };
+    let mut e = WindowStepper::new_pickup(wire.step_distances[3], smooth)?;
+    let mut encoder = TraceEncoder::new(clock, wire.max_error_ticks, wire.invert[3]);
+    let mut queues = [Trajectory::new(1024)?, Trajectory::new(1024)?];
+    let mut gains = Vec::new();
+    let mut bound = None;
+    let mut pressure = pressure.iter().peekable();
+    for (index, event) in events.iter().enumerate() {
+        while let Some(change) = pressure.next_if(|p| p.before == index) {
+            smooth = change.smooth;
+            e.set_smoothing_after_flush(smooth);
+            if smooth != 0. {
+                gains.clear();
+                gains.push((0., change.advance));
+            }
+        }
+        match *event {
+            Event::Profile {
+                at,
+                movement,
+                queue,
+            } => append_nominal(&mut queues[usize::from(queue)], at, &movement)?,
+            Event::Bind { queue, anchor } => {
+                bound = queue.map(usize::from);
+                if bound.is_some() {
+                    e.rebase_after_flush(anchor)?;
+                }
+            }
+            Event::Gain { at, advance } => {
+                if let Some(last) = gains.last_mut().filter(|(t, _)| *t == at) {
+                    last.1 = advance;
+                } else {
+                    gains.push((at, advance));
+                }
+            }
+            Event::DebugTransmit(at) => {
+                encoder.flush_before(crate::step_clock::captured_cutoff(at, clock.hz)?)?
+            }
+            Event::Generation { at, retirement } => {
+                let advance = Advance::new(smooth, &gains)?;
+                let steps = e.flush(bound.map(|i| &queues[i]), &advance, at, MAX_EVENTS)?;
+                encoder.push(&steps)?;
+                for queue in &mut queues {
+                    prune_prepared(queue, retirement)?;
+                }
+            }
+        }
+    }
+    if pressure.peek().is_some() {
+        return Err(TraceError::Options);
     }
     Ok(encoder.finish()?)
 }

@@ -17,6 +17,8 @@ pub mod display;
 mod extended;
 #[path = "gcode/shared_debug.rs"]
 mod shared_debug;
+#[cfg(feature = "runtime-pickup-preview")]
+pub(crate) use shared_debug::pickup_control;
 pub(crate) use shared_debug::{shared_debug_control, SharedDebugControl};
 #[path = "gcode/transform.rs"]
 mod transform;

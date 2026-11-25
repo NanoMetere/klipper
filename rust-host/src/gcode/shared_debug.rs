@@ -46,3 +46,24 @@ pub(crate) fn shared_debug_control(line: &str) -> Result<Option<SharedDebugContr
     };
     Ok(Some(parsed))
 }
+
+// The pickup surface alone permits zero gain on the named shared stepper.
+#[cfg(feature = "runtime-pickup-preview")]
+pub(crate) fn pickup_control(line: &str) -> Result<Option<SharedDebugControl>, Error> {
+    let end = line.find(char::is_whitespace).unwrap_or(line.len());
+    if !line[..end].eq_ignore_ascii_case("SET_PRESSURE_ADVANCE") {
+        return shared_debug_control(line);
+    }
+    if line.len() > MAX_LINE || line.contains(['\n', '\r', '\0']) {
+        return Err(Error::InvalidLine);
+    }
+    let args = extended::tokenize(&line[end..])?;
+    if args.len() != 2 || args.get("EXTRUDER").is_none_or(|e| e != "shared_extruder") {
+        return Err(Error::InvalidParameter);
+    }
+    let gain = extended::float(&args, "ADVANCE")?.ok_or(Error::InvalidParameter)?;
+    if gain < 0.0 {
+        return Err(Error::InvalidParameter);
+    }
+    Ok(Some(SharedDebugControl::Advance(gain)))
+}

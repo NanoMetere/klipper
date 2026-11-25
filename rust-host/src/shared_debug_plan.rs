@@ -79,6 +79,15 @@ pub(super) struct RuntimePlan<'a> {
     mesh: Option<(&'a str, &'a crate::bed_mesh::Transform)>,
     updates: &'a [(usize, f64)],
     positions: &'a mut Vec<(usize, usize)>,
+    #[cfg(feature = "runtime-pickup-preview")]
+    pressure: Option<&'a mut Vec<PressureBoundary>>,
+}
+
+#[cfg(feature = "runtime-pickup-preview")]
+pub(super) struct PressureBoundary {
+    before: usize,
+    advance: f64,
+    smooth: f64,
 }
 
 struct OriginClock {
@@ -325,12 +334,30 @@ fn plan_body(
             b[0].is_finite() && b[1].is_finite() && b[0] < b[1] && (b[0]..=b[1]).contains(v)
         })
     };
+    #[cfg(feature = "runtime-pickup-preview")]
+    let runtime_pa = shape_updates
+        .as_ref()
+        .is_some_and(|plan| plan.pressure.is_some());
     if script.len() > 65_536
         || !inside(&start)
         || !opt.simulation_temp.iter().all(|t| t.is_finite())
-        || ![opt.z_velocity, opt.z_accel, opt.initial_advance]
-            .iter()
-            .all(|v| v.is_finite() && *v > 0.0)
+        || {
+            #[cfg(feature = "runtime-pickup-preview")]
+            {
+                ![opt.z_velocity, opt.z_accel]
+                    .iter()
+                    .all(|v| v.is_finite() && *v > 0.)
+                    || !opt.initial_advance.is_finite()
+                    || opt.initial_advance < 0.
+                    || (!runtime_pa && opt.initial_advance == 0.)
+            }
+            #[cfg(not(feature = "runtime-pickup-preview"))]
+            {
+                ![opt.z_velocity, opt.z_accel, opt.initial_advance]
+                    .iter()
+                    .all(|v| v.is_finite() && *v > 0.0)
+            }
+        }
         || !(1e-6..=0.1).contains(&opt.smooth)
     {
         return Err(Error::Inputs);
@@ -348,7 +375,14 @@ fn plan_body(
         last_steps: 0.0,
         priming: true,
         bound: Some(0),
+        #[cfg(not(feature = "runtime-pickup-preview"))]
         smoothing: opt.smooth * 0.5,
+        #[cfg(feature = "runtime-pickup-preview")]
+        smoothing: if opt.initial_advance == 0. {
+            0.
+        } else {
+            opt.smooth * 0.5
+        },
         #[cfg(feature = "shaped-file-debug-preview")]
         shape_delay,
         #[cfg(feature = "file-debug-preview")]
@@ -456,7 +490,15 @@ fn plan_body(
                 continue;
             }
         }
-        match gcode::shared_debug_control(pure)? {
+        #[cfg(feature = "runtime-pickup-preview")]
+        let control = if runtime_pa {
+            gcode::pickup_control(pure)?
+        } else {
+            gcode::shared_debug_control(pure)?
+        };
+        #[cfg(not(feature = "runtime-pickup-preview"))]
+        let control = gcode::shared_debug_control(pure)?;
+        match control {
             Some(gcode::SharedDebugControl::Sync(queue)) => {
                 append(preview.finish()?, &mut time)?;
                 time.flush(&mut result, 0.0);
@@ -479,6 +521,34 @@ fn plan_body(
                 }
             }
             Some(gcode::SharedDebugControl::Advance(advance)) => {
+                #[cfg(feature = "runtime-pickup-preview")]
+                if let Some(pressure) = shape_updates
+                    .as_mut()
+                    .and_then(|s| s.pressure.as_deref_mut())
+                {
+                    let smooth = if advance == 0. { 0. } else { opt.smooth };
+                    if smooth * 0.5 != time.smoothing {
+                        append(preview.finish()?, &mut time)?;
+                        time.flush(&mut result, 0.);
+                        time.smoothing = smooth * 0.5;
+                        pressure.push(PressureBoundary {
+                            before: result.len(),
+                            advance,
+                            smooth,
+                        });
+                        continue;
+                    }
+                    if preview.queued_moves() == 0 {
+                        if time.priming {
+                            time.resync_print_time();
+                        }
+                        result.push(Event::Gain {
+                            at: time.move_end,
+                            advance,
+                        });
+                        continue;
+                    }
+                }
                 let due = consumed + preview.queued_moves();
                 if due == consumed {
                     // A standalone positive adjustment before any pending
@@ -584,6 +654,9 @@ fn plan_body(
 
 #[cfg(feature = "runtime-mesh-preview")]
 pub use runtime_shaper::trace_file_debug_runtime_mesh;
+
+#[cfg(feature = "runtime-pickup-preview")]
+pub use runtime_shaper::trace_file_debug_runtime_pickup;
 
 #[cfg(test)]
 mod tests {

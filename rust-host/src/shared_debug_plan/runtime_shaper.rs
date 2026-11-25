@@ -155,6 +155,8 @@ macro_rules! trace_runtime {
                 mesh: $mesh,
                 delays: &delays,
                 positions: &mut positions,
+                #[cfg(feature = "runtime-pickup-preview")]
+                pressure: None,
             }),
         )?;
         let [a, b, z] = captured::replay(
@@ -247,6 +249,8 @@ pub(super) fn prepare_runtime(
             mesh: None,
             delays: &delays,
             positions: &mut positions,
+            #[cfg(feature = "runtime-pickup-preview")]
+            pressure: None,
         }),
     )?;
     Ok(PreparedRuntime {
@@ -256,5 +260,70 @@ pub(super) fn prepare_runtime(
         shaper,
         positions,
         updates,
+    })
+}
+
+/// Predict a bounded shared-extruder pickup including disabled pressure advance.
+#[cfg(feature = "runtime-pickup-preview")]
+pub fn trace_file_debug_runtime_pickup(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    initial: &config::Config,
+) -> Result<MotionTrace, TraceError> {
+    let shaper = Shaper::from_file_debug_config(initial).map_err(|_| TraceError::Options)?;
+    let (_, body) = file.split_once('\n').ok_or(TraceError::Options)?;
+    let settings = ShapeSettings::from_config(initial).map_err(|_| TraceError::Options)?;
+    let shapes = collect_updates(body, settings).map_err(|_| TraceError::Options)?;
+    let mut delays = Vec::with_capacity(shapes.len());
+    let mut updates = Vec::with_capacity(shapes.len());
+    for (line, shape) in shapes {
+        let (pre, post) = shape.window(Axis::CoreXYPlus);
+        delays.push((line, pre.max(post)));
+        updates.push(shape);
+    }
+    let mut positions = Vec::with_capacity(delays.len());
+    let mut pressure = Vec::new();
+    let (events, captures, lanes) = shaped_plan(
+        file,
+        start,
+        options,
+        geometries,
+        wire,
+        &shaper,
+        Some(ShapeCaptureSchedule {
+            #[cfg(feature = "runtime-mesh-preview")]
+            mesh: None,
+            delays: &delays,
+            positions: &mut positions,
+            pressure: Some(&mut pressure),
+        }),
+    )?;
+    let [a, b, z] = captured::replay(
+        &shaper,
+        &captures,
+        lanes,
+        wire.clock_hz,
+        wire.max_error_ticks,
+        Some(captured::ReplayUpdates {
+            positions: &positions,
+            shapes: &updates,
+        }),
+    )
+    .map_err(replay_error)?;
+    let e = super::render::solve_e_pickup(
+        &events,
+        if options.initial_advance == 0. {
+            0.
+        } else {
+            options.smooth
+        },
+        &pressure,
+        wire,
+    )?;
+    Ok(MotionTrace {
+        lanes: [a, b, z, e],
     })
 }

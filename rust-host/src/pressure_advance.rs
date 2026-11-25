@@ -385,6 +385,25 @@ impl WindowStepper {
         })
     }
 
+    #[cfg(feature = "runtime-pickup-preview")]
+    pub(crate) fn new_pickup(distance: f64, smooth: f64) -> Result<Self, step_times::Error> {
+        if smooth == 0. {
+            Ok(Self {
+                solver: Solver::new(Axis::X, distance, [0.; 3])?,
+                last_flush: 0.,
+                last_move: 0.,
+                half: 0.,
+            })
+        } else {
+            Self::new(distance, smooth)
+        }
+    }
+
+    #[cfg(feature = "runtime-pickup-preview")]
+    pub(crate) fn set_smoothing_after_flush(&mut self, smooth: f64) {
+        self.half = 0.5 * smooth;
+    }
+
     /// Re-anchor after the last completed flush without resetting step
     /// direction or the flushed time range. Queue identity is caller-owned.
     pub fn rebase_after_flush(&mut self, commanded: f64) -> Result<(), step_times::Error> {

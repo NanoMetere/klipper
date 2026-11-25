@@ -2294,6 +2294,23 @@ identical normalized output. The test requires both profile formats,
 all four lane packet sequences, and both stock compression tolerances
 to match. It never guesses an unsupported mesh or saves a setting.
 
+For an offline shared-extruder pickup with an immediate pressure-advance
+change, the separate `runtime-pickup-preview` feature also permits zero
+gain for the named shared stepper. It models a zero crossing after a
+stock-style generation flush and keeps both geometries and XY shaper
+updates in order. It does not expand tool macros or accept smoothing
+overrides, saved mesh commands, or physical device I/O.
+
+```sh
+cargo run --locked --release --features runtime-pickup-preview \
+  --bin klipper-runtime-pickup-preview -- MODEL.json GCODE SHAPER.cfg
+python3 bench/runtime_pickup.py UPSTREAM UPSTREAM/out/klipper.dict \
+  target/release/klipper-runtime-pickup-preview
+```
+
+The fixture compares all four lanes with stock and pinned native C
+replay. Add `--rounds 16 --core 0` for same-output offline timing.
+
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.
