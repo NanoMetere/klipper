@@ -2098,6 +2098,10 @@ virtual machine; they do not change the modeled Z limit or printer settings.
 Bounded slicer display metadata (`M73`, `M117`, and `SET_DISPLAY_TEXT`)
 is accepted without changing the trace, including after the final `M400`.
 The preview does not display progress or track text state.
+`SAVE_GCODE_STATE` and `RESTORE_GCODE_STATE` use the bounded offline
+coordinate snapshot store. An explicit `MOVE=1` emits a simulated XYZ
+return move subject to the same virtual limits; it keeps the current
+physical E position rather than undoing extrusion.
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

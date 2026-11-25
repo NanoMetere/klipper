@@ -287,6 +287,8 @@ pub fn plan(
                     "M221",
                     "M204",
                     "SET_VELOCITY_LIMIT",
+                    "SAVE_GCODE_STATE",
+                    "RESTORE_GCODE_STATE",
                 ]
                 .iter()
                 .any(|code| code.eq_ignore_ascii_case(opcode))

@@ -169,6 +169,21 @@ def main():
          "SET_DISPLAY_TEXT MSG=\"Shared tool\"\nG1 Z1.42 F360\n", 1)
          .replace("M400\n", "M400\nM73 P100\nSET_DISPLAY_TEXT\nM117\n", 1),
          (579, 113), 1250, (7078, 99)),
+        ("saved-coordinate-state", source.replace("G1 X28 Y18 E0.83 F900\n",
+         "G1 X28 Y18 E0.83 F900\nSAVE_GCODE_STATE NAME=First\nG91\n", 1)
+         .replace("G1 Z1.17 F360\n", "G1 Z0.17 F455\n", 1)
+         .replace("G1 X46 Y21 E1.24 F900\n",
+         "RESTORE_GCODE_STATE NAME=First MOVE=0\nG1 X46 Y21 E1.24\n", 1)
+         .replace("G1 X70 Y41 E0.83 F840\n",
+         "SAVE_GCODE_STATE NAME=Active\nG1 X70 Y41 E0.83 F840\n", 1)
+         .replace("G1 E-0.28 F1200\n",
+         "RESTORE_GCODE_STATE NAME=Active\nG1 E-0.28 F1200\n", 1),
+         (579, 113), 1250, (7078, 99)),
+        ("restore-move", source.replace("G1 X28 Y18 E0.83 F900\n",
+         "G1 X28 Y18 E0.83 F900\nSAVE_GCODE_STATE NAME=First\n", 1)
+         .replace("G1 Z1.17 F360\n",
+         "G1 Z1.17 F360\nRESTORE_GCODE_STATE NAME=First MOVE=1 MOVE_SPEED=9\n", 1),
+         (577, 113), 1250, (7150, 114)),
     )
     with tempfile.TemporaryDirectory(prefix="klipper-captured-window-") as d:
         temp = Path(d)
@@ -234,7 +249,8 @@ def main():
                 independently_planned_xyz = subprocess.check_output([plan, "--xyz"], input=executable,
                                                                     text=True, timeout=10)
                 assert same_plan(events, independently_planned_e) == 38
-                assert same_plan(xyz_events, independently_planned_xyz) == 24
+                expect_xyz_rows = 25 if name == "restore-move" else 24
+                assert same_plan(xyz_events, independently_planned_xyz) == expect_xyz_rows
                 plan_e = subprocess.check_output([rust, "--wire", hz, tol], input=independently_planned_e,
                                                  text=True, timeout=15)
                 assert wire_records(plan_e) == want
@@ -251,7 +267,8 @@ def main():
                     assert expected == wire_records(candidate)
                     tick_count += n
                     records += len(expected)
-                assert (records, tick_count) == (xyz_counts[mode], 20488)
+                expect_xyz_ticks = 20624 if name == "restore-move" else 20488
+                assert (records, tick_count) == (xyz_counts[mode], expect_xyz_ticks)
                 print(f"Actual stock debug, max compress error {tol} ticks, XYZ, case={name}: "
                       f"{records} compressed blocks/directions, {tick_count} individual ticks, exact independently planned Rust")
         if a.shared_preview:
@@ -272,12 +289,14 @@ def main():
             rejected(body, b"Offline preview")
             body.write_text("G1 X11\nM73 Pnan\nM400\n")
             rejected(body, b"Offline preview")
+            body.write_text("G1 X11\nRESTORE_GCODE_STATE NAME=Missing MOVE=1\nM400\n")
+            rejected(body, b"Offline preview")
             symlink = temp / "symlink.gcode"
             symlink.symlink_to(body)
             rejected(symlink, b"non-symlink")
             body.write_bytes(b" " * 65_537)
             rejected(body, b"exceeds 65536 bytes")
-            print("Standalone shared preview matched all fourteen stock file cases; invalid inputs rejected")
+            print("Standalone shared preview matched all eighteen stock file cases; invalid inputs rejected")
 
 
 
