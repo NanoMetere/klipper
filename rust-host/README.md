@@ -995,6 +995,19 @@ taskset -c 2 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
   --json factorial.json
 ```
 
+For an isolated language comparison, the [C scanner](bench/dispatch_scanner.c)
+uses the same ABI, Python adapter, stock handlers, and byte-for-byte
+offset validation as the Rust scanner. The benchmark runs stock and
+each scanner independently without look-ahead replacement, with
+complete debug draining, exact timed motor comparison, and separate
+scanner-only CPU samples. See [the results](PORT_STATUS.md#c-and-rust-versions-of-the-same-g-code-scanner).
+
+```sh
+taskset -c 5 python3 bench/dispatch_language.py /path/to/pinned/klipper \
+  /path/to/pinned/klipper/out/klipper.dict target/release/libklipper_host_protocol.so \
+  --profile layered --moves 12000 --rounds 12 --wait-interval 1024 --json dispatch-language.json
+```
+
 Step timing now retains the clock epoch until compression advances it,
 rather than revalidating and recomputing it on every crossing. Two
 60-round rotating-order runs matched the same 6,835 records and modeled

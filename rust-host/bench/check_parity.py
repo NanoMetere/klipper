@@ -79,6 +79,10 @@ def main():
                                                   upstream, dictionary, a.dispatch_bridge.resolve(),
                                                   "--factorial", "--moves", "1200", "--rounds", "4",
                                                   "--profile", "layered", "--wait-interval", "160"]))
+            phases.append(("dispatch_language", [sys.executable, ROOT/"bench/dispatch_language.py",
+                                                 upstream, dictionary, a.dispatch_bridge.resolve(),
+                                                 "--moves", "1200", "--rounds", "6",
+                                                 "--native-rounds", "4", "--wait-interval", "160"]))
     if a.macro_reference:
         phases.append(("gcode_macros", [sys.executable, ROOT/"bench/gcode_macros.py", upstream]))
     phases.extend([

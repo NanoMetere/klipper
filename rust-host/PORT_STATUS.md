@@ -50,6 +50,26 @@ The C result is modest, so stock C is unchanged. The Rust numbers
 include different planning and record-generation implementations; they
 are not a language-only comparison or measured live print speed.
 
+### C and Rust versions of the same G-code scanner
+
+The C counterpart implements the same bounded grammar and offset ABI.
+Both candidates use the identical Python adapter and original stock
+handlers; the Rust look-ahead bridge is disabled. Two 12-block runs
+per profile used drained stock Klippy output, and two 80-pair runs per
+profile also timed the scanner calls alone. Negative means faster.
+
+| Profile | Exact records | Rust vs C, scanner CPU | C vs stock, whole elapsed | Rust vs stock, whole elapsed | Rust vs C, whole elapsed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Layered, 12,000 moves | 60,602 | +20.54% / +24.60% | −4.77% / −5.30% | −3.19% / −4.56% | −0.35% / +1.62% |
+| Shaped extrusion, 40,000 moves | 186,972 | +17.24% / +22.22% | −6.93% / −3.25% | −6.86% / −3.20% | +1.75% / +3.03% |
+
+The C implementation used less CPU in this scanner microbenchmark
+(including the same FFI overhead on both sides). It did not show a
+similarly large advantage in whole-process elapsed time. These are
+fixed debug workloads, not evidence of real printer performance. The
+default stock dispatcher and C helpers are unchanged; neither scanner
+is selected by default.
+
 ### Separating scanner and look-ahead costs
 
 Each table cell is the paired median elapsed change relative to stock
