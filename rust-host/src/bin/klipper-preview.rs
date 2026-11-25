@@ -4,7 +4,7 @@
 use klipper_host_protocol::{
     bed_mesh, config,
     gcode_macros::Registry,
-    machine_preview::{mixed, tool_profiles, Machine},
+    machine_preview::{mixed, tool_profiles, Machine, MAX_LONG_PREVIEW_TOOLS},
     step_clock::{Clock, Command},
     thermal::{
         commands::{self, Source, Wait},
@@ -401,18 +401,19 @@ fn run() -> Result<(), String> {
     }
     if long_steps
         && (mixed_plan
-            || multi_pressure
             || expand_macros
             || virtual_sd
             || workers.is_some()
             || initial_tool.is_some()
             || mesh_script
             || mesh_profile.is_some()
-            || parsed.values("toolchanger").is_some()
-            || (tool_temps.is_some() && !fixed_pressure))
+            || (parsed.values("toolchanger").is_some() && !multi_pressure)
+            || tool_temps
+                .as_ref()
+                .is_some_and(|t| !fixed_pressure || t.len() > MAX_LONG_PREVIEW_TOOLS))
     {
         return Err(
-            "--long-step-preview accepts simple XYZ or one explicit fixed-pressure extruder only"
+            "--long-step-preview accepts simple XYZ or up to three explicit fixed-pressure extruders only"
                 .into(),
         );
     }

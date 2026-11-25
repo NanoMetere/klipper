@@ -416,8 +416,9 @@ python3 bench/preview_cli_timing.py /path/to/prior /path/to/current --moves 2500
 
 Build with `cargo build --locked --release --features long-step-preview
 --bin klipper-preview` to make `--long-step-preview` available. The normal
-build does not include the extended queue. The option allows inert XYZ traces or
-one explicitly modeled extruder with `--tool-temps 0:210 --fixed-pressure-script`.
+build does not include the extended queue. The option allows inert XYZ traces
+or up to three modeled extruders with `--fixed-pressure-script` and one
+temperature per tool (for example `--tool-temps 0:210,2:214,6:220`).
 It follows the pinned C step queue's clock horizon, bounded queue extension
 and prefix compression. A single step after a long idle can exceed the
 normal compression horizon; if its interval does not fit the 32-bit
@@ -426,20 +427,30 @@ does not run live queue deadlines or send anything to a device.
 
 A lane has at most 1,000,000 crossing and commit events, 65,535 events per
 solved phase, 131,072 queued clock slots, and 262,144 output records.
-There are at most four sequentially solved lanes; the existing input and
-trajectory limits are unchanged. The option rejects multi-tool selection,
-mixed heater plans, saved mesh, macro expansion, and virtual SD. The
-flag-free path keeps its earlier limits.
+There are at most six sequentially solved lanes: three motors and three
+extruders. The aggregate upper bounds are six million crossing/commit
+events and 1,572,864 retained output records; only one lane's step queue
+and phase scratch are active at once. The existing input/trajectory
+limits are unchanged. This option rejects extra worker/initial-tool flags,
+physical toolchanger operations, mixed heater plans, saved mesh, macro
+expansion, and virtual SD. The flag-free path keeps its earlier limits.
 
 Pinned stock's planner, input shaper, pressure advance and C clock queue
 matched all 257,111 timed records on a 3,000-move layered path and 115,855
 on a 3,000-move shaped extrusion path. Smaller controls matched the default
 Rust output byte-for-byte; an XYZ fixture without an extruder and a
-43-second dwell also matched stock. These are compatibility tests, not
-printing speed measurements.
+43-second dwell also matched stock. A 1,056-move shaped virtual T0/T2/T6
+script with named pressure changes matched 304,753 timed C records across
+all six lanes. Re-selecting a lane preserves its dormant extruder position;
+changing pressure on an inactive lane leaves XYZ, the other lanes and
+duration unchanged. These are compatibility tests, not printing speed
+measurements.
 
 ```sh
 python3 bench/long_step_preview.py /path/to/pinned/klipper --target-dir target/long-preview
+cargo build --locked --release --example tool_motion_replay
+python3 bench/tool_motion.py /path/to/pinned/klipper --long-steps \
+  --cli-binary target/long-preview/release/klipper-preview
 ```
 
 ## Offline configuration resolution

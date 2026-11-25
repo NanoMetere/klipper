@@ -223,7 +223,7 @@ def cli_rows(trace):
     return received
 
 
-def compare_runtime(upstream, executable, cli, directory):
+def compare_runtime(upstream, executable, cli, directory, run_long=False):
     base = ROOT / "examples/preview"
     root = Path(directory)
     for name in ("rails.cfg", "printer.cfg"):
@@ -247,12 +247,19 @@ def compare_runtime(upstream, executable, cli, directory):
         assert [lane["tool"] for lane in trace["extruder_lanes"]] == [0, 2, 6]
         return trace
 
-    for count, named, mesh_mode in ((8, False, ""), (96, False, ""), (96, True, ""),
-                                    (96, True, "load"), (96, True, "xy"), (96, True, "zfade")):
-        mesh = bool(mesh_mode)
+    cases = [(8, False, ""), (96, False, ""), (96, True, ""),
+             (96, True, "load"), (96, True, "xy"), (96, True, "zfade")]
+    if run_long:
+        cases.append((96, True, "long"))
+    for count, named, mesh_mode in cases:
+        mesh = bool(mesh_mode) and mesh_mode != "long"
         offset = mesh_mode in ("xy", "zfade")
         moves = list(line for line in long_gcode(count, True) if line.startswith("G1"))
         def block(tag):
+            if mesh_mode == "long":
+                return [f"G1 X{10+tag*0.2+(4.4 if i%2 else 0.2):.5f} Y{14+(i%13)*.13:.5f} "
+                        f"Z{.3+tag*.01:.5f} E{.05 if i%12 else -.03:.4f} F3000"
+                        for i in range(count)]
             # Preserve legal positive paths across repetitions without
             # repeating the same exact absolute starting point.
             return [line.replace("X10.", f"X{10+tag}.")
@@ -313,7 +320,13 @@ def compare_runtime(upstream, executable, cli, directory):
                 ("T0", "BED_MESH_OFFSET ZFADE=3"),
             ):
                 lines.insert(lines.index(anchor), op)
+        if mesh_mode == "long":
+            old = run(lines, flags=flags)
+            assert old.returncode and "EventLimit" in old.stderr and not old.stdout, old.stderr
+            flags += ("--long-step-preview",)
         result = decode(run(lines, flags=flags))
+        if named and mesh_mode == "" and run_long:
+            assert decode(run(lines, flags=(*flags, "--long-step-preview"))) == result
         expected, duration = reference(upstream, executable, True, lines, runtime=True, named=named,
                                        mesh_cfg=profile_path if mesh else None)
         assert math.isclose(result["planned_duration_seconds"], duration, rel_tol=1e-12, abs_tol=1e-12)
@@ -321,7 +334,7 @@ def compare_runtime(upstream, executable, cli, directory):
         for i, (want, got) in enumerate(zip(expected, rows, strict=True)):
             assert want == got, (count, i, want, got)
         control = decode(run([line for line in lines if not line.startswith("SET_PRESSURE_ADVANCE")],
-                             flags=flags if mesh else ()))
+                             flags=flags if mesh or mesh_mode == "long" else ()))
         assert result["motors"] == control["motors"]
         assert result["planned_duration_seconds"] == control["planned_duration_seconds"]
         assert all(a["commands"] != b["commands"] for a, b in
@@ -340,12 +353,25 @@ def compare_runtime(upstream, executable, cli, directory):
             assert only_t6_removed["planned_duration_seconds"] == result["planned_duration_seconds"]
             assert only_t6_removed["extruder_lanes"][:2] == result["extruder_lanes"][:2]
             assert only_t6_removed["extruder_lanes"][2] != result["extruder_lanes"][2]
-        threaded = decode(run(lines, flags=(*flags, "--lane-workers", "4")))
-        assert threaded == result
+        if mesh_mode != "long":
+            threaded = decode(run(lines, flags=(*flags, "--lane-workers", "4")))
+            assert threaded == result
         sizes = [len(lane) for lane in result["motors"]] + [
             len(lane["commands"]) for lane in result["extruder_lanes"]]
         print(f"Sparse runtime gain (named={named}, mesh={mesh_mode or 'off'}), {(10 + named)*count} shaped fixture moves: {sum(sizes)} exact timed stock "
               f"records (XYZ, T0/T2/T6: {sizes})")
+
+    if run_long:
+        gcode.write_text("G90\nT2\n")
+        limited = ("--fixed-pressure-script", "--long-step-preview")
+        for extra in (("--lane-workers", "2"), ("--mixed-plan",), ("--mesh-profile", PROFILE)):
+            rejected = subprocess.run([cli, *limited, *extra, *command], capture_output=True)
+            reason = b"--fixed-pressure-script" if extra == ("--mixed-plan",) else b"--long-step-preview"
+            assert rejected.returncode and not rejected.stdout and reason in rejected.stderr, (extra, rejected.stderr)
+        many = command.copy()
+        many[1] += ",9:212"
+        rejected = subprocess.run([cli, *limited, *many], capture_output=True)
+        assert rejected.returncode and not rejected.stdout and b"--long-step-preview" in rejected.stderr
 
     mesh_flags = ("--fixed-pressure-script", "--mesh-script", "--mesh-profile", PROFILE)
     for unsupported in ("BED_MESH_PROFILE LOAD=unknown", "BED_MESH_PROFILE SAVE=test_surface",
@@ -391,7 +417,10 @@ def main():
     p.add_argument("upstream", type=Path, help=f"checkout at {PIN}")
     p.add_argument("--binary", type=Path, default=ROOT/"target/release/examples/tool_motion_replay")
     p.add_argument("--cli-binary", type=Path, help="also verify the 2,500-move sparse CLI regression")
+    p.add_argument("--long-steps", action="store_true", help="also verify with a feature-enabled CLI")
     a = p.parse_args()
+    if a.long_steps and not a.cli_binary:
+        p.error("--long-steps requires --cli-binary")
     upstream = a.upstream.resolve()
     h = upstream/"klippy/chelper"
     with tempfile.TemporaryDirectory() as d:
@@ -413,7 +442,7 @@ def main():
                   f"{duration:.9f} simulated seconds")
         if a.cli_binary:
             compare_cli(upstream, c, a.cli_binary.resolve(), d)
-            compare_runtime(upstream, c, a.cli_binary.resolve(), d)
+            compare_runtime(upstream, c, a.cli_binary.resolve(), d, run_long=a.long_steps)
 
 
 

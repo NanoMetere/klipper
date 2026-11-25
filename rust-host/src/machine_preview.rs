@@ -25,6 +25,9 @@ const SECTIONS: [&str; 3] = ["stepper_x", "stepper_y", "stepper_z"];
 const MAX_EVENTS: usize = 65_535;
 const MAX_LINES: usize = 32768;
 const MAX_LANE_WORKERS: usize = 8;
+/// With three motor and at most three tool lanes, the long preview bounds
+/// total work to six copies of the per-lane cap, with one active clock queue.
+pub const MAX_LONG_PREVIEW_TOOLS: usize = 3;
 const PARALLEL_SEGMENTS: usize = 512;
 
 #[derive(Debug)]
@@ -608,6 +611,10 @@ impl Machine {
         {
             return Err(Error::ToolSegment);
         }
+        #[cfg(feature = "long-step-preview")]
+        if self.long_steps && (lanes.len() > MAX_LONG_PREVIEW_TOOLS || self.lane_workers != 1) {
+            return Err(Error::ToolSegment);
+        }
         let lookup = |id| {
             lanes
                 .iter()
@@ -866,6 +873,62 @@ impl Machine {
             1
         };
         let solve = |i: usize| -> Result<Vec<Command>, Error> {
+            #[cfg(feature = "long-step-preview")]
+            if self.long_steps {
+                if i < 3 {
+                    let axis = self.motor_axis[i];
+                    return if let Some(shaper) = self
+                        .fixed_shaper
+                        .as_ref()
+                        .filter(|s| s.is_enabled_for(axis))
+                    {
+                        step_lane_shaped_long(
+                            shaper,
+                            xyz,
+                            axis,
+                            self.motor_step[i],
+                            start,
+                            (clock, max_error, invert[i]),
+                        )
+                    } else {
+                        step_lane_long(
+                            xyz,
+                            axis,
+                            self.motor_step[i],
+                            start,
+                            clock,
+                            max_error,
+                            invert[i],
+                        )
+                    };
+                }
+                let (spec, queue) = (&lanes[i - 3], &all_e[i - 3]);
+                let tool = &spec.extruder;
+                return if let Some(advance) = runtime_advance
+                    .get(i - 3)
+                    .and_then(Option::as_ref)
+                    .or(tool.pressure_advance)
+                {
+                    step_lane_advance_long(
+                        advance,
+                        queue,
+                        tool.step_distance,
+                        clock,
+                        max_error,
+                        tool.inverse_direction,
+                    )
+                } else {
+                    step_lane_long(
+                        queue,
+                        Axis::X,
+                        tool.step_distance,
+                        [spec.parked_e, 0.0, 0.0],
+                        clock,
+                        max_error,
+                        tool.inverse_direction,
+                    )
+                };
+            }
             if i < 3 {
                 let axis = self.motor_axis[i];
                 return if let Some(shaper) = self
@@ -932,7 +995,8 @@ impl Machine {
     }
 
     /// Explicitly opt in to the bounded stock clock queue for single-path
-    /// offline traces only. Does not change live scheduling or multi-tools.
+    /// offline traces and at most three explicitly modeled virtual tools.
+    /// Does not change live scheduling.
     #[cfg(feature = "long-step-preview")]
     pub fn with_long_step_preview(mut self) -> Self {
         self.long_steps = true;
