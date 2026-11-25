@@ -423,8 +423,8 @@ justify changing either solver. No live performance claim follows.
   stock windows. This does not enable Z shaping, runtime shaper updates,
   calibration, or a hardware run.
   A separate runtime-shaper preview additionally handles bounded
-  X/Y `SET_INPUT_SHAPER` updates during file-debug prediction. In 20
-  job/tolerance combinations, independent Rust and captured native C
+  X/Y `SET_INPUT_SHAPER` updates during file-debug prediction. In 26
+  job/tolerance combinations, both Rust worker modes and captured native C
   replay matched the stock motor direction and compressed packet rows
   through shared A→B→A switches, changes in active windows, disabled
   and re-enabled axes, bare status commands, argument precedence,

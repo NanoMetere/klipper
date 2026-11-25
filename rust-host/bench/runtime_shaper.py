@@ -12,7 +12,7 @@ import tempfile
 
 from file_debug_lane_timing import rows_with_prefix, timeline
 from file_debug_process_timing import stock_arm
-from shaped_file_debug import build_c, paired
+from shaped_file_debug import build_c, paired, paired_workers
 from shared_window_capture import ATTRS, XYZ_ATTRS, PIN, ROOT, flatten_file, run_stock
 
 SCHEMA = "klipper.shared-corexy.runtime-shaper.v1"
@@ -69,6 +69,28 @@ def scripts(fixture):
             ("disabled",disabled,3), ("partial",partial,3), ("global-priority",priority,3),
             ("report-only",base.replace("G1 X46 Y21", "SET_INPUT_SHAPER\nG1 X46 Y21",1),1),
             *boundaries)
+
+
+
+def scaled(fixture):
+    _, shared, _ = next(s for s in scripts(fixture) if s[0] == "shared-a-b-a")
+    for label, lines in (("alternating", 216), ("wide", 240), ("mixed-waits", 200)):
+        normalized = []
+        for i in range(lines):
+            if i == lines//3:
+                normalized.append(PROFILE1.rstrip())
+            if i == 2*lines//3:
+                normalized.append(PROFILE0.rstrip())
+            if label == "mixed-waits" and i in (30,73,181):
+                normalized.extend(("M400","G4 P20"))
+            if label == "wide":
+                normalized.append(f"G1 X{18+(i%2)*.61:.3f} Y{39+(1-i%2)*.29:.3f} E.006 F1020")
+            elif label == "mixed-waits":
+                normalized.append(f"G1 X{18+(i%2)*.28:.3f} Y{39+(1-i%2)*.67:.3f} "
+                                  f"Z{1.42+(i%3)*.017:.3f} E{.008 if i%11 else -.006} F480")
+            else:
+                normalized.append(f"G1 X{18+(i%2)*.24:.3f} Y{39+(1-i%2)*.14:.3f} E.002 F600")
+        yield label, shared.replace("M400\n","\n".join(normalized)+"\nM400\n",1)
 
 
 
@@ -130,10 +152,21 @@ def main(argv):
     parser.add_argument("cli", type=Path)
     parser.add_argument("--rounds", type=int, default=0,
                         help="time stock vs Rust with identical JSON on three profiles")
+    parser.add_argument("--parallel-cli", type=Path, help="optional four-worker runtime preview")
+    parser.add_argument("--worker-rounds", type=int, default=0)
+    parser.add_argument("--baseline-cli", type=Path, help="prior runtime preview to time as the first Rust arm")
     parser.add_argument("--cores", help="comma-separated Linux CPU affinity")
     a = parser.parse_args(argv)
     if not 0 <= a.rounds <= 80:
         parser.error("--rounds must be 0–80")
+    if not 0 <= a.worker_rounds <= 200:
+        parser.error("--worker-rounds must be 0–200")
+    if a.worker_rounds and not a.parallel_cli:
+        parser.error("--worker-rounds requires --parallel-cli")
+    parallel = a.parallel_cli.resolve() if a.parallel_cli else None
+    if a.baseline_cli and not a.worker_rounds:
+        parser.error("--baseline-cli requires --worker-rounds")
+    baseline = a.baseline_cli.resolve() if a.baseline_cli else None
     if a.cores:
         os.sched_setaffinity(0, {int(c) for c in a.cores.split(",")})
     upstream, dictionary, cli = (p.resolve() for p in (a.upstream, a.dictionary, a.cli))
@@ -161,7 +194,9 @@ def main(argv):
         script, xyz, e, model, settings, out = (t/f for f in
             ("input.gcode", "xyz.txt", "e.txt", "model.json", "shape.cfg", "out.json"))
         settings.write_text(CONFIG0)
-        for label, program, n in scripts(fixture):
+        short = list(scripts(fixture))
+        long = [(label, program, 5) for label, program in scaled(fixture)]
+        for label, program, n in short + long:
             script.write_text(program)
             for tolerance in (0, int(hz*.000025)):
                 rows, gold = run_stock(upstream, dictionary, fixture, t, script, tolerance == 0)
@@ -169,8 +204,9 @@ def main(argv):
                 assert g2 == gold
                 states = rows_with_prefix(rows, "SHAPE_STATE")
                 assert len(states) == n and states == rows_with_prefix(r2, "SHAPE_STATE"), (label, len(states))
-                if n == 3:
-                    assert states[0] == states[2] != states[1]
+                if n >= 3:
+                    assert all(state == states[index % 2] for index, state in enumerate(states))
+                    assert states[0] != states[1]
                 e_rows = rows_with_prefix(rows, "WINDOW")
                 i = next(i for i, r in enumerate(e_rows) if r["op"] == "p")
                 e.write_text(timeline(e_rows[i:], ATTRS))
@@ -180,15 +216,18 @@ def main(argv):
                 eid, = {r["oid"] for r in rows_with_prefix(rows, "SHARED_OUTCOME")}
                 expected = [flatten_file(gold[f"oid={i}"]) for i in [*meta["oids"], eid]]
                 payload = "".join("\n".join([*lane, "end", ""]) for lane, _ in expected).encode()
+                c_args = [xyz, e, str(hz), str(tolerance),
+                          *map(str, meta["d"]), *(str(int(v)) for v in meta["inverted"])]
                 for workers in ("1", "4"):
-                    ran = subprocess.check_output([c, workers, xyz, e, str(hz), str(tolerance),
-                                  *map(str, meta["d"]), *(str(int(v)) for v in meta["inverted"])],
-                                  timeout=10)
+                    ran = subprocess.check_output([c, workers, *c_args], timeout=10)
                     assert ran == payload, (label, tolerance, workers)
                 model_cfg["max_error_ticks"] = tolerance
                 model.write_text(json.dumps(model_cfg))
                 rust = [cli, model, script, settings]
                 output = subprocess.check_output(rust, timeout=10)
+                if parallel:
+                    workers = [parallel, model, script, settings]
+                    assert subprocess.check_output(workers, timeout=10) == output, (label, tolerance)
                 assert wire_records(output, hz) == [lane for lane, _ in expected], (label, tolerance)
                 print(label, tolerance, "ticks:", sum(n for _, n in expected),
                       "exact steps, shape states", n, flush=True)
@@ -197,7 +236,16 @@ def main(argv):
                     stock = [sys.executable, Path(__file__).resolve(), "--stock-arm",
                              upstream, dictionary, fixture, model, script]
                     paired([stock, rust], out, output, a.rounds)
-        check_rejected(cli, model, script, settings)
+                if a.worker_rounds and n == 5:
+                    arms = [rust, workers]
+                    if baseline:
+                        arms.insert(0, [baseline, model, script, settings])
+                    paired_workers("Rust whole CLI", arms, out, output, a.worker_rounds)
+                    paired_workers("C captured replay", [[c, m, *c_args] for m in ("1", "4")],
+                                   out, payload, a.worker_rounds)
+        for tool in (cli, parallel):
+            if tool:
+                check_rejected(tool, model, script, settings)
     print(f"{checked} runtime shaper cases, exact stock/C/Rust; invalid inputs rejected")
 
 

@@ -654,3 +654,8 @@ mod tests {
         assert!(execute("G1 X12\nM400\nG28\nM400").is_err());
     }
 }
+
+#[cfg(feature = "runtime-shaper-workers")]
+mod runtime_workers;
+#[cfg(feature = "runtime-shaper-workers")]
+pub use runtime_workers::trace_file_debug_runtime_shaper_parallel;

@@ -2240,7 +2240,11 @@ cargo run --locked --release --features runtime-shaper-preview \
   bench/shared_extruder_fixture/offline_model.json path.gcode shape.cfg
 ```
 
-This serial mode emits `klipper.shared-corexy.runtime-shaper.v1`. It is
+This emits `klipper.shared-corexy.runtime-shaper.v1` and stays serial.
+On a machine with four available CPUs, the opt-in
+`--features runtime-shaper-workers --bin klipper-runtime-shaper-workers-preview`
+builds a separate command with the same three arguments and the same
+ordered records. Do not use it to speed up a single CPU. This is
 still an offline prediction for the bounded shared-E model, not a
 macro runtime or a printer configuration tool. It does not support
 Z shaping, arbitrary parameters, includes or calibration. The fixed
@@ -2256,6 +2260,11 @@ stock and independent C replay of the captured windows, including
 shared A→B→A motion, disabling and re-enabling shaping, and byte-chunk
 boundaries. Add `--rounds 16 --cores 0` to compare complete normalized
 JSON turnaround for selected offline profiles, not live printing.
+To time serial vs four workers on the three larger fixtures, add
+`--parallel-cli target/release/klipper-runtime-shaper-workers-preview`
+and `--worker-rounds 120 --cores 0,1,2,3`. The C arm replays captured
+steps; the Rust arm begins with G-code. Compare each to its own serial
+baseline, not their absolute elapsed times.
 
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure

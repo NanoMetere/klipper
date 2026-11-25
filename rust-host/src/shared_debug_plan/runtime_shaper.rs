@@ -180,3 +180,57 @@ pub fn trace_file_debug_runtime_shaper(
         lanes: [a, b, z, e],
     })
 }
+
+#[cfg(feature = "runtime-shaper-workers")]
+pub(super) struct PreparedRuntime {
+    pub(super) events: Vec<super::Event>,
+    pub(super) captures: Vec<captured::Capture>,
+    pub(super) lanes: [(Axis, f64, bool); 3],
+    pub(super) shaper: Shaper,
+    pub(super) positions: Vec<(usize, usize)>,
+    pub(super) updates: Vec<Shaper>,
+}
+
+#[cfg(feature = "runtime-shaper-workers")]
+#[inline(always)]
+pub(super) fn prepare_runtime(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    initial: &config::Config,
+) -> Result<PreparedRuntime, TraceError> {
+    let shaper = Shaper::from_file_debug_config(initial).map_err(|_| TraceError::Options)?;
+    let (_, body) = file.split_once('\n').ok_or(TraceError::Options)?;
+    let settings = ShapeSettings::from_config(initial).map_err(|_| TraceError::Options)?;
+    let shapes = collect_updates(body, settings).map_err(|_| TraceError::Options)?;
+    let mut delays = Vec::with_capacity(shapes.len());
+    let mut updates = Vec::with_capacity(shapes.len());
+    for (line, shape) in shapes {
+        let (pre, post) = shape.window(Axis::CoreXYPlus);
+        delays.push((line, pre.max(post)));
+        updates.push(shape);
+    }
+    let mut positions = Vec::with_capacity(delays.len());
+    let (events, captures, lanes) = shaped_plan(
+        file,
+        start,
+        options,
+        geometries,
+        wire,
+        &shaper,
+        Some(ShapeCaptureSchedule {
+            delays: &delays,
+            positions: &mut positions,
+        }),
+    )?;
+    Ok(PreparedRuntime {
+        events,
+        captures,
+        lanes,
+        shaper,
+        positions,
+        updates,
+    })
+}

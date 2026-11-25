@@ -238,3 +238,11 @@ pub(crate) use runtime_shaper::entry as entry_runtime_shaper;
 fn main() {
     entry::<false>();
 }
+
+#[cfg(feature = "runtime-shaper-workers")]
+#[allow(dead_code)]
+#[path = "support/runtime_workers_entry.rs"]
+mod runtime_workers;
+#[cfg(feature = "runtime-shaper-workers")]
+#[allow(unused_imports)]
+pub(crate) use runtime_workers::entry as entry_runtime_workers;
