@@ -385,6 +385,11 @@ justify changing either solver. No live performance claim follows.
   captured E lane. This is capture-driven replay, not support for
   independently scheduling longer scripts. The public preview's
   128-line limit is unchanged.
+  Appending semicolon comments (identical motion commands) changes file
+  batching, one stock generation boundary and the absolute tick stream.
+  Both file layouts reproduce their own captured stock stream exactly;
+  an independent planner cannot treat packet timing as a function of
+  the movement commands alone.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

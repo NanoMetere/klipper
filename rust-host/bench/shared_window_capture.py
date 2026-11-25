@@ -27,7 +27,7 @@ XYZ_ATTRS = {"a": "at ta tc td x y z rx ry rz sv cv acc", "b": "x y z",
              "t": "cutoff", "f": "at"}
 
 
-def observe(upstream, dictionary, fixture, temp, path, zero_error, long=False):
+def observe(upstream, dictionary, fixture, temp, path, zero_error, capture_batches=0):
     out, log = temp / "steps.out", temp / "klippy.log"
     run = subprocess.run(
         [sys.executable, fixture / "stock_entry.py",
@@ -59,12 +59,13 @@ def observe(upstream, dictionary, fixture, temp, path, zero_error, long=False):
         if op == "t" and q == -1:
             paused_trims += 1
         events.append(" ".join(map(str, (op, *(row[k] for k in ATTRS[op].split())))))
-        if long and op == "f":
+        if capture_batches and op == "f":
             events.append(f"w {row['cutoff']}")
     counts = Counter(e[0] for e in events)
-    expected = ({"p": 3, "f": 36, "b": 5, "a": 228, "t": 72, "w": 36} if long else
+    expected = ({"p": 3, "f": capture_batches, "b": 5, "a": 228,
+                 "t": 2 * capture_batches, "w": capture_batches} if capture_batches else
                 {"p": 3, "f": 10, "b": 5, "a": 12, "t": 20})
-    assert paused_trims == 2 and counts == expected, (long, counts)
+    assert paused_trims == 2 and counts == expected, (capture_batches, counts)
     trace = motor_trace(upstream, dictionary, out.read_bytes())
     assert len(trace) == 4
     snaps = [json.loads(s.split(" ", 1)[1]) for s in rows if s.startswith("SHARED_OUTCOME ")]
@@ -78,7 +79,7 @@ def observe(upstream, dictionary, fixture, temp, path, zero_error, long=False):
     xyz_inputs = []
     for row in xyz:
         xyz_inputs.append(" ".join(map(str, (row["op"], *(row[k] for k in XYZ_ATTRS[row["op"]].split())))))
-        if long and row["op"] == "f":
+        if capture_batches and row["op"] == "f":
             xyz_inputs.append(f"w {row['cutoff']}")
     eid = ids.pop()
     assert eid not in meta["oids"]
@@ -203,6 +204,13 @@ def main():
          for i in range(216)) + "M400\n", 1),
          (644, 183), 1312, ((5491, 5564, 87), (688, 1119, 25))),
     )
+    long_case = cases[-1]
+    padded = "".join(line + " ;" + "c" * 80 + "\n" for line in long_case[1].splitlines())
+    def commands(text):
+        return [line.split(";", 1)[0].rstrip() for line in text.splitlines()]
+
+    assert commands(padded) == commands(long_case[1])
+    cases += (("padded-long-short-moves", padded, *long_case[2:]),)
     with tempfile.TemporaryDirectory(prefix="klipper-captured-window-") as d:
         temp = Path(d)
         _, c, rust = build(a.upstream, temp)
@@ -220,13 +228,14 @@ def main():
         mt, body = temp / "model.json", temp / "body.gcode"
         for zero_error in (True, False):
             mode = 0 if zero_error else 1
+            baseline_long_e = None
             for name, script, e_counts, e_ticks, xyz_counts in cases:
                 path = temp / "fixture.gcode"
                 e_count = e_counts[mode]
                 path.write_text(script)
-                long = name == "long-short-moves"
-                observed = observe(a.upstream, a.dictionary, fixture, temp, path, zero_error, long)
-                assert observed == observe(a.upstream, a.dictionary, fixture, temp, path, zero_error, long)
+                batches = {"long-short-moves": 36, "padded-long-short-moves": 37}.get(name, 0)
+                observed = observe(a.upstream, a.dictionary, fixture, temp, path, zero_error, batches)
+                assert observed == observe(a.upstream, a.dictionary, fixture, temp, path, zero_error, batches)
                 events, stock_file, xyz_events, meta, xyz_stock_files = observed
                 tol = str(meta["max_error"])
                 assert int(tol) == (0 if zero_error else int(int(hz) * 0.000025))
@@ -241,8 +250,8 @@ def main():
                       f"{physical_steps} individual ticks, exact C replay and Rust")
                 xyz_args = [xyz, hz, tol, *map(str, meta["d"]), *(str(int(v)) for v in meta["inverted"])]
                 init, executable = script.split("\n", 1)
-                assert init == "SET_KINEMATIC_POSITION X=10 Y=10 Z=1"
-                if long:
+                assert init.split(";", 1)[0].rstrip() == "SET_KINEMATIC_POSITION X=10 Y=10 Z=1"
+                if batches:
                     replay = subprocess.check_output(xyz_args, input=xyz_events, text=True, timeout=20)
                     fields = replay.split("end\n")
                     assert len(fields) == 4 and fields[-1] == ""
@@ -258,7 +267,11 @@ def main():
                         body.write_text(executable)
                         guarded = subprocess.run([a.shared_preview, mt, body], capture_output=True, timeout=10)
                         assert guarded.returncode == 2 and not guarded.stdout and b"Inputs" in guarded.stderr
-                    print(f"Capture replay only (no independent schedule), {tol} ticks: "
+                    if batches == 36:
+                        baseline_long_e = want
+                    else:
+                        assert baseline_long_e is not None and want != baseline_long_e
+                    print(f"Capture replay only (no independent schedule), {name}, {tol} ticks: "
                           f"{sum(xyz_counts[mode]) + e_count} exact records, 29992 steps")
                     continue
                 full = subprocess.check_output([integrated, tol], input=executable, text=True, timeout=15)
@@ -336,7 +349,7 @@ def main():
             rejected(symlink, b"non-symlink")
             body.write_bytes(b" " * 65_537)
             rejected(body, b"exceeds 65536 bytes")
-            print("Standalone shared preview matched 20 stock cases; 2 longer captured cases replayed exactly")
+            print("Standalone shared preview matched 20 stock cases; 4 longer captured cases replayed exactly")
 
 
 
