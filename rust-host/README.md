@@ -527,13 +527,32 @@ runs on a four-logical-CPU affinity, the same 2,500-move sparse fixture
 took 29.213 → 16.201 ms and 32.366 → 20.667 ms median elapsed
 (36–45% less). With two workers it took 29.293 → 18.595 ms.
 All 21,683 records and complete JSON were byte-identical; the parity
-suite also compares 1, 2, 4 and 8 requested workers. The numbers are for
+suite also compares all 1–8 requested workers. The numbers are for
 the offline CLI, not the real printer or Klippy daemon.
 
 ```sh
 taskset -c 2,3,4,5 python3 bench/preview_cli_timing.py \
   target/release/klipper-preview target/release/klipper-preview \
   --tools --candidate-workers 4 --rounds 40 --moves 2500
+```
+
+When 3 or more workers share more lanes than workers, each worker now
+claims its next lane after finishing rather than following a fixed
+stripe. This spreads input-shaper and pressure-advance workloads while
+preserving the original output order. One and two workers, or one
+worker per lane, retain the previous scheduling. With 4 requested
+workers, two 40-pair runs of the same 2,500-move three-tool file gave
+17.490 → 14.111 ms and 16.154 → 13.045 ms median elapsed time. The
+median within-pair reduction was 19.1% in both runs (39/40 and 38/40
+wins); 3-worker reductions were 13.0% and 9.5%. Each pair used the same
+CPU affinity, worker count, and output destination; all 21,683 records
+and complete JSON matched. This includes parsing, planning, process
+startup and writing the JSON; it excludes printer I/O.
+
+```sh
+taskset -c 2-5 python3 bench/preview_cli_timing.py \
+  /path/to/pre-scheduler/klipper-preview target/release/klipper-preview \
+  --tools --baseline-workers 4 --candidate-workers 4 --rounds 40 --moves 2500
 ```
 
 The CLI can explicitly load one fixed version-1 bed mesh profile from

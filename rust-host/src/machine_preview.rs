@@ -915,8 +915,9 @@ impl Machine {
     }
 }
 
-// Plan shared geometry once. Each worker solves a fixed stripe of lanes and
-// publishes only to its own result, then the original index order is restored.
+// Plan shared geometry once. With more than two workers and more lanes
+// than workers, claim new lanes as each finishes: shaped motion and the
+// extruder timelines can have very different solve costs.
 fn solve_lanes(
     count: usize,
     workers: usize,
@@ -925,18 +926,30 @@ fn solve_lanes(
     if workers == 1 {
         return (0..count).map(solve).collect();
     }
-    let stripe = |start| {
-        (start..count)
-            .step_by(workers)
-            .map(|i| (i, solve(i)))
-            .collect::<Vec<_>>()
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let run = |start| {
+        if workers <= 2 || workers >= count {
+            return (start..count)
+                .step_by(workers)
+                .map(|i| (i, solve(i)))
+                .collect::<Vec<_>>();
+        }
+        let mut completed = Vec::new();
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            if i >= count {
+                return completed;
+            }
+            completed.push((i, solve(i)));
+        }
     };
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
         let mut spawn_failed = false;
         for id in 1..workers {
-            let stripe = &stripe;
-            match std::thread::Builder::new().spawn_scoped(scope, move || stripe(id)) {
+            let run = &run;
+            match std::thread::Builder::new().spawn_scoped(scope, move || run(id)) {
                 Ok(worker) => handles.push(worker),
                 Err(_) => {
                     spawn_failed = true;
@@ -944,7 +957,7 @@ fn solve_lanes(
                 }
             }
         }
-        let mut results = stripe(0);
+        let mut results = run(0);
         for worker in handles {
             match worker.join() {
                 Ok(result) => results.extend(result),
@@ -1053,13 +1066,14 @@ mod tests {
 
     #[test]
     fn scoped_lanes_restore_index_order_after_independent_execution() {
-        let result = solve_lanes(6, 4, |i| Ok(vec![Command::SetDirection(i % 2 == 0)])).unwrap();
-        assert_eq!(
-            result,
-            (0..6)
-                .map(|i| vec![Command::SetDirection(i % 2 == 0)])
-                .collect::<Vec<_>>()
-        );
+        let expected: Vec<_> = (0..8)
+            .map(|i| vec![Command::SetDirection(true); i])
+            .collect();
+        for workers in 1..=8 {
+            let result =
+                solve_lanes(8, workers, |i| Ok(vec![Command::SetDirection(true); i])).unwrap();
+            assert_eq!(result, expected);
+        }
         let result = solve_lanes(6, 4, |i| {
             if i == 2 {
                 Err(Error::Unsupported)

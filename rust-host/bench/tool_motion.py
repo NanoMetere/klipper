@@ -104,7 +104,7 @@ def compare_cli(upstream, executable, cli, directory):
     command = ["--tool-temps", "0:210,2:210,6:210", ROOT/"examples/preview", "sparse-tool.cfg",
                gcode, "20000000", "10", "10", ".3", "rails.cfg", "printer.cfg"]
     raw = subprocess.check_output([cli, *command])
-    for workers in (2, 4, 8):
+    for workers in range(2, 9):
         threaded = subprocess.check_output([cli, "--lane-workers", str(workers), *command])
         assert threaded == raw, workers
     trace = json.loads(raw)
