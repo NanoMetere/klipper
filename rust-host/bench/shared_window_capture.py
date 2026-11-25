@@ -134,6 +134,15 @@ def main():
     hz = str(int(json.loads(a.dictionary.read_text())["config"]["CLOCK_FREQ"]))
     fixture = ROOT / "bench/shared_extruder_fixture"
     source = (fixture / "path.gcode").read_text()
+    # E and XYZ counts are checked separately even though the absolute-E
+    # case traces the same XYZ coordinates as the relative-E fixtures.
+    cases = (
+        ("relative-positive", source, (579, 113), 1250, (7078, 99)),
+        ("relative-negative", source.replace("G1 E-0.37 F1200", "G1 E-3.87 F1200", 1),
+         (831, 118), 1755, (7078, 99)),
+        ("absolute-flow", (fixture / "absolute_flow.gcode").read_text(),
+         (522, 113), 1230, (7080, 99)),
+    )
     with tempfile.TemporaryDirectory(prefix="klipper-captured-window-") as d:
         temp = Path(d)
         _, c, rust = build(a.upstream, temp)
@@ -145,10 +154,10 @@ def main():
         subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_independent_plan.rs",
                         "--extern", f"klipper_host_protocol={lib}", "-o", plan], check=True)
         for zero_error in (True, False):
-            for negative, e_count, e_ticks in ((False, 579 if zero_error else 113, 1250),
-                                                      (True, 831 if zero_error else 118, 1755)):
+            mode = 0 if zero_error else 1
+            for name, script, e_counts, e_ticks, xyz_counts in cases:
                 path = temp / "fixture.gcode"
-                script = source.replace("G1 E-0.37 F1200", "G1 E-3.87 F1200", 1) if negative else source
+                e_count = e_counts[mode]
                 path.write_text(script)
                 observed = observe(a.upstream, a.dictionary, fixture, temp, path, zero_error)
                 assert observed == observe(a.upstream, a.dictionary, fixture, temp, path, zero_error)
@@ -161,7 +170,7 @@ def main():
                 want, physical_steps = flatten_file(stock_file)
                 assert c_out == rust_out == want
                 assert (len(want), physical_steps) == (e_count, e_ticks)
-                print(f"Actual stock debug, max compress error {tol} ticks, E, negative={negative}: "
+                print(f"Actual stock debug, max compress error {tol} ticks, E, case={name}: "
                       f"{len(want)} compressed blocks/directions, "
                       f"{physical_steps} individual ticks, exact C replay and Rust")
                 xyz_args = [xyz, hz, tol, *map(str, meta["d"]), *(str(int(v)) for v in meta["inverted"])]
@@ -189,8 +198,8 @@ def main():
                     assert expected == wire_records(candidate)
                     tick_count += n
                     records += len(expected)
-                assert (records, tick_count) == (7078 if zero_error else 99, 20488)
-                print(f"Actual stock debug, max compress error {tol} ticks, XYZ, negative={negative}: "
+                assert (records, tick_count) == (xyz_counts[mode], 20488)
+                print(f"Actual stock debug, max compress error {tol} ticks, XYZ, case={name}: "
                       f"{records} compressed blocks/directions, {tick_count} individual ticks, exact independently planned Rust")
 
 

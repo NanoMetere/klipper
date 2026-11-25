@@ -272,23 +272,17 @@ justify changing either solver. No live performance claim follows.
   stepper's direction and clock across rebind/detach and roll back on
   an invalid or over-cap window. This is not full configured
   Klippy-to-Rust XYZ/E time parity; no CLI path calls this kernel.
-  The actual pinned stock debug process also supplies XYZ and E phase
-  records, effective pressure timestamps, generation cutoffs and queue
-  retirement for two configured shared-stepper fixtures. Rust reproduces
-  all four OIDs at 50 MHz, including 43,981 individual step ticks per
-  compression mode. That is 15,566 exact compressed/direction records
-  with zero error and 429 with the stock default 25 μs tolerance.
-  The one shared E OID also matches unchanged C replay across positive
-  and negative rebinds and detach. A separate bounded Rust planner
-  now parses and plans the same two G-code bodies from a supplied
-  virtual start and fixed geometry, without using the captured stock
-  phases as inputs. It matches 38 ordered E and 24 XYZ planning events
-  per job (excluding idempotent duplicate/no-time flushes), plus all
-  four command streams in both compression modes. It implements only
-  the two queues, one named shared stepper, supported inert motion and
-  positive fixed-smoothing gain commands, with a final M400. The
-  no-pacing debug calendar is not live Klippy scheduling, there is no
-  preview CLI flag, and no physical nozzle-changer support is implied.
+  Actual pinned stock debug-file tests cover two relative-E jobs and an
+  absolute-E job with G92, flow overrides (120% and 90%), a relative/absolute
+  coordinate transition, queue switches, and detach/rejoin. From the same
+  explicit virtual start and geometry, the independent Rust planner matches
+  38 E and 24 XYZ scheduling events per job (excluding duplicate/no-time
+  flushes). The four OIDs match at 50 MHz: 65,699 individual step events per
+  compression mode, 23,168 exact compressed/direction records with zero
+  error and 641 with stock's default 25 μs tolerance. The shared E
+  stream also matches unchanged C replay. This bounded no-pacing debug
+  planner requires a final M400 and fixed positive smoothing; it is not
+  a live scheduler or physical nozzle-changer support.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented
