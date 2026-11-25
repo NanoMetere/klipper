@@ -55,3 +55,6 @@ impl ClockWatchedSimulation {
         self.simulation.advance(clock, budget).map(Advance::Output)
     }
 }
+
+#[cfg(feature = "clock-watched-status-preview")]
+mod status;

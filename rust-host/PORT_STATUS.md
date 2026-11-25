@@ -525,6 +525,16 @@ the exact unguarded output, and an already completed job stays
 complete. The six scripted cases reference the pinned Python and
 native C policy. No physical emergency command is sent.
 
+The optional `clock-watched-status-preview` snapshots the virtual
+job and clock guard through the existing **read-only** WebHooks
+subset. The `virtual_clock_liveness` object distinguishes current
+response health from the one-shot timeout. A late reply changes
+only health, not the recorded fault or number of released commands.
+The fixture compares six normalized query and update frames to
+pinned stock WebHooks, including a silent unchanged update and
+rejection of the command endpoint. This uses an in-memory session,
+not a device or socket.
+
 ## Remaining integration work
 
 A deployable host still needs a long-running runtime and independently
