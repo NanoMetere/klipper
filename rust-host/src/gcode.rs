@@ -416,7 +416,7 @@ impl Preview {
         Ok(())
     }
 
-    /// Preview only load/clear operations on one prevalidated saved mesh.
+    /// Preview load/clear and lookup offsets on one prevalidated saved mesh.
     /// Changing the transform rebases logical coordinates but does not
     /// flush the shared queue or modify queued physical moves.
     pub(crate) fn saved_mesh_command(
@@ -430,7 +430,8 @@ impl Preview {
         let op = &prefix[..end];
         let load = op.eq_ignore_ascii_case("BED_MESH_PROFILE");
         let clear = op.eq_ignore_ascii_case("BED_MESH_CLEAR");
-        if !load && !clear {
+        let offset = op.eq_ignore_ascii_case("BED_MESH_OFFSET");
+        if !load && !clear && !offset {
             return Ok(false);
         }
         if line.len() > MAX_LINE || line.contains(['\n', '\r', '\0']) {
@@ -442,6 +443,23 @@ impl Preview {
                 return Err(Error::InvalidParameter);
             }
             self.install_bed_mesh(mesh.clone())?;
+        } else if offset {
+            if args.keys().any(|key| key != "X" && key != "Y") {
+                return Err(Error::InvalidParameter);
+            }
+            let updates = [extended::float(&args, "X")?, extended::float(&args, "Y")?];
+            if let Some((active, last)) = &mut self.mesh {
+                let (candidate, intermediate) =
+                    active.with_lookup_offsets(updates, Error::Mesh, |mesh| {
+                        let intermediate = mesh.reported(self.toolhead).map_err(Error::Mesh)?;
+                        let mut candidate = self.coords;
+                        candidate.last = self.transform.reported(intermediate)?;
+                        candidate.validate()?;
+                        Ok((candidate, intermediate))
+                    })?;
+                *last = intermediate;
+                self.coords = candidate;
+            }
         } else {
             if !args.is_empty() {
                 return Err(Error::InvalidParameter);

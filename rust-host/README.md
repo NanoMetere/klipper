@@ -605,6 +605,17 @@ XYZ, load/clear, named pressure compensation and virtual T0/T2/T6 routing
 matched all 9,934 timed records. One and four workers gave identical
 output. The preview does not model physical pickup or probing.
 
+Within the same opt-in mode, `BED_MESH_OFFSET X=<mm> Y=<mm>` updates the
+mesh lookup coordinates without changing the commanded physical point
+or draining look-ahead. Values replace the supplied axes, omitted axes
+keep their setting, and an update without an active mesh has no effect.
+Loading a profile again resets both offsets. Only finite X/Y values are
+supported; `ZFADE` remains rejected. The pinned stock handlers and C
+step solver matched 7,614 timed XYZ records and 9,920 timed XYZ/E
+records with shaped virtual T0/T2/T6 and named pressure updates. This
+extends offline compatibility, not the interpolation algorithm or the
+default stock runtime.
+
 ## Inert multiple-extruder coordinates
 
 Switching a virtual extruder now returns the pending profiles tagged for

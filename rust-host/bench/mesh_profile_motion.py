@@ -49,14 +49,16 @@ def stock_mesh_commands(cfg_path, coords):
     bed.set_mesh(None)
     dispatcher = object.__new__(GCodeDispatch)
     handlers = {"BED_MESH_PROFILE": bed.pmgr.cmd_BED_MESH_PROFILE,
-                "BED_MESH_CLEAR": bed.cmd_BED_MESH_CLEAR}
+                "BED_MESH_CLEAR": bed.cmd_BED_MESH_CLEAR,
+                "BED_MESH_OFFSET": bed.cmd_BED_MESH_OFFSET}
 
     def apply(line, head):
         name = line.split()[0]
         cmd = GCodeCommand(gcode, name, line, {}, False)
-        pos, queued = list(head.commanded_pos), tuple(head.lookahead.queue)
+        pos, queued, clock = list(head.commanded_pos), tuple(head.lookahead.queue), head.print_time
         handlers[name](dispatcher._get_extended_params(cmd))
         assert head.commanded_pos == pos and tuple(head.lookahead.queue) == queued
+        assert head.print_time == clock
 
     return apply
 
@@ -224,9 +226,48 @@ def main():
         for i, (want, actual_row) in enumerate(zip(expected, actual, strict=True)):
             assert want == actual_row, (i, want, actual_row)
         print(f"runtime saved mesh load/clear: {len(actual)-3} exact timed stock motor records")
+        before_load = "BED_MESH_OFFSET X=74 Y=56"
+        while_clear = "BED_MESH_OFFSET X=-71 Y=-55"
+        offset_commands = list(commands)
+        for anchor, command in (
+            ("G1 X15 Y12 Z0.32 F1800", before_load),
+            ("G1 X30 Y24 Z0.5", "BED_MESH_OFFSET X=7.25 Y=-3.5"),
+            ("G1 X50 Y32", "BED_MESH_OFFSET X=-4"),
+            ("G1 X72 Y45", while_clear),
+            ("G1 X130 Y60 Z1.3", "BED_MESH_OFFSET Y=4.5"),
+            ("G1 X125 Y78 Z2.3", "BED_MESH_OFFSET"),
+        ):
+            offset_commands.insert(offset_commands.index(anchor), command)
+        clear_index = offset_commands.index("BED_MESH_CLEAR")
+        offset_commands[clear_index:clear_index] = [f"BED_MESH_PROFILE LOAD={PROFILE}", "G1 X57 Y37"]
+        offset_commands.insert(offset_commands.index("G1 X50 Y32"), "BED_MESH_OFFSET")
+        path.write_text("\n".join(offset_commands) + "\n")
+        offset_expected, offset_duration = reference(upstream, c, cfg, path, runtime=True)
+        offset_result = json.loads(subprocess.check_output(cmd))
+        offset_rows = cli_rows(offset_result)
+        assert math.isclose(offset_result["planned_duration_seconds"], offset_duration, rel_tol=1e-12, abs_tol=1e-12)
+        for i, (want, row) in enumerate(zip(offset_expected, offset_rows, strict=True)):
+            assert want == row, (i, want, row)
+        assert offset_result["motors"][2] != got["motors"][2]
+        # Omitted Y preserves -3.5; a fresh LOAD restores both to zero.
+        # Inactive updates are inert and do not persist into the next load.
+        explicit = {before_load: "", while_clear: "", "BED_MESH_OFFSET X=-4":
+                    "BED_MESH_OFFSET X=-4 Y=-3.5", "G1 X23 Y10 Z-.2":
+                    "BED_MESH_OFFSET X=0 Y=0\nG1 X23 Y10 Z-.2", "G1 X57 Y37":
+                    "BED_MESH_OFFSET X=0 Y=0\nG1 X57 Y37"}
+        path.write_text("\n".join(explicit.get(line, line) for line in offset_commands) + "\n")
+        assert json.loads(subprocess.check_output(cmd)) == offset_result
+        print(f"runtime saved mesh XY offsets: {len(offset_rows)-3} exact timed stock motor records")
+
+        path.write_text("G90\nBED_MESH_OFFSET X=2\n")
+        denied = subprocess.run([x for x in cmd if x != "--mesh-script"], capture_output=True)
+        assert denied.returncode and not denied.stdout
         for invalid in ("BED_MESH_PROFILE LOAD=missing", f"BED_MESH_PROFILE SAVE={PROFILE}",
                         f"BED_MESH_PROFILE REMOVE={PROFILE}", "BED_MESH_CALIBRATE",
-                        "BED_MESH_CLEAR X=1"):
+                        "BED_MESH_CLEAR X=1", "BED_MESH_OFFSET ZFADE=1",
+                        "BED_MESH_OFFSET Y=infinity", "BED_MESH_OFFSET X=nan",
+                        "BED_MESH_OFFSET X=bad", "BED_MESH_OFFSET X=1 X=2",
+                        "BED_MESH_OFFSET X", "BED_MESH_OFFSET EXTRA=2"):
             path.write_text(f"G90\n{invalid}\n")
             denied = subprocess.run(cmd, capture_output=True)
             assert denied.returncode and not denied.stdout, (invalid, denied.stdout)
