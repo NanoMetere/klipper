@@ -13,11 +13,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from gcode_preview import stock
+from mesh_profile_motion import stock_mesh_commands, PROFILE
 from planner import PIN, ROOT
 from preview_cli_timing import gcode as long_gcode
 
 
-def reference(upstream, executable, sparse, long_script=None, parked=None, runtime=False, named=False):
+def reference(upstream, executable, sparse, long_script=None, parked=None, runtime=False, named=False, mesh_cfg=None):
     sys.path.insert(0, str(upstream / "klippy"))
     from kinematics.corexy import CoreXYKinematics
     from kinematics.extruder import ExtruderStepper, PrinterExtruder
@@ -79,8 +80,18 @@ def reference(upstream, executable, sparse, long_script=None, parked=None, runti
                     callback(clock)
         clock += dwell
 
+    apply_mesh = None
+
     def switch(line, coords, head):
-        nonlocal active
+        nonlocal active, apply_mesh
+        if line == "!install_mesh":
+            assert mesh_cfg is not None
+            apply_mesh = stock_mesh_commands(mesh_cfg, coords)
+            return
+        if line.startswith("!mesh_cmd "):
+            assert apply_mesh is not None
+            apply_mesh(line.removeprefix("!mesh_cmd "), head)
+            return
         ident = int(line.split()[1])
         if runtime:
             head.get_extruder = lambda: ToolHead.get_extruder(head)
@@ -106,12 +117,14 @@ def reference(upstream, executable, sparse, long_script=None, parked=None, runti
         active = ident
         head.extra_axes[0] = extruders[active]
 
-    source = []
+    source = ["!install_mesh"] if mesh_cfg is not None else []
     if long_script:
         ids = {"T0": 0, "T2": 1, "T6": 2}
         selected = 0
         for line in long_script:
-            if line in ids:
+            if line.startswith("BED_MESH_") and mesh_cfg is not None:
+                source.append(f"!mesh_cmd {line}")
+            elif line in ids:
                 if not runtime or selected != ids[line]:
                     source.append("M400")
                 selected = ids[line]
@@ -234,7 +247,7 @@ def compare_runtime(upstream, executable, cli, directory):
         assert [lane["tool"] for lane in trace["extruder_lanes"]] == [0, 2, 6]
         return trace
 
-    for count, named in ((8, False), (96, False), (96, True)):
+    for count, named, mesh in ((8, False, False), (96, False, False), (96, True, False), (96, True, True)):
         moves = list(line for line in long_gcode(count, True) if line.startswith("G1"))
         def block(tag):
             # Preserve legal positive paths across repetitions without
@@ -270,32 +283,50 @@ def compare_runtime(upstream, executable, cli, directory):
             lines.insert(lines.index("G4 P41"), "SET_PRESSURE_ADVANCE ADVANCE=.08")
             lines.extend([*block(10), "M400",
                           "SET_PRESSURE_ADVANCE EXTRUDER=extruder2 ADVANCE=.048"])
-        result = decode(run(lines))
-        expected, duration = reference(upstream, executable, True, lines, runtime=True, named=named)
+        profile_path = root / "pressure.cfg"
+        flags = ("--fixed-pressure-script",)
+        if mesh:
+            profile = (base / "mesh.cfg").read_text().split("[bed_mesh]", 1)[1]
+            profile_path.write_text(profile_path.read_text() + "\n[bed_mesh]" + profile)
+            flags += ("--mesh-script", "--mesh-profile", PROFILE)
+            lines.insert(lines.index("G1 X11 F1500"), f"BED_MESH_PROFILE LOAD={PROFILE}")
+            lines.insert(lines.index("G4 P41"), "BED_MESH_CLEAR")
+            lines.insert(lines.index("SET_PRESSURE_ADVANCE ADVANCE=.09"), f"BED_MESH_PROFILE LOAD={PROFILE}")
+            lines.insert(lines.index("SET_PRESSURE_ADVANCE ADVANCE=.041"), "BED_MESH_CLEAR")
+        result = decode(run(lines, flags=flags))
+        expected, duration = reference(upstream, executable, True, lines, runtime=True, named=named,
+                                       mesh_cfg=profile_path if mesh else None)
         assert math.isclose(result["planned_duration_seconds"], duration, rel_tol=1e-12, abs_tol=1e-12)
         rows = cli_rows(result)
         for i, (want, got) in enumerate(zip(expected, rows, strict=True)):
             assert want == got, (count, i, want, got)
         control = decode(run([line for line in lines if not line.startswith("SET_PRESSURE_ADVANCE")],
-                             flags=()))
+                             flags=flags if mesh else ()))
         assert result["motors"] == control["motors"]
         assert result["planned_duration_seconds"] == control["planned_duration_seconds"]
         assert all(a["commands"] != b["commands"] for a, b in
                    zip(result["extruder_lanes"], control["extruder_lanes"], strict=True))
         if named:
             only_t6_removed = decode(run([line for line in lines if line !=
-                                       "SET_PRESSURE_ADVANCE EXTRUDER=extruder2 ADVANCE=.071"]))
+                                       "SET_PRESSURE_ADVANCE EXTRUDER=extruder2 ADVANCE=.071"], flags=flags))
             assert only_t6_removed["motors"] == result["motors"]
             assert only_t6_removed["planned_duration_seconds"] == result["planned_duration_seconds"]
             assert only_t6_removed["extruder_lanes"][:2] == result["extruder_lanes"][:2]
             assert only_t6_removed["extruder_lanes"][2] != result["extruder_lanes"][2]
-        threaded = decode(run(lines, flags=("--fixed-pressure-script", "--lane-workers", "4")))
+        threaded = decode(run(lines, flags=(*flags, "--lane-workers", "4")))
         assert threaded == result
         sizes = [len(lane) for lane in result["motors"]] + [
             len(lane["commands"]) for lane in result["extruder_lanes"]]
-        print(f"Sparse runtime gain (named={named}), {(10 + named)*count} shaped fixture moves: {sum(sizes)} exact timed stock "
+        print(f"Sparse runtime gain (named={named}, mesh={mesh}), {(10 + named)*count} shaped fixture moves: {sum(sizes)} exact timed stock "
               f"records (XYZ, T0/T2/T6: {sizes})")
 
+    mesh_flags = ("--fixed-pressure-script", "--mesh-script", "--mesh-profile", PROFILE)
+    for unsupported in ("BED_MESH_PROFILE LOAD=unknown", "BED_MESH_PROFILE SAVE=test_surface",
+                        "BED_MESH_CALIBRATE", "INITIALIZE_TOOLCHANGER T=2", "T2 RESTORE_AXIS=XY"):
+        rejected = run(["T2", unsupported], flags=mesh_flags)
+        assert rejected.returncode and not rejected.stdout, unsupported
+    rejected = run(["T2"], flags=(*mesh_flags, "--mixed-plan"))
+    assert rejected.returncode and not rejected.stdout
     for bad, flags in (
         ("SET_PRESSURE_ADVANCE ADVANCE=0", ("--fixed-pressure-script",)),
         ("SET_PRESSURE_ADVANCE ADVANCE=.08 SMOOTH_TIME=.04", ("--fixed-pressure-script",)),

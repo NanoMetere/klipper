@@ -17,12 +17,52 @@ from planner import PIN, ROOT
 PROFILE = "test_surface"
 
 
+
+def stock_mesh_commands(cfg_path, coords):
+    """Install the pinned stock transform and return its real command seam."""
+    from configfile import ConfigAutoSave, ConfigFileReader, ConfigWrapper
+    from extras.bed_mesh import BedMesh, MoveSplitter, ProfileManager
+    from gcode import GCodeCommand, GCodeDispatch
+
+    raw, saved = ConfigAutoSave._find_autosave_data(None, cfg_path.read_text())
+    config = ConfigFileReader().build_fileconfig_with_includes(raw, cfg_path)
+    if saved.strip():
+        config.read_string(saved)
+    gcode = SimpleNamespace(register_command=lambda *_a, **_kw: None, error=ValueError,
+                            respond_info=lambda *_a, **_kw: None, respond_raw=lambda _: None)
+    objects = {"gcode_move": coords, "gcode": gcode}
+    printer = SimpleNamespace(lookup_object=objects.__getitem__)
+    wrap = ConfigWrapper(printer, config, {}, "bed_mesh")
+    bed = BedMesh.__new__(BedMesh)
+    bed.toolhead = SimpleNamespace(move=coords.move_with_transform, get_position=coords.position_with_transform)
+    bed.printer, bed.gcode = printer, gcode
+    bed.fade_start, bed.fade_end = wrap.getfloat("fade_start", 1.), wrap.getfloat("fade_end", 0.)
+    bed.fade_dist = bed.fade_end - bed.fade_start
+    if bed.fade_dist <= 0.:
+        bed.fade_start = bed.fade_end = bed.FADE_DISABLE
+    bed.base_fade_target = wrap.getfloat("fade_target", None)
+    bed.last_position = [0.] * 4
+    bed.z_mesh, bed.log_fade_complete = None, False
+    bed.splitter = MoveSplitter(wrap, gcode)
+    coords.set_move_transform(bed, force=True)
+    bed.pmgr = ProfileManager(wrap, bed)
+    bed.set_mesh(None)
+    dispatcher = object.__new__(GCodeDispatch)
+    handlers = {"BED_MESH_PROFILE": bed.pmgr.cmd_BED_MESH_PROFILE,
+                "BED_MESH_CLEAR": bed.cmd_BED_MESH_CLEAR}
+
+    def apply(line, head):
+        name = line.split()[0]
+        cmd = GCodeCommand(gcode, name, line, {}, False)
+        pos, queued = list(head.commanded_pos), tuple(head.lookahead.queue)
+        handlers[name](dispatcher._get_extended_params(cmd))
+        assert head.commanded_pos == pos and tuple(head.lookahead.queue) == queued
+
+    return apply
+
 def reference(upstream, executable, cfg, script, runtime=False, runtime_e=False):
     sys.path.insert(0, str(upstream/"klippy"))
     from configfile import ConfigAutoSave, ConfigFileReader, ConfigWrapper
-    from extras.bed_mesh import BedMesh, MoveSplitter
-    from extras.bed_mesh import ProfileManager
-    from gcode import GCodeCommand, GCodeDispatch
     from kinematics.corexy import CoreXYKinematics
     from kinematics.extruder import ExtruderStepper, PrinterExtruder
     from stepper import parse_step_distance
@@ -54,47 +94,18 @@ def reference(upstream, executable, cfg, script, runtime=False, runtime_e=False)
         extrusion.trapq_append = lambda _, *fields: rows.append(
             ("e", *(int(x) if isinstance(x, bool) else x for x in fields)))
 
-    bed = None
+    apply_mesh = None
 
     def activated(line, coords, head):
-        nonlocal bed
+        nonlocal apply_mesh
         if line.startswith("!mesh_cmd "):
-            assert runtime and bed is not None
-            cmd = line.removeprefix("!mesh_cmd ")
-            name = cmd.split()[0]
-            dispatcher = object.__new__(GCodeDispatch)
-            handlers = {"BED_MESH_PROFILE": bed.pmgr.cmd_BED_MESH_PROFILE,
-                        "BED_MESH_CLEAR": bed.cmd_BED_MESH_CLEAR}
-            command = GCodeCommand(bed.gcode, name, cmd, {}, False)
-            saved_pos, saved_queue = list(head.commanded_pos), tuple(head.lookahead.queue)
-            handlers[name](dispatcher._get_extended_params(command))
-            assert head.commanded_pos == saved_pos and tuple(head.lookahead.queue) == saved_queue
+            assert runtime and apply_mesh is not None
+            apply_mesh(line.removeprefix("!mesh_cmd "), head)
             return
         assert line == "!use_profile"
-        real_gcode = SimpleNamespace(register_command=lambda *a, **kw: None, error=ValueError,
-                                     respond_info=lambda *_a, **_kw: None, respond_raw=lambda _: None)
-        objects = {"gcode_move": coords, "gcode": real_gcode}
-        printer = SimpleNamespace(lookup_object=objects.__getitem__)
-        mc = wrap("bed_mesh",printer)
-        bed = BedMesh.__new__(BedMesh)
-        bed.toolhead = SimpleNamespace(move=coords.move_with_transform, get_position=coords.position_with_transform)
-        bed.printer, bed.gcode = printer, real_gcode
-        bed.fade_start = mc.getfloat("fade_start",1.)
-        bed.fade_end = mc.getfloat("fade_end",0.)
-        bed.fade_dist = bed.fade_end - bed.fade_start
-        if bed.fade_dist <= 0.:
-            bed.fade_start = bed.fade_end = bed.FADE_DISABLE
-        bed.base_fade_target = mc.getfloat("fade_target",None)
-        bed.last_position = [0.]*4
-        bed.z_mesh = None
-        bed.log_fade_complete = False
-        bed.splitter = MoveSplitter(mc, real_gcode)
-        coords.set_move_transform(bed, force=True)
-        bed.pmgr = ProfileManager(mc, bed)
-        if runtime:
-            bed.set_mesh(None)
-        else:
-            bed.pmgr.load_profile(PROFILE)
+        apply_mesh = stock_mesh_commands(cfg, coords)
+        if not runtime:
+            apply_mesh(f"BED_MESH_PROFILE LOAD={PROFILE}", head)
         assert head.commanded_pos[:3] == list(origin)
 
     def moves(items, dwell):

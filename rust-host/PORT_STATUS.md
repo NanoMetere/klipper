@@ -139,7 +139,8 @@ is limited to the tested dense debug-file workload.
   clears one allowed profile without flushing: 8,804 XYZ records
   matched stock. Combined with a single modeled positive fixed-window
   extruder, 4,640 XYZ/E records matched stock across reloads and gain
-  changes. A motion-only
+  changes. With three virtual shaped lanes and named pressure updates,
+  the same feature matched 9,934 timed XYZ/E records. A motion-only
   job can use distinct extruder lanes for sparse physical tool IDs.
   With explicit opt-in, positive pressure-advance gain updates preserve
   the stock queue boundary and configured smoothing independently for

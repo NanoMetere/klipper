@@ -592,11 +592,18 @@ The output's `mesh_script_profile` records the allowed name, not the
 profile active at the end. A pinned stock handler comparison across
 load, clear and reload matched all 8,804 timed motor records. This mode
 rejects unknown profiles, saving/removing profiles, calibration, mixed
-heater stages, and multi-tool previews. An explicitly modeled single
+heater stages, and physical docking. An explicitly modeled single
 extruder can combine this with `--fixed-pressure-script --tool-temps 0:210`.
 The stock mesh and pressure callbacks together matched all 4,640 timed
 XYZ/E records across loaded, cleared and reloaded mesh states. Removing
 gain changes leaves the XYZ trace and duration unchanged.
+The same opt-in flags can also bind every configured virtual lane
+(for example `--tool-temps 0:210,2:214,6:220`). Sparse tool changes
+preserve the mesh state and parked lane positions, and a named inactive
+pressure update still affects only its own lane. Combining stock shaped
+XYZ, load/clear, named pressure compensation and virtual T0/T2/T6 routing
+matched all 9,934 timed records. One and four workers gave identical
+output. The preview does not model physical pickup or probing.
 
 ## Inert multiple-extruder coordinates
 

@@ -294,8 +294,8 @@ impl Machine {
         }
     }
 
-    /// Permit load and clear of exactly one validated mesh during a single
-    /// offline motion trace. Do not load it before reading the script.
+    /// Permit load and clear of exactly one validated mesh during an
+    /// offline motion trace, including virtual lane selection. Do not load it before reading the script.
     pub fn with_script_bed_mesh(mut self, name: String, mesh: bed_mesh::Transform) -> Self {
         self.fixed_mesh = None;
         self.script_mesh = Some((name, mesh));
@@ -704,6 +704,17 @@ impl Machine {
                 line_no += 1;
                 if line_no > MAX_LINES {
                     return Err(Error::MaximumLines);
+                }
+                if let Some((name, mesh)) = &self.script_mesh {
+                    if preview
+                        .saved_mesh_command(line, name, mesh)
+                        .map_err(|error| Error::Gcode {
+                            line: line_no,
+                            error,
+                        })?
+                    {
+                        continue;
+                    }
                 }
                 if self.virtual_tool_pressure_script {
                     if let Some((gain, target)) =

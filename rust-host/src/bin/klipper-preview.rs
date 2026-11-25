@@ -36,7 +36,7 @@ const HELP: &str =
     --initial-tool defaults to 0. Bare T lines only switch offline lanes; no docking.\n\
     --lane-workers sets 1–8 motion workers for long multi-tool previews (default 1).\n\
     --mesh-profile uses a saved Klipper mesh for this offline preview.\n\
-    --mesh-script permits XYZ-only load and clear of the one supplied profile; one fixed-window positive PA extruder is optional.\n\
+    --mesh-script permits load and clear of the supplied profile in XYZ or fixed-window PA motion previews.\n\
     --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.
 \
     A multi-tool mixed plan requires --initial-tool and every modeled tool temperature.\n\
@@ -421,12 +421,11 @@ fn run() -> Result<(), String> {
     if mesh_script
         && (mesh_profile.is_none()
             || mixed_plan
-            || initial_tool.is_some()
-            || multi_pressure
+            || (initial_tool.is_some() && !multi_pressure)
             || (tool_temps.is_some() && !fixed_pressure)
-            || parsed.values("toolchanger").is_some())
+            || (parsed.values("toolchanger").is_some() && !multi_pressure))
     {
-        return Err("--mesh-script requires one --mesh-profile with XYZ-only or one --fixed-pressure-script extruder".into());
+        return Err("--mesh-script requires one --mesh-profile with XYZ-only or explicit --fixed-pressure-script tools".into());
     }
     if let Some(name) = mesh_profile {
         let transform = bed_mesh::profile::load(&parsed, &files[entry], name)
