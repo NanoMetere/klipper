@@ -18,7 +18,7 @@ from planner import PIN, ROOT
 from preview_cli_timing import gcode as long_gcode
 
 
-def reference(upstream, executable, sparse, long_script=None, parked=None, runtime=False, named=False, mesh_cfg=None):
+def reference(upstream, executable, sparse, long_script=None, parked=None, runtime=False, named=False, mesh_cfg=None, native_plans=None):
     sys.path.insert(0, str(upstream / "klippy"))
     from kinematics.corexy import CoreXYKinematics
     from kinematics.extruder import ExtruderStepper, PrinterExtruder
@@ -185,6 +185,9 @@ def reference(upstream, executable, sparse, long_script=None, parked=None, runti
         rows.append(("s","e",start_e,0.,0.,.004,clock+.08,20e6,compression_error,
                      int(bool(long_script) and i == 1)))
 
+    if native_plans is not None:
+        native_plans.extend([xyz_rows, *e_rows])
+
     def encoded(rows):
         payload = chr(10).join(" ".join(map(str, row)) for row in rows)+chr(10)
         return subprocess.run([executable], input=payload, text=True, capture_output=True, check=True).stdout.splitlines()
@@ -223,7 +226,7 @@ def cli_rows(trace):
     return received
 
 
-def compare_runtime(upstream, executable, cli, directory, run_long=False):
+def compare_runtime(upstream, executable, cli, directory, run_long=False, long_case=None):
     base = ROOT / "examples/preview"
     root = Path(directory)
     for name in ("rails.cfg", "printer.cfg"):
@@ -328,12 +331,15 @@ def compare_runtime(upstream, executable, cli, directory, run_long=False):
         result = decode(run(lines, flags=flags))
         if named and mesh_mode == "" and run_long:
             assert decode(run(lines, flags=(*flags, "--long-step-preview"))) == result
+        plans = [] if long_case is not None and long_trace else None
         expected, duration = reference(upstream, executable, True, lines, runtime=True, named=named,
-                                       mesh_cfg=profile_path if mesh else None)
+                                       mesh_cfg=profile_path if mesh else None, native_plans=plans)
         assert math.isclose(result["planned_duration_seconds"], duration, rel_tol=1e-12, abs_tol=1e-12)
         rows = cli_rows(result)
         for i, (want, got) in enumerate(zip(expected, rows, strict=True)):
             assert want == got, (count, i, want, got)
+        if plans is not None:
+            long_case(mesh_mode, [*flags, *command], result, expected, plans)
         control = decode(run([line for line in lines if not line.startswith("SET_PRESSURE_ADVANCE")],
                              flags=flags if mesh or long_trace else ()))
         assert result["motors"] == control["motors"]

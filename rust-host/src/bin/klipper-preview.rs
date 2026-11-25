@@ -293,7 +293,7 @@ fn run() -> Result<(), String> {
         println!("{HELP}");
         #[cfg(feature = "parallel-long-step-preview")]
         println!(
-            "Single-tool or XYZ --long-step-preview also accepts --lane-workers 1–4 in this build."
+            "XYZ or up to three fixed-pressure tools with --long-step-preview also accept --lane-workers 1–4 in this build."
         );
         return Ok(());
     }
@@ -392,13 +392,13 @@ fn run() -> Result<(), String> {
     let multi_pressure = fixed_pressure
         && (parsed.values("toolchanger").is_some()
             || tool_temps.as_ref().is_some_and(|t| t.len() > 1));
-    let parallel_long = long_worker_request && !multi_pressure;
+
     if fixed_pressure
         && (mixed_plan
             || tool_temps.is_none()
             || (!multi_pressure
                 && (initial_tool.is_some()
-                    || (workers.is_some() && !parallel_long)
+                    || (workers.is_some() && !long_worker_request)
                     || !tool_temps.as_ref().is_some_and(|t| t.contains_key(&0)))))
     {
         return Err("--fixed-pressure-script requires modeled tool temperatures and a motion-only offline plan".into());
@@ -412,7 +412,7 @@ fn run() -> Result<(), String> {
         && (mixed_plan
             || expand_macros
             || virtual_sd
-            || (workers.is_some() && !parallel_long)
+            || (workers.is_some() && !long_worker_request)
             || initial_tool.is_some()
             || (mesh_profile.is_some() && !mesh_script)
             || (parsed.values("toolchanger").is_some() && !multi_pressure)

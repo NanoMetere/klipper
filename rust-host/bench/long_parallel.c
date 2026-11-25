@@ -2,6 +2,7 @@
 // Bench-only deterministic lane scheduling over one captured stock motion plan.
 #define _GNU_SOURCE
 #include <pthread.h>
+#include <stdatomic.h>
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -34,21 +35,27 @@ uint64_t machine_trace_cpu_ns(void)
 
 
 struct shape { int n; double a[10], t[10]; };
-struct input {
-    struct trapq *q, *eq;
-    int shaped, n_params;
+enum { MAX_TOOLS = 3, MAX_LANES = 6, MAX_WORKERS = 4 };
+struct tool_queue {
+    struct trapq *queue;
+    int n_params;
     double params[8][3];
+};
+struct input {
+    struct trapq *q;
+    struct tool_queue tools[MAX_TOOLS];
+    int shaped;
     struct shape shapes[3];
 };
 struct lane {
     double xpos, ypos, zpos, step, last, hz;
-    unsigned err, invert;
+    unsigned err, invert, tool;
     char axis;
     char *bytes;
     size_t len;
     int status;
 };
-enum { MAX_LANES = 4 };
+
 
 static int solve_lane(struct input *ctx, struct lane *lane)
 {
@@ -57,9 +64,10 @@ static int solve_lane(struct input *ctx, struct lane *lane)
     unsigned err=lane->err, invert=lane->invert;
     char axis=lane->axis;
     struct shape *shapes=ctx->shapes;
-    double (*params)[3]=ctx->params;
-    struct trapq *q=ctx->q, *eq=ctx->eq;
-    int n_params=ctx->n_params, shaped=ctx->shaped;
+    struct tool_queue *tool = &ctx->tools[lane->tool];
+    double (*params)[3] = tool->params;
+    struct trapq *q = ctx->q, *eq = tool->queue;
+    int n_params = tool->n_params, shaped = ctx->shaped;
     FILE *out = open_memstream(&lane->bytes, &lane->len);
     if (!out)
         return 9;
@@ -119,11 +127,28 @@ static int solve_lane(struct input *ctx, struct lane *lane)
 
     return fclose(out) ? 9 : 0;
 }
-struct worker { int id, count, workers; struct input *ctx; struct lane *lanes; };
-static void *worker_main(void *pointer) {
+struct worker {
+    int id, count, workers;
+    struct input *ctx;
+    struct lane *lanes;
+    atomic_int *next;
+};
+static void *worker_main(void *pointer)
+{
     struct worker *w = pointer;
-    for (int i=w->id; i<w->count; i+=w->workers)
-        w->lanes[i].status=solve_lane(w->ctx,&w->lanes[i]);
+    // Match Rust's static and dynamic scheduling choices; result order
+    // remains the lane-request order, regardless of completion order.
+    if (w->workers <= 2 || w->workers >= w->count) {
+        for (int i = w->id; i < w->count; i += w->workers)
+            w->lanes[i].status = solve_lane(w->ctx, &w->lanes[i]);
+    } else {
+        for (;;) {
+            int i = atomic_fetch_add_explicit(w->next, 1, memory_order_relaxed);
+            if (i >= w->count)
+                break;
+            w->lanes[i].status = solve_lane(w->ctx, &w->lanes[i]);
+        }
+    }
     return NULL;
 }
 int main(int argc, char **argv)
@@ -131,29 +156,37 @@ int main(int argc, char **argv)
     if (argc!=2 || strlen(argv[1])!=1 || !strchr("1234", argv[1][0]))
         return 2;
     int workers=argv[1][0]-'0', count=0;
-    struct input ctx={.q=trapq_alloc(),.eq=trapq_alloc()};
-    struct trapq *q=ctx.q, *eq=ctx.eq;
-    struct lane lanes[MAX_LANES]={0};
-    struct shape *shapes=ctx.shapes;
-    double (*params)[3]=ctx.params;
+    struct input ctx = {.q = trapq_alloc()};
+    for (int i = 0; i < MAX_TOOLS; i++)
+        ctx.tools[i].queue = trapq_alloc();
+    unsigned current = 0;
+    struct trapq *q = ctx.q;
+    struct lane lanes[MAX_LANES] = {0};
+    struct shape *shapes = ctx.shapes;
     char op;
     uint64_t processing = 0;
     while (scanf(" %c", &op) == 1) {
-        if (count && op != 's')
+        if (count && op != 's' && op != 'u')
             return 2;
-        if (op == 'm' || op == 'e') {
+        if (op == 't') {
+            if (scanf("%u", &current) != 1 || current >= MAX_TOOLS)
+                return 2;
+        } else if (op == 'm' || op == 'e') {
             double at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel;
             if (scanf("%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
                       &at, &a, &c, &d, &x, &y, &z, &rx, &ry, &rz, &sv, &cv, &accel) != 13)
                 return 2;
             uint64_t started = machine_trace_cpu_ns();
-            trapq_append(op == 'm' ? q : eq, at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel);
+            trapq_append(op == 'm' ? q : ctx.tools[current].queue, at, a, c, d, x, y, z, rx, ry, rz, sv, cv, accel);
             processing += machine_trace_cpu_ns() - started;
         } else if (op == 'g') {
-            if (ctx.n_params >= 8 || scanf("%lf %lf %lf", &params[ctx.n_params][0],
-                                        &params[ctx.n_params][1], &params[ctx.n_params][2]) != 3)
+            struct tool_queue *tool = &ctx.tools[current];
+            if (tool->n_params >= 8)
                 return 2;
-            ctx.n_params++;
+            double *row = tool->params[tool->n_params];
+            if (scanf("%lf %lf %lf", &row[0], &row[1], &row[2]) != 3)
+                return 2;
+            tool->n_params++;
         } else if (op == 'h') {
             char axis;
             int n;
@@ -165,25 +198,30 @@ int main(int argc, char **argv)
                     return 2;
             shapes[k].n = n;
             ctx.shaped = 1;
-        } else if (op == 's') {
+        } else if (op == 's' || op == 'u') {
             if (count==MAX_LANES)
                 return 2;
-            struct lane *l=&lanes[count++];
+            struct lane *l = &lanes[count++];
+            if (op == 'u' && (scanf("%u", &l->tool) != 1 || l->tool >= MAX_TOOLS))
+                return 2;
             if (scanf(" %c %lf %lf %lf %lf %lf %lf %u %u",
-                &l->axis,&l->xpos,&l->ypos,&l->zpos,&l->step,&l->last,&l->hz,&l->err,&l->invert)!=9)
+                &l->axis,&l->xpos,&l->ypos,&l->zpos,&l->step,&l->last,&l->hz,&l->err,&l->invert)!=9
+                || !strchr("xyz+-e", l->axis) || (op == 'u' && l->axis != 'e'))
                 return 2;
         } else return 2;
     }
     if (!count) return 2;
     // Finalize sentinels before any solver can read either shared queue.
     trapq_check_sentinels(q);
-    trapq_check_sentinels(eq);
+    for (int i = 0; i < MAX_TOOLS; i++)
+        trapq_check_sentinels(ctx.tools[i].queue);
     if (workers>count) workers=count;
-    struct worker runner[MAX_LANES];
-    pthread_t threads[MAX_LANES];
+    struct worker runner[MAX_WORKERS];
+    pthread_t threads[MAX_WORKERS];
+    atomic_int next = 0;
     int spawned=0, failed=0;
     for (int i=0; i<workers; ++i)
-        runner[i]=(struct worker){i,count,workers,&ctx,lanes};
+        runner[i]=(struct worker){i,count,workers,&ctx,lanes,&next};
     for (int i=1; i<workers; ++i) {
         if (pthread_create(&threads[i],NULL,worker_main,&runner[i])) {
             failed=1; break;
@@ -202,7 +240,8 @@ int main(int argc, char **argv)
     }
     if (failed) return 3;
     trapq_free(q);
-    trapq_free(eq);
+    for (int i = 0; i < MAX_TOOLS; i++)
+        trapq_free(ctx.tools[i].queue);
     fprintf(stderr, "TIMED_NS %" PRIu64 "\n", processing);
     return 0;
 }

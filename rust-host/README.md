@@ -2389,12 +2389,13 @@ its original fixed smoothing contract.
 ### Optional parallel lanes for long file previews
 
 Build `parallel-long-step-preview` and add `--lane-workers 2` or
-`--lane-workers 4` to `--long-step-preview` for a long XYZ job or an
-existing single-extruder fixed-pressure preview. The unchanged planner
-runs once, followed by independent bounded motor/extruder lanes. Results
-are assembled in the original order. Short plans still run serially, and
-omitting the flag keeps the existing serial default. This option does not
-change the multi-tool, mixed-plan, or live paths.
+`--lane-workers 4` to `--long-step-preview` for a long XYZ job or a
+fixed-pressure preview with up to three configured tools. The planner runs
+once, followed by independent bounded motor and per-tool extruder lanes.
+Results retain their original order. Short plans and the default without
+a worker flag still run serially. The mixed-plan and live paths are
+unchanged. For multiple tools, also pass `--fixed-pressure-script` and
+the same explicit `--tool-temps` as in the serial preview.
 
 ```sh
 cargo run --locked --release --features parallel-long-step-preview \
@@ -2408,4 +2409,7 @@ over the same captured movement. C-native replay timing includes plan-data
 reading, step generation and output, but not Klippy's Python planning.
 Whole Rust timing includes configuration, G-code planning and result
 serialization. Compare worker choices within each implementation, not
-absolute timings between these different interfaces.
+absolute timings between these different interfaces. The multi-tool fixture
+`bench/long_parallel_tools.py` checks sparse T0/T2/T6 identifiers,
+inactive-tool pressure callbacks, mesh offsets and a parked extruder with
+no steps, while running the equivalent native C schedule separately.

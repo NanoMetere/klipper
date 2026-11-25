@@ -112,6 +112,8 @@ def main():
             "--target-dir", target/"long-parallel-preview"]),
         ("stock_long_parallel_preview", [sys.executable, ROOT/"bench/long_parallel.py", upstream,
             target/"long-preview/release/klipper-preview", target/"long-parallel-preview/release/klipper-preview"]),
+        ("stock_long_parallel_tools", [sys.executable, ROOT/"bench/long_parallel_tools.py", upstream,
+            target/"long-preview/release/klipper-preview", target/"long-parallel-preview/release/klipper-preview"]),
         ("long_sparse_tool_motion", [sys.executable, ROOT/"bench/tool_motion.py", upstream,
                                      "--binary", examples/"tool_motion_replay",
                                      "--cli-binary", target/"long-preview/release/klipper-preview",

@@ -26,7 +26,7 @@ const MAX_EVENTS: usize = 65_535;
 const MAX_LINES: usize = 32768;
 const MAX_LANE_WORKERS: usize = 8;
 /// With three motor and at most three tool lanes, the long preview bounds
-/// total work to six copies of the per-lane cap, with one active clock queue.
+/// total work to six copies of the per-lane cap; at most four run concurrently.
 pub const MAX_LONG_PREVIEW_TOOLS: usize = 3;
 const PARALLEL_SEGMENTS: usize = 512;
 
@@ -612,7 +612,11 @@ impl Machine {
             return Err(Error::ToolSegment);
         }
         #[cfg(feature = "long-step-preview")]
-        if self.long_steps && (lanes.len() > MAX_LONG_PREVIEW_TOOLS || self.lane_workers != 1) {
+        if self.long_steps
+            && (lanes.len() > MAX_LONG_PREVIEW_TOOLS
+                || (self.lane_workers != 1
+                    && !(cfg!(feature = "parallel-long-step-preview") && self.lane_workers <= 4)))
+        {
             return Err(Error::ToolSegment);
         }
         let lookup = |id| {
