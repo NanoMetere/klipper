@@ -482,6 +482,13 @@ impl Preview {
     }
 
     pub(crate) fn fixed_pressure_gain(line: &str) -> Result<Option<f64>, Error> {
+        Ok(Self::fixed_pressure_command(line, false)?.map(|(gain, _)| gain))
+    }
+
+    pub(crate) fn fixed_pressure_command(
+        line: &str,
+        named: bool,
+    ) -> Result<Option<(f64, Option<String>)>, Error> {
         let line = line.trim_start();
         if !matches!(line.as_bytes().first(), Some(b'S' | b's')) {
             return Ok(None);
@@ -497,7 +504,8 @@ impl Preview {
         if line.len() > MAX_LINE || prefix.contains(['\n', '\r', '\0']) {
             return Err(Error::InvalidLine);
         }
-        let args = extended::tokenize(&prefix[end..])?;
+        let mut args = extended::tokenize(&prefix[end..])?;
+        let target = if named { args.remove("EXTRUDER") } else { None };
         if args.len() != 1 {
             return Err(Error::InvalidParameter);
         }
@@ -506,7 +514,7 @@ impl Preview {
             // Turning PA off changes the stock step-generation window.
             return Err(Error::InvalidParameter);
         }
-        Ok(Some(gain))
+        Ok(Some((gain, target)))
     }
 
     pub(crate) fn line_with(

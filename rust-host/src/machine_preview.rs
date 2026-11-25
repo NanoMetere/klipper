@@ -63,6 +63,7 @@ pub struct Machine {
     fixed_mesh: Option<bed_mesh::Transform>,
     lane_workers: usize,
     virtual_tool_pressure_script: bool,
+    pressure_tool_names: Vec<(String, u8)>,
 }
 
 fn config_error(section: &'static str, option: &'static str) -> Error {
@@ -228,6 +229,7 @@ impl Machine {
             fixed_mesh: None,
             lane_workers: 1,
             virtual_tool_pressure_script: false,
+            pressure_tool_names: Vec::new(),
         })
     }
 
@@ -258,6 +260,17 @@ impl Machine {
     /// selection only. This does not enable them during docking programs.
     pub fn with_virtual_tool_pressure_script(mut self) -> Self {
         self.virtual_tool_pressure_script = true;
+        self
+    }
+
+    /// Also allow exact backing extruder names for independently stepped
+    /// virtual lanes. Tool numbers (such as T6) are not extruder names.
+    pub fn with_configured_tool_pressure_script(
+        mut self,
+        profiles: &[tool_profiles::Profile],
+    ) -> Self {
+        self.virtual_tool_pressure_script = true;
+        self.pressure_tool_names = profiles.iter().map(|p| (p.section.clone(), p.id)).collect();
         self
     }
 
@@ -615,20 +628,33 @@ impl Machine {
         let mut switches = Vec::new();
         let mut line_no = 0;
         let mut callbacks: [Option<GainCallbacks>; 8] = std::array::from_fn(|_| None);
+        let mut pending = 0u8;
         let mut consumed = 0;
         let mut append = |idx: usize,
                           out: Output,
                           time: &mut f64,
                           consumed: &mut usize,
-                          callback: &mut Option<GainCallbacks>| {
+                          callbacks: &mut [Option<GainCallbacks>; 8],
+                          pending: &mut u8| {
             for profile in out.moves {
                 extrusion::append_nominal(&mut all_e[idx], *time, &profile)
                     .map_err(Error::Trajectory)?;
                 append_move(&mut xyz, time, &profile).map_err(Error::Trajectory)?;
                 *consumed += 1;
-                if let Some(c) = callback {
-                    c.resolve(*consumed, *time)
-                        .map_err(|_| Error::ToolSegment)?;
+                if *pending != 0 {
+                    let mut lanes = *pending;
+                    while lanes != 0 {
+                        let slot = lanes.trailing_zeros() as usize;
+                        let bit = 1 << slot;
+                        lanes &= !bit;
+                        let callback = callbacks[slot].as_mut().ok_or(Error::ToolSegment)?;
+                        callback
+                            .resolve(*consumed, *time)
+                            .map_err(|_| Error::ToolSegment)?;
+                        if !callback.has_pending() {
+                            *pending &= !bit;
+                        }
+                    }
                 }
             }
             *time += out.dwell_seconds.unwrap_or(0.0);
@@ -648,7 +674,8 @@ impl Machine {
                     flushed,
                     &mut time,
                     &mut consumed,
-                    &mut callbacks[active],
+                    &mut callbacks,
+                    &mut pending,
                 )?;
                 switches.push(PlannedTool {
                     id: section.tool,
@@ -669,29 +696,47 @@ impl Machine {
                     return Err(Error::MaximumLines);
                 }
                 if self.virtual_tool_pressure_script {
-                    if let Some(gain) =
-                        Preview::fixed_pressure_gain(line).map_err(|error| Error::Gcode {
-                            line: line_no,
-                            error,
-                        })?
+                    if let Some((gain, target)) =
+                        Preview::fixed_pressure_command(line, !self.pressure_tool_names.is_empty())
+                            .map_err(|error| Error::Gcode {
+                                line: line_no,
+                                error,
+                            })?
                     {
                         let invalid = |_| Error::Gcode {
                             line: line_no,
                             error: gcode::Error::InvalidParameter,
                         };
-                        let slot = &mut callbacks[active];
+                        let target_lane = if let Some(target) = target {
+                            let id = self
+                                .pressure_tool_names
+                                .iter()
+                                .find_map(|(name, id)| (name == &target).then_some(*id))
+                                .ok_or_else(|| invalid(pressure_advance::Error::Settings))?;
+                            lookup(id).map_err(|_| invalid(pressure_advance::Error::Settings))?
+                        } else {
+                            active
+                        };
+                        let slot = &mut callbacks[target_lane];
                         if slot.is_none() {
-                            let base = tool
+                            let base = lanes[target_lane]
+                                .extruder
                                 .pressure_advance
                                 .ok_or_else(|| invalid(pressure_advance::Error::Settings))?;
                             *slot = Some(GainCallbacks::new(base, at).map_err(invalid)?);
                         }
                         let c = slot.as_mut().unwrap();
-                        // A switch drains the old lane before the new one can
-                        // receive a command. Count XYZ-only moves too.
+                        // Stock registers this on the shared look-ahead queue
+                        // even when the target extruder is not the active lane.
                         c.defer(consumed + preview.queued_moves(), gain)
                             .map_err(invalid)?;
                         c.resolve(consumed, time).map_err(invalid)?;
+                        let bit = 1 << target_lane;
+                        if c.has_pending() {
+                            pending |= bit;
+                        } else {
+                            pending &= !bit;
+                        }
                         continue;
                     }
                 }
@@ -729,7 +774,8 @@ impl Machine {
                     out,
                     &mut time,
                     &mut consumed,
-                    &mut callbacks[active],
+                    &mut callbacks,
+                    &mut pending,
                 )?;
             }
         }
@@ -745,7 +791,8 @@ impl Machine {
             },
             &mut time,
             &mut consumed,
-            &mut callbacks[active],
+            &mut callbacks,
+            &mut pending,
         )?;
         let mut runtime_advance: [Option<Advance>; 8] = std::array::from_fn(|_| None);
         for (callback, advance) in callbacks.into_iter().zip(&mut runtime_advance) {

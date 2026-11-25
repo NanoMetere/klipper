@@ -141,8 +141,10 @@ is limited to the tested dense debug-file workload.
   the stock queue boundary and configured smoothing independently for
   each selected lane. The single-extruder case matched 3,792 timed
   records; the shaped sparse T0/T2/T6 case matched 10,312 XYZ/E records
-  across two jobs. No live calibration, dynamic smoothing or docking
-  is supported by this option.
+  across two jobs. Explicit backing extruder names can also route
+  updates to inactive virtual lanes at the global queue boundary;
+  the stock mux comparator matched 9,889 records. No live calibration,
+  dynamic smoothing or docking is supported by this option.
 - Tool exchange: the inert program separates outbound and inbound
   extrusion, verifies supplied pickup evidence and validates the
   staged coordinates before exposing a trace. The modern stock Klippy

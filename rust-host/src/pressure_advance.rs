@@ -80,6 +80,10 @@ impl GainCallbacks {
         Ok(())
     }
 
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub(crate) fn finish(self) -> Result<Advance, Error> {
         if !self.pending.is_empty() {
             return Err(Error::Time);

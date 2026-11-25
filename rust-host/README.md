@@ -1397,9 +1397,10 @@ stock's Python handler and timing callback, then sends the resulting
 schedule through the real stock C step solver. Short boundary cases
 matched 342 Cartesian and 382 CoreXY records; rolling 320-move cases
 matched 1,334 and 1,734. Removing the commands left XYZ timing unchanged
-and changed the extruder trace. Explicit named routing, changing smoothing,
-zero gain, and externally scheduled gain changes mixed with these commands
-are outside this mode.
+and changed the extruder trace. Changing smoothing, zero gain, and
+externally scheduled gain changes mixed with these commands are outside
+this mode. A standalone single-extruder preview accepts only implicit
+routing.
 
 The same flag can be used with one modeled temperature per virtual tool,
 for example `--fixed-pressure-script --tool-temps 0:210,2:214,6:220`.
@@ -1409,6 +1410,14 @@ start with positive PA and smoothing. Tests invoking the pinned stock
 activation and implicit pressure-advance handlers matched 1,153 and 9,159
 timed records across XYZ and T0/T2/T6 on shaped paths. Removing the gain
 commands left XYZ and duration unchanged and changed each E trace.
+In virtual multi-tool mode, `EXTRUDER=extruder1` (or another exact
+configured backing name) explicitly selects an independently stepped
+extruder, even while a different tool is active. The command binds to
+the same shared look-ahead boundary without selecting or moving that
+tool. Logical tool aliases such as `T2` are not extruder names. The
+named stock mux fixture matched 9,889 timed motor records; removing one
+inactive T6 update changed only the T6 E lane, not XYZ, duration, or
+the other E lanes.
 This does not execute docking, toolchanger initialization, or the
 mixed heater/motion plan.
 

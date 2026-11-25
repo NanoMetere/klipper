@@ -17,7 +17,7 @@ from planner import PIN, ROOT
 from preview_cli_timing import gcode as long_gcode
 
 
-def reference(upstream, executable, sparse, long_script=None, parked=None, runtime=False):
+def reference(upstream, executable, sparse, long_script=None, parked=None, runtime=False, named=False):
     sys.path.insert(0, str(upstream / "klippy"))
     from kinematics.corexy import CoreXYKinematics
     from kinematics.extruder import ExtruderStepper, PrinterExtruder
@@ -123,15 +123,24 @@ def reference(upstream, executable, sparse, long_script=None, parked=None, runti
         for ident, name in order:
             source.extend(["M400", f"!use {ident}",
                            *(ROOT/f"examples/preview/multitool-{name}.gcode").read_text().splitlines()])
+    if runtime:
+        from gcode import GCodeDispatch
+        mux = object.__new__(GCodeDispatch)
+        mux.mux_commands = {}
+        mux.register_command = lambda *_args, **_kw: None
+        mux.register_mux_command("SET_PRESSURE_ADVANCE", "EXTRUDER", None,
+                                 extruders[0].extruder_stepper.cmd_default_SET_PRESSURE_ADVANCE)
+        for e in extruders:
+            mux.register_mux_command("SET_PRESSURE_ADVANCE", "EXTRUDER", e.name,
+                                     e.extruder_stepper.cmd_SET_PRESSURE_ADVANCE)
+
     def pressure_command(head, cmd):
         head.get_last_move_time = lambda: clock
         head.get_extruder = lambda: ToolHead.get_extruder(head)
         printer = SimpleNamespace(lookup_object=lambda name: head, set_rollover_info=lambda *_: None)
         for e in extruders:
             e.extruder_stepper.printer = printer
-        # Always enter via stock's implicit-active handler, regardless of
-        # which stepper registered the default mux command.
-        extruders[0].extruder_stepper.cmd_default_SET_PRESSURE_ADVANCE(cmd)
+        mux._cmd_mux("SET_PRESSURE_ADVANCE", cmd)
 
     options = dict(settings=cfg, emit_profiles=out, simulated_extruder=extruders[0],
                    extend_directive=switch)
@@ -139,10 +148,17 @@ def reference(upstream, executable, sparse, long_script=None, parked=None, runti
         ffi = SimpleNamespace(extruder_set_pressure_advance=lambda i, *args: gains[i].append(("g", *args)))
         with patch.object(chelper, "get_ffi", return_value=(None, ffi)):
             stock(source, False, pressure_command=pressure_command, **options)
-        assert [[row[2] for row in lane][1:] for lane in gains] == [
-            [.034, .065, .084, .041], [.055, .043, .09], [.08, .032, .055],
-        ], gains
-        assert gains[0][2][1] == gains[0][3][1], gains
+        want_gains = [[.034, .065, .084, .041], [.055, .043, .09], [.08, .032, .055]]
+        if named:
+            want_gains = [[.034, .065, .084, .036, .041], [.055, .043, .09, .061],
+                          [.071, .08, .032, .055, .048]]
+            # Three registrations on two lanes share the last queued XYZ
+            # boundary, including a lane which has not yet been selected.
+            assert gains[0][2][1] == gains[0][3][1] == gains[2][1][1], gains
+            assert gains[2][-1][1] == clock, gains  # Empty terminal queue.
+        else:
+            assert gains[0][2][1] == gains[0][3][1], gains
+        assert [[row[2] for row in lane][1:] for lane in gains] == want_gains, gains
     else:
         stock(source, False, **options)
     focus = [shaper_defs.get_mzv_shaper(56.6, .1), shaper_defs.get_ei_shaper(48.4, .1)]
@@ -218,7 +234,7 @@ def compare_runtime(upstream, executable, cli, directory):
         assert [lane["tool"] for lane in trace["extruder_lanes"]] == [0, 2, 6]
         return trace
 
-    for count in (8, 96):
+    for count, named in ((8, False), (96, False), (96, True)):
         moves = list(line for line in long_gcode(count, True) if line.startswith("G1"))
         def block(tag):
             # Preserve legal positive paths across repetitions without
@@ -238,8 +254,24 @@ def compare_runtime(upstream, executable, cli, directory):
             "T0", *block(7), "SET_PRESSURE_ADVANCE ADVANCE=.041", *block(8),
             "T6", *block(9), "SET_PRESSURE_ADVANCE ADVANCE=.055", "T2",
         ]
+        if named:
+            # Alternate backing names and T ids, scheduling inactive lanes
+            # against the shared queue. The inactive gain stays with it
+            # until it next extrudes (or is updated again).
+            lines.insert(lines.index("SET_PRESSURE_ADVANCE ADVANCE=.084") + 1,
+                         "SET_PRESSURE_ADVANCE EXTRUDER=extruder2 ADVANCE=.071")
+            lines.insert(lines.index("T6"),
+                         "SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=.036")
+            lines[lines.index("SET_PRESSURE_ADVANCE ADVANCE=.055")] = (
+                "SET_PRESSURE_ADVANCE EXTRUDER=extruder1 ADVANCE=.055")
+            lines.insert(lines.index("SET_PRESSURE_ADVANCE ADVANCE=.041") + 1,
+                         "SET_PRESSURE_ADVANCE EXTRUDER=extruder1 ADVANCE=.061")
+            lines.remove("SET_PRESSURE_ADVANCE ADVANCE=.08")
+            lines.insert(lines.index("G4 P41"), "SET_PRESSURE_ADVANCE ADVANCE=.08")
+            lines.extend([*block(10), "M400",
+                          "SET_PRESSURE_ADVANCE EXTRUDER=extruder2 ADVANCE=.048"])
         result = decode(run(lines))
-        expected, duration = reference(upstream, executable, True, lines, runtime=True)
+        expected, duration = reference(upstream, executable, True, lines, runtime=True, named=named)
         assert math.isclose(result["planned_duration_seconds"], duration, rel_tol=1e-12, abs_tol=1e-12)
         rows = cli_rows(result)
         for i, (want, got) in enumerate(zip(expected, rows, strict=True)):
@@ -250,21 +282,41 @@ def compare_runtime(upstream, executable, cli, directory):
         assert result["planned_duration_seconds"] == control["planned_duration_seconds"]
         assert all(a["commands"] != b["commands"] for a, b in
                    zip(result["extruder_lanes"], control["extruder_lanes"], strict=True))
+        if named:
+            only_t6_removed = decode(run([line for line in lines if line !=
+                                       "SET_PRESSURE_ADVANCE EXTRUDER=extruder2 ADVANCE=.071"]))
+            assert only_t6_removed["motors"] == result["motors"]
+            assert only_t6_removed["planned_duration_seconds"] == result["planned_duration_seconds"]
+            assert only_t6_removed["extruder_lanes"][:2] == result["extruder_lanes"][:2]
+            assert only_t6_removed["extruder_lanes"][2] != result["extruder_lanes"][2]
         threaded = decode(run(lines, flags=("--fixed-pressure-script", "--lane-workers", "4")))
         assert threaded == result
         sizes = [len(lane) for lane in result["motors"]] + [
             len(lane["commands"]) for lane in result["extruder_lanes"]]
-        print(f"Sparse runtime gain, {10*count} shaped moves: {sum(sizes)} exact timed stock "
+        print(f"Sparse runtime gain (named={named}), {(10 + named)*count} shaped fixture moves: {sum(sizes)} exact timed stock "
               f"records (XYZ, T0/T2/T6: {sizes})")
 
     for bad, flags in (
         ("SET_PRESSURE_ADVANCE ADVANCE=0", ("--fixed-pressure-script",)),
         ("SET_PRESSURE_ADVANCE ADVANCE=.08 SMOOTH_TIME=.04", ("--fixed-pressure-script",)),
-        ("SET_PRESSURE_ADVANCE EXTRUDER=extruder1 ADVANCE=.08", ("--fixed-pressure-script",)),
+        ("SET_PRESSURE_ADVANCE EXTRUDER=extruder3 ADVANCE=.08", ("--fixed-pressure-script",)),
+        ("SET_PRESSURE_ADVANCE EXTRUDER=T2 ADVANCE=.08", ("--fixed-pressure-script",)),
+        ("SET_PRESSURE_ADVANCE EXTRUDER=Extruder1 ADVANCE=.08", ("--fixed-pressure-script",)),
+        ("SET_PRESSURE_ADVANCE EXTRUDER=extruder1 ADVANCE=.08", ()),
         ("SET_PRESSURE_ADVANCE ADVANCE=.08", ()),
     ):
         rejected = run(["T2", bad], flags=flags)
         assert rejected.returncode and not rejected.stdout, rejected
+    from gcode import CommandError
+    for name in ("extruder3", "T2", "Extruder1"):
+        try:
+            reference(upstream, executable, True,
+                      [f"SET_PRESSURE_ADVANCE EXTRUDER={name} ADVANCE=.08"],
+                      runtime=True, named=True)
+        except CommandError as e:
+            assert "not valid" in str(e), str(e)
+        else:
+            raise AssertionError(f"stock accepted unknown extruder {name}")
     for unsupported in ("INITIALIZE_TOOLCHANGER T=2", "T2 RESTORE_AXIS=XY"):
         rejected = run([unsupported])
         assert rejected.returncode and not rejected.stdout, rejected

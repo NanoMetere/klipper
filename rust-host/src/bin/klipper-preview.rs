@@ -39,7 +39,7 @@ const HELP: &str =
     --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.
 \
     A multi-tool mixed plan requires --initial-tool and every modeled tool temperature.\n\
-    --fixed-pressure-script previews positive ADVANCE-only changes on the active virtual extruder with --tool-temps.";
+    --fixed-pressure-script previews positive ADVANCE at fixed smoothing. Multi-tool preview accepts exact EXTRUDER names.";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -622,7 +622,7 @@ fn run() -> Result<(), String> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         if multi_pressure {
-            machine = machine.with_virtual_tool_pressure_script();
+            machine = machine.with_configured_tool_pressure_script(&profiles);
         }
         let trace = machine
             .trace_tool_gcode_at_virtual_origin(

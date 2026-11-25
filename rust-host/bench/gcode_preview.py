@@ -88,6 +88,7 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
     dispatch.register_command = register
     objects = {"gcode": dispatch}
     printer = SimpleNamespace(lookup_object=objects.get, register_event_handler=lambda *_: None,
+                              send_event=lambda *_: None,
                               config_error=ValueError, set_rollover_info=lambda *_: None)
     dispatch.printer = printer
     coords = GCodeMove(SimpleNamespace(get_printer=lambda: printer))
