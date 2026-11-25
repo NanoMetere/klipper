@@ -18,6 +18,8 @@ pub enum Error {
 pub struct Limits {
     velocity: f64,
     accel: f64,
+    square_corner: f64,
+    cruise_ratio: f64,
     deviation: f64,
     pseudo_accel: f64,
 }
@@ -43,9 +45,26 @@ impl Limits {
         Ok(Self {
             velocity,
             accel,
+            square_corner,
+            cruise_ratio,
             deviation,
             pseudo_accel: accel * (1.0 - cruise_ratio),
         })
+    }
+
+    pub(crate) fn updated(
+        self,
+        velocity: Option<f64>,
+        accel: Option<f64>,
+        square_corner: Option<f64>,
+        cruise_ratio: Option<f64>,
+    ) -> Result<Self, Error> {
+        Self::new(
+            velocity.unwrap_or(self.velocity),
+            accel.unwrap_or(self.accel),
+            square_corner.unwrap_or(self.square_corner),
+            cruise_ratio.unwrap_or(self.cruise_ratio),
+        )
     }
 }
 

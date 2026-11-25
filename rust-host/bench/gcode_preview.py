@@ -27,6 +27,14 @@ def fixture():
                 'RESTORE_GCODE_STATE NAME="Park Slot" MOVE=1 MOVE_SPEED=15',
                 'SAVE_GCODE_STATE', 'SET_GCODE_OFFSET Y=3 Y_ADJUST=5 # Y wins',
                 'G91', 'G1 Z.28', 'RESTORE_GCODE_STATE MOVE=0')
+    yield from (
+        "G91", "G1 X10 F4800", "M204 S450 P333 T800", "G1 X8 Y2",
+        "M204 P1100 T700", "G1 X2 Y12", "M204 P1500", "G1 X5",
+        "SET_VELOCITY_LIMIT VELOCITY=45 ACCEL=1200 SQUARE_CORNER_VELOCITY=2 MINIMUM_CRUISE_RATIO=.3",
+        "G1 X10 Y5 F7200", "SET_VELOCITY_LIMIT", "G1 Y10",
+        "SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=.1", "G1 X4",
+        "M400", "G90", "SET_VELOCITY_LIMIT VELOCITY=160 ACCEL=2500 SQUARE_CORNER_VELOCITY=5 MINIMUM_CRUISE_RATIO=.5",
+    )
     for i in range(32):
         yield f"SAVE_GCODE_STATE NAME=S{i}"
     r = random.Random(20261123)
@@ -70,7 +78,8 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
     dispatch.is_fileinput = False
     handlers = dispatch.gcode_handlers
     def register(name, f, *args, **kwargs):
-        if name in ("SET_GCODE_OFFSET", "SAVE_GCODE_STATE", "RESTORE_GCODE_STATE"):
+        if name in ("SET_GCODE_OFFSET", "SAVE_GCODE_STATE", "RESTORE_GCODE_STATE",
+                    "SET_VELOCITY_LIMIT"):
             handlers[name] = lambda params: f(dispatch._get_extended_params(params))
         else:
             handlers[name] = f
@@ -78,7 +87,7 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
     dispatch.register_command = register
     objects = {"gcode": dispatch}
     printer = SimpleNamespace(lookup_object=objects.get, register_event_handler=lambda *_: None,
-                              config_error=ValueError)
+                              config_error=ValueError, set_rollover_info=lambda *_: None)
     dispatch.printer = printer
     coords = GCodeMove(SimpleNamespace(get_printer=lambda: printer))
 
@@ -108,6 +117,8 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
         head.commanded_pos[:] = coords.last_position[:] = [*start, 0.]
         head.extra_axes = [] if simulated_extruder is None else [simulated_extruder]
     ToolHead._calc_junction_deviation(head)
+    head._calc_junction_deviation = lambda: ToolHead._calc_junction_deviation(head)
+    head.set_max_velocities = lambda *params: ToolHead.set_max_velocities(head, *params)
     dispatch.toolhead = head
     moves = []
     dwell = None
@@ -124,8 +135,9 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
 
     head.dwell = dwell_to
     head.wait_moves = head._flush_lookahead
-    handlers["M400"] = lambda cmd: ToolHeadCommandHelper.cmd_M400(dispatch, cmd)
-    handlers["G4"] = lambda cmd: ToolHeadCommandHelper.cmd_G4(dispatch, cmd)
+    ToolHeadCommandHelper(SimpleNamespace(get_printer=lambda: SimpleNamespace(
+        lookup_object=lambda name: head if name == "toolhead" else dispatch,
+        set_rollover_info=printer.set_rollover_info)))
     root_transform = SimpleNamespace(move=lambda p, v: ToolHead.move(head, p, v),
                                      get_position=lambda: head.commanded_pos[:])
     objects["toolhead"] = root_transform

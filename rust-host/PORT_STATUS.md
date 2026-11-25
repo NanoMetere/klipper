@@ -57,11 +57,20 @@ flush and G-code dispatch both consume more time than the Rust
 replacement seam covers. The benchmark writes a real debug file,
 but cannot measure printer I/O or physical print duration.
 
+A fresh whole-process comparison with the unchanged bridge on 40,000
+shaped extrusion moves and no intermediate waits verified all 186,972
+timed motor records in two 15-pair runs. Paired median elapsed changed
+by −0.13% and +1.57% (bridge versus stock). An instrumented diagnostic
+showed motion step generation/flush and Python G-code dispatch both
+cost more than look-ahead flush alone; instrumented timings are not
+used as benchmark results. No total-host speedup is claimed.
+
 ## Verified scope
 
 - Configuration and motion: bounded Cartesians/CoreXY, stock move
-  look-ahead, a limited static G-code subset, input shaping, pressure
-  advance, and fixed saved bed meshes in the offline CLI. A motion-only
+  look-ahead, a bounded G-code subset, input shaping, pressure advance,
+  runtime motion limits (`M204` and `SET_VELOCITY_LIMIT`), and fixed
+  saved bed meshes in the offline CLI. A motion-only
   job can use distinct extruder lanes for sparse physical tool IDs.
 - Tool exchange: the inert program separates outbound and inbound
   extrusion, verifies supplied pickup evidence and validates the

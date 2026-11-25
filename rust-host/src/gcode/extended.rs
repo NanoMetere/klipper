@@ -128,7 +128,7 @@ fn requested_move(args: &BTreeMap<String, String>) -> Result<bool, Error> {
     })
 }
 
-fn float(args: &BTreeMap<String, String>, key: &str) -> Result<Option<f64>, Error> {
+pub(super) fn float(args: &BTreeMap<String, String>, key: &str) -> Result<Option<f64>, Error> {
     args.get(key)
         .map(|v| {
             let f: f64 = v.parse().map_err(|_| Error::InvalidParameter)?;
@@ -141,7 +141,7 @@ fn float(args: &BTreeMap<String, String>, key: &str) -> Result<Option<f64>, Erro
         .transpose()
 }
 
-fn tokenize(text: &str) -> Result<BTreeMap<String, String>, Error> {
+pub(super) fn tokenize(text: &str) -> Result<BTreeMap<String, String>, Error> {
     let mut args = BTreeMap::new();
     let mut chars = text.chars().peekable();
     while let Some(&c) = chars.peek() {

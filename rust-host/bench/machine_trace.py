@@ -78,6 +78,19 @@ G1 X3.8 Y4.7 E.22 F2100
 M400
 """
 
+RUNTIME_LIMITS = """G90
+M83
+G1 X4 Y2 Z.3 E.15 F3000
+M204 S700
+G1 X7 Y3 E.13
+SET_VELOCITY_LIMIT VELOCITY=34 ACCEL=950 SQUARE_CORNER_VELOCITY=2 MINIMUM_CRUISE_RATIO=.28
+G1 X12 Y5 E.19 F5400
+M204 P900 T420
+G1 X6 Y8 E.21 F2400
+SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=.4
+G1 X5 Y4 E.11
+M400
+"""
 
 
 SHAPES = [
@@ -266,6 +279,17 @@ def main():
                 for i, (x, y) in enumerate(zip(want, got, strict=True)):
                     assert x == y, ("configured shaper", kin, kinds, i, x, y)
                 print(f"Configured shaper {kin}, {kinds}: {len(got) - 4} exact commands")
+        for kin in ("cartesian", "corexy"):
+            cfg.write_text(CONFIG.format(kinematics=kin))
+            want, want_duration, _ = traced(cfg, c, RUNTIME_LIMITS, True, True, shaped=True)
+            run = subprocess.run([rust, cfg, "--shape", "--pressure"], input=RUNTIME_LIMITS,
+                                 text=True, capture_output=True, check=True)
+            got = run.stdout.splitlines()
+            duration = float(got.pop().split()[1])
+            assert math.isclose(want_duration, duration, abs_tol=1e-12, rel_tol=1e-12)
+            for i, (x, y) in enumerate(zip(want, got, strict=True)):
+                assert x == y, ("runtime velocity limits", kin, i, x, y)
+            print(f"Runtime limits, shaped {kin}: {len(got) - 4} exact commands")
         benchmark_shape = ("[input_shaper]\nshaper_freq_x: 56.6\nshaper_type_y: ei\n"
                            "shaper_freq_y: 48.4\n") if a.shape_timing else ""
         cfg.write_text(CONFIG.format(kinematics="corexy") + benchmark_shape)

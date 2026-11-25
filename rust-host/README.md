@@ -283,7 +283,12 @@ print duration.
 The preview accepts a strict subset of ordinary G-code: G0/G1 (XYZEF),
 G21, G90/G91, G92, M82/M83, M220/M221, G4 and M400. It handles the
 coordinate and feed/flow state, no-op moves, lazy flush and full-stop
-boundaries. The preview also accepts coordinate-only `SET_GCODE_OFFSET`
+boundaries. The planner also models `M204 S`, `M204 P… T…` (the
+lower acceleration), and `SET_VELOCITY_LIMIT` for velocity, acceleration,
+square-corner velocity and minimum cruise ratio. These commands change
+only subsequent planned moves and never force a queue flush. A bare
+`SET_VELOCITY_LIMIT` is a no-op in the preview rather than a status reply.
+The preview also accepts coordinate-only `SET_GCODE_OFFSET`
 and named `SAVE_GCODE_STATE` / `RESTORE_GCODE_STATE`. Saving and restoring
 state does not execute arbitrary macros. The preview rejects unknown words, duplicate
 parameters, line numbers/checksums, and inches. There is no printer
@@ -300,6 +305,14 @@ matched exactly in this run. The corpus includes offset adjustment,
 quoted case-sensitive state names, restore with and without movement,
 and preserving E's relative coordinate after a restore. Python equipment
 and kinematic safety checks were stubbed.
+
+With runtime limit changes included, the stock dispatcher comparison
+now matches 7,083 line/flush and state records and 5,103 exact move
+profiles. The separate Python+C step comparator matches 381 shaped
+Cartesian and 441 shaped CoreXY direction/step commands including
+clocks, with pressure advance enabled. A CLI test also verifies that
+lower acceleration changes planned duration without changing the
+three end-position counters. All of these checks are offline.
 
 On the same single logical CPU, seven alternating rounds had median host
 processing cost of 0.395 µs/line Rust and 8.274 µs/line Python. Inputs

@@ -15,6 +15,8 @@ mod arcs;
 mod extended;
 #[path = "gcode/transform.rs"]
 mod transform;
+#[path = "gcode/velocity.rs"]
+mod velocity;
 pub use transform::Owner as TransformOwner;
 
 const MAX_LINE: usize = 4096;
@@ -476,6 +478,12 @@ impl Preview {
         if self.failed {
             return Err(Error::InvalidSession);
         }
+        if let Some(limits) = velocity::change(self.limits, line)? {
+            // Existing queued profiles keep their original per-move limits.
+            // Stock does not flush or insert a stop when the limits change.
+            self.limits = limits;
+            return Ok(Output::default());
+        }
         let mut budget = MAX_PHYSICAL_POINTS;
         if let Some(mode) = &mut self.arcs {
             if let Some(ops) = mode.commands(line, &self.coords)? {
@@ -664,6 +672,35 @@ mod tests {
         assert_eq!(*p.coords(), before);
         p.line("G1 X1 E2").unwrap();
         assert_eq!(p.coords().position(), [1.0, 0.0, 0.0, 4.0]);
+    }
+
+    #[test]
+    fn runtime_limits_are_transactional_and_keep_queued_moves() {
+        let limits = Limits::new(200.0, 1000.0, 5.0, 0.5).unwrap();
+        let mut p = Preview::new(limits, 128, None).unwrap();
+        assert!(p.line("G1 X.1 F6000").unwrap().moves.is_empty());
+        assert!(p.line("m204p800t600").unwrap().moves.is_empty());
+        assert!(p
+            .line("SET_VELOCITY_LIMIT VELOCITY=50 ACCEL=900 ACCEL=950")
+            .is_err());
+        assert!(p
+            .line("SET_VELOCITY_LIMIT ACCEL=950 MINIMUM_CRUISE_RATIO=1")
+            .is_err());
+        assert!(p.line("M204 S0").is_err());
+        assert!(p.line("M204 P400").unwrap().moves.is_empty());
+        assert!(p.line("G1 X.2").unwrap().moves.is_empty());
+        assert!(p
+            .line("SET_VELOCITY_LIMIT ACCEL=400")
+            .unwrap()
+            .moves
+            .is_empty());
+        assert!(p.line("G1 X.3").unwrap().moves.is_empty());
+        let moves = p.finish().unwrap();
+        assert_eq!(
+            moves.iter().map(|m| m.accel).collect::<Vec<_>>(),
+            [1000., 600., 400.]
+        );
+        assert!(moves[0].end_v > 0.0 && moves[1].end_v > 0.0);
     }
 
     #[test]

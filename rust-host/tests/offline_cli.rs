@@ -38,6 +38,56 @@ fn previews_fixture_without_hardware_and_rejects_missing_includes() {
 }
 
 #[test]
+fn previews_runtime_acceleration_without_changing_end_positions() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/preview");
+    let run = |script: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_klipper-preview"))
+            .arg(&root)
+            .arg("printer.cfg")
+            .arg(root.join(script))
+            .args(["20000000", "1", "1", ".2", "rails.cfg"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let fixed = run("path.gcode");
+    let varied = run("runtime_limits.gcode");
+    assert!(
+        varied["planned_duration_seconds"].as_f64().unwrap()
+            > fixed["planned_duration_seconds"].as_f64().unwrap()
+    );
+    let signed_positions = |value: &serde_json::Value| {
+        value["motors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|lane| {
+                let mut sign = 1;
+                let mut total = 0;
+                for command in lane.as_array().unwrap() {
+                    if command["kind"] == "direction" {
+                        sign = if command["positive"].as_bool().unwrap() {
+                            1
+                        } else {
+                            -1
+                        };
+                    } else {
+                        total += sign * command["count"].as_i64().unwrap();
+                    }
+                }
+                total
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(signed_positions(&fixed), signed_positions(&varied));
+}
+
+#[test]
 fn opts_in_to_pure_macro_expansion_and_produces_the_same_motion() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/preview");
     let run = |flags: &[&str], script: &str| {
