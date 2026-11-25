@@ -39,7 +39,7 @@ const HELP: &str =
     --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.
 \
     A multi-tool mixed plan requires --initial-tool and every modeled tool temperature.\n\
-    --fixed-pressure-script previews positive ADVANCE-only changes on one configured extruder with --tool-temps 0:C.";
+    --fixed-pressure-script previews positive ADVANCE-only changes on the active virtual extruder with --tool-temps.";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -371,16 +371,18 @@ fn run() -> Result<(), String> {
     }
 
     let parsed = config::parse(&files, entry).map_err(|e| format!("configuration: {e:?}"))?;
+    let multi_pressure = fixed_pressure
+        && (parsed.values("toolchanger").is_some()
+            || tool_temps.as_ref().is_some_and(|t| t.len() > 1));
     if fixed_pressure
         && (mixed_plan
-            || initial_tool.is_some()
-            || workers.is_some()
-            || parsed.values("toolchanger").is_some()
-            || !tool_temps
-                .as_ref()
-                .is_some_and(|t| t.len() == 1 && t.contains_key(&0)))
+            || tool_temps.is_none()
+            || (!multi_pressure
+                && (initial_tool.is_some()
+                    || workers.is_some()
+                    || !tool_temps.as_ref().is_some_and(|t| t.contains_key(&0)))))
     {
-        return Err("--fixed-pressure-script requires only a single modeled T0 temperature and no toolchanger, mixed plan, or parallel lane options".into());
+        return Err("--fixed-pressure-script requires modeled tool temperatures and a motion-only offline plan".into());
     }
     let sd = if virtual_sd {
         let mut job = SdJob::select(script.as_bytes());
@@ -583,7 +585,7 @@ fn run() -> Result<(), String> {
         time_origin: 0.,
         hz,
     };
-    let (motors, duration, tools) = if fixed_pressure {
+    let (motors, duration, tools) = if fixed_pressure && !multi_pressure {
         let mut profiles =
             tool_profiles::read(&parsed).map_err(|e| format!("tool profile: {e:?}"))?;
         if profiles.len() != 1 || profiles[0].section != "extruder" {
@@ -619,6 +621,9 @@ fn run() -> Result<(), String> {
                 p.lane(*t, 0.).map_err(|e| format!("tool profiles: {e:?}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        if multi_pressure {
+            machine = machine.with_virtual_tool_pressure_script();
+        }
         let trace = machine
             .trace_tool_gcode_at_virtual_origin(
                 start,
@@ -653,7 +658,7 @@ fn run() -> Result<(), String> {
             })
             .collect();
         (
-            Some(if fixed_pressure {
+            Some(if fixed_pressure && !multi_pressure {
                 "fixed_extruder_without_docking"
             } else {
                 "lane_selection_without_docking"

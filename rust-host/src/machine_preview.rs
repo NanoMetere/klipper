@@ -62,6 +62,7 @@ pub struct Machine {
     fixed_shaper: Option<Shaper>,
     fixed_mesh: Option<bed_mesh::Transform>,
     lane_workers: usize,
+    virtual_tool_pressure_script: bool,
 }
 
 fn config_error(section: &'static str, option: &'static str) -> Error {
@@ -226,6 +227,7 @@ impl Machine {
                 .map_err(|field| config_error("input_shaper", field))?,
             fixed_mesh: None,
             lane_workers: 1,
+            virtual_tool_pressure_script: false,
         })
     }
 
@@ -250,6 +252,13 @@ impl Machine {
         }
         self.lane_workers = count;
         Ok(self)
+    }
+
+    /// Opt in to positive, fixed-smoothing gain changes for virtual tool
+    /// selection only. This does not enable them during docking programs.
+    pub fn with_virtual_tool_pressure_script(mut self) -> Self {
+        self.virtual_tool_pressure_script = true;
+        self
     }
 
     /// Enable one fixed offline mesh. This does not calibrate or probe it.
@@ -472,6 +481,7 @@ impl Machine {
         let trace = self.lane_traces(
             &xyz,
             all_e,
+            &[],
             &lanes,
             start,
             clock,
@@ -604,17 +614,28 @@ impl Machine {
         let mut time = at;
         let mut switches = Vec::new();
         let mut line_no = 0;
-        let mut append = |idx: usize, out: Output| {
+        let mut callbacks: [Option<GainCallbacks>; 8] = std::array::from_fn(|_| None);
+        let mut consumed = 0;
+        let mut append = |idx: usize,
+                          out: Output,
+                          time: &mut f64,
+                          consumed: &mut usize,
+                          callback: &mut Option<GainCallbacks>| {
             for profile in out.moves {
-                extrusion::append_nominal(&mut all_e[idx], time, &profile)
+                extrusion::append_nominal(&mut all_e[idx], *time, &profile)
                     .map_err(Error::Trajectory)?;
-                append_move(&mut xyz, &mut time, &profile).map_err(Error::Trajectory)?;
+                append_move(&mut xyz, time, &profile).map_err(Error::Trajectory)?;
+                *consumed += 1;
+                if let Some(c) = callback {
+                    c.resolve(*consumed, *time)
+                        .map_err(|_| Error::ToolSegment)?;
+                }
             }
-            time += out.dwell_seconds.unwrap_or(0.0);
-            if !time.is_finite() || time >= 1e12 {
+            *time += out.dwell_seconds.unwrap_or(0.0);
+            if !time.is_finite() || *time >= 1e12 {
                 return Err(Error::Trajectory(trajectory::Error::Invalid));
             }
-            Ok(time)
+            Ok(*time)
         };
         for section in pieces {
             let id = lookup(section.tool)?;
@@ -622,7 +643,13 @@ impl Machine {
                 .switch(section.tool, &mut preview)
                 .map_err(|_| Error::ToolSegment)?
             {
-                let at = append(active, flushed)?;
+                let at = append(
+                    active,
+                    flushed,
+                    &mut time,
+                    &mut consumed,
+                    &mut callbacks[active],
+                )?;
                 switches.push(PlannedTool {
                     id: section.tool,
                     at,
@@ -640,6 +667,33 @@ impl Machine {
                 line_no += 1;
                 if line_no > MAX_LINES {
                     return Err(Error::MaximumLines);
+                }
+                if self.virtual_tool_pressure_script {
+                    if let Some(gain) =
+                        Preview::fixed_pressure_gain(line).map_err(|error| Error::Gcode {
+                            line: line_no,
+                            error,
+                        })?
+                    {
+                        let invalid = |_| Error::Gcode {
+                            line: line_no,
+                            error: gcode::Error::InvalidParameter,
+                        };
+                        let slot = &mut callbacks[active];
+                        if slot.is_none() {
+                            let base = tool
+                                .pressure_advance
+                                .ok_or_else(|| invalid(pressure_advance::Error::Settings))?;
+                            *slot = Some(GainCallbacks::new(base, at).map_err(invalid)?);
+                        }
+                        let c = slot.as_mut().unwrap();
+                        // A switch drains the old lane before the new one can
+                        // receive a command. Count XYZ-only moves too.
+                        c.defer(consumed + preview.queued_moves(), gain)
+                            .map_err(invalid)?;
+                        c.resolve(consumed, time).map_err(invalid)?;
+                        continue;
+                    }
                 }
                 let mut ext_error = None;
                 let out = preview
@@ -670,7 +724,13 @@ impl Machine {
                             Error::Extrusion,
                         )
                     })?;
-                append(active, out)?;
+                append(
+                    active,
+                    out,
+                    &mut time,
+                    &mut consumed,
+                    &mut callbacks[active],
+                )?;
             }
         }
         let moves = preview.finish().map_err(|error| Error::Gcode {
@@ -683,10 +743,20 @@ impl Machine {
                 moves,
                 dwell_seconds: None,
             },
+            &mut time,
+            &mut consumed,
+            &mut callbacks[active],
         )?;
+        let mut runtime_advance: [Option<Advance>; 8] = std::array::from_fn(|_| None);
+        for (callback, advance) in callbacks.into_iter().zip(&mut runtime_advance) {
+            if let Some(callback) = callback {
+                *advance = Some(callback.finish().map_err(|_| Error::ToolSegment)?);
+            }
+        }
         self.lane_traces(
             &xyz,
             all_e,
+            &runtime_advance,
             lanes,
             start,
             clock,
@@ -702,6 +772,7 @@ impl Machine {
         &self,
         xyz: &Trajectory,
         all_e: Vec<Trajectory>,
+        runtime_advance: &[Option<Advance>],
         lanes: &[ToolLane<'_>],
         start: [f64; 3],
         clock: Clock,
@@ -743,7 +814,11 @@ impl Machine {
             }
             let (spec, queue) = (&lanes[i - 3], &all_e[i - 3]);
             let tool = &spec.extruder;
-            if let Some(advance) = tool.pressure_advance {
+            if let Some(advance) = runtime_advance
+                .get(i - 3)
+                .and_then(Option::as_ref)
+                .or(tool.pressure_advance)
+            {
                 let events = advance
                     .crossings(queue, tool.step_distance)
                     .map_err(Error::Solver)?;

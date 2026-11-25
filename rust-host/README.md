@@ -1360,7 +1360,7 @@ the full `bench/machine_trace.py` comparison also matched 381 Cartesian
 and 423 CoreXY direction/step records across four lanes, including the
 E lane. No physical material flow was measured.
 
-The optional single-extruder offline mode recognizes
+The opt-in `--fixed-pressure-script` offline mode recognizes
 `SET_PRESSURE_ADVANCE ADVANCE=<positive gain>` with an already-enabled
 fixed smoothing window. Like the pinned stock look-ahead callback, a
 gain starts at the end of the last queued move, or immediately if the
@@ -1369,9 +1369,20 @@ stock's Python handler and timing callback, then sends the resulting
 schedule through the real stock C step solver. Short boundary cases
 matched 342 Cartesian and 382 CoreXY records; rolling 320-move cases
 matched 1,334 and 1,734. Removing the commands left XYZ timing unchanged
-and changed the extruder trace. Named extruders, changing smoothing,
-zero gain, externally scheduled gain changes mixed with these commands,
-and multiple extruders are outside this mode.
+and changed the extruder trace. Explicit named routing, changing smoothing,
+zero gain, and externally scheduled gain changes mixed with these commands
+are outside this mode.
+
+The same flag can be used with one modeled temperature per virtual tool,
+for example `--fixed-pressure-script --tool-temps 0:210,2:214,6:220`.
+A bare `T` selector changes the implicit target; the previous lane keeps
+its independent gain history. Every lane receiving a gain change must
+start with positive PA and smoothing. Tests invoking the pinned stock
+activation and implicit pressure-advance handlers matched 1,153 and 9,159
+timed records across XYZ and T0/T2/T6 on shaped paths. Removing the gain
+commands left XYZ and duration unchanged and changed each E trace.
+This does not execute docking, toolchanger initialization, or the
+mixed heater/motion plan.
 
 ```sh
 cargo run --locked --release --bin klipper-preview -- \
