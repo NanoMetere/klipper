@@ -1440,8 +1440,11 @@ phase enqueue through ACK at 0.967 → 0.278 ms; a separate single-CPU
 repeat measured 0.232 → 0.062 ms. Temperature waits, motion execution
 and clock/position checks are not timed. A missing secondary receipt
 blocks all final commands; deliberately dropping one secondary ACK
-also prevents a second-stage virtual clock advance. This is not a
-SocketCAN or hardware driver.
+also prevents a second-stage virtual clock advance. An unconfirmed
+fixture write now permanently closes that fixture session to further
+writes and queries. An anonymous-socket regression verifies only the
+first frame reaches the peer, even if a caller explicitly tries to
+continue. This is not a SocketCAN or hardware driver.
 
 ```sh
 python3 bench/native_gpio_motion.py "$stock_klipper" --mixed-rounds 30

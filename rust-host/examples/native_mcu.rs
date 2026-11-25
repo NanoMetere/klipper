@@ -86,17 +86,26 @@ mod linux {
         pub(super) writer: File,
         pub(super) sequence: u8,
         pub(super) shutdown_watch: Option<ShutdownWatch>,
+        fixture_write_uncertain: bool,
         discarded: usize,
         frame_retries: usize,
         response_retries: usize,
     }
 
     impl Link {
+        fn require_known_fixture_outcome(&self) -> Result<(), String> {
+            if self.fixture_write_uncertain {
+                return Err("fixture session stopped after an unconfirmed write".into());
+            }
+            Ok(())
+        }
+
         pub(super) fn exchange<T>(
             &mut self,
             request: impl Fn(u8) -> Result<Vec<u8>, String>,
             mut accept: impl FnMut(Frame<'_>) -> Result<Option<T>, String>,
         ) -> Result<Reply<T>, String> {
+            self.require_known_fixture_outcome()?;
             let mut query = ReadQuery::new(self.sequence);
             let start = Instant::now();
             let mut result = None;
@@ -215,6 +224,7 @@ mod linux {
                     .map_err(|e| e.to_string())?,
                 sequence: 0,
                 shutdown_watch: None,
+                fixture_write_uncertain: false,
                 discarded: 0,
                 frame_retries: 0,
                 response_retries: 0,
@@ -292,8 +302,12 @@ mod linux {
         frame: &[u8],
         accept: impl FnMut(Frame<'_>) -> Result<Option<T>, String>,
     ) -> Result<T, String> {
+        link.require_known_fixture_outcome()?;
         let next = (link.sequence + 1) & 15;
         // No message is ever resent after an unknown write outcome.
+        // Even write_all can fail after sending a prefix. Leave the fixture
+        // closed to subsequent reads or writes unless the response is known.
+        link.fixture_write_uncertain = true;
         link.writer.write_all(frame).map_err(|e| e.to_string())?;
         let value = receive_fixture(
             link,
@@ -303,6 +317,7 @@ mod linux {
             accept,
         )?;
         link.sequence = next;
+        link.fixture_write_uncertain = false;
         Ok(value)
     }
 
@@ -314,6 +329,48 @@ mod linux {
                 Err("MCU sent a response instead of a fixture ACK".into())
             }
         })
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn unconfirmed_fixture_write_blocks_the_next_write_and_query() {
+        use std::net::Shutdown;
+        use std::os::{fd::OwnedFd, unix::net::UnixStream};
+
+        let (active, mut peer) = UnixStream::pair().unwrap();
+        // Receive the write but never acknowledge it.
+        peer.shutdown(Shutdown::Write).unwrap();
+        let writer = File::from(OwnedFd::from(active));
+        let mut link = Link {
+            rx: Receiver::new(),
+            epoch: Instant::now(),
+            reader: writer.try_clone().unwrap(),
+            writer,
+            sequence: 4,
+            shutdown_watch: None,
+            fixture_write_uncertain: false,
+            discarded: 0,
+            frame_retries: 0,
+            response_retries: 0,
+        };
+        let first = encode(4, &[1, 2, 3]).unwrap();
+        assert_eq!(
+            fixture_ack(&mut link, &first).unwrap_err(),
+            "fixture peer closed"
+        );
+        let blocked = "fixture session stopped after an unconfirmed write";
+        assert_eq!(fixture_ack(&mut link, &first).unwrap_err(), blocked);
+        assert_eq!(
+            link.exchange::<()>(|_| panic!("blocked before encoding"), |_| Ok(None))
+                .err()
+                .as_deref(),
+            Some(blocked),
+        );
+        assert_eq!(link.sequence, 4);
+        drop(link);
+        let mut traffic = Vec::new();
+        peer.read_to_end(&mut traffic).unwrap();
+        assert_eq!(traffic, first);
     }
 
     pub(super) fn read_config(link: &mut Link, codec: &Messages) -> Result<Report, String> {
@@ -610,6 +667,7 @@ mod linux {
                 .map_err(|e| e.to_string())?,
             sequence: 0,
             shutdown_watch: None,
+            fixture_write_uncertain: false,
             discarded: 0,
             frame_retries: 0,
             response_retries: 0,
