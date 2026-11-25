@@ -211,6 +211,13 @@ software workloads, not printer benchmarks.
   the second phase through completion: a receipt carrying an old phase
   generation cannot change read-only HTTP or WebSocket job status;
   the right generation completes it, and reconnection starts fresh.
+  The optional status projection also matches 17,784 pinned
+  `virtual_sdcard` snapshots (including byte offsets for UTF-8 input)
+  and 12,480 pinned `print_stats` snapshots through Rust WebHooks queries.
+  The existing socket-pair/loopback fixture confirmed projected HTTP
+  snapshots and WebSocket diffs for pending pause, completion,
+  cancel, reset and reconnect, while G-code remains unavailable. The
+  file path is caller-supplied metadata and is never opened.
   The fixture provides read-only objects for the fan configuration and speed used
   by frontend subscribers, with 0% on startup, 40% when virtual
   demand changes, and 0% after a fresh peer reconnect. Tachometer RPM

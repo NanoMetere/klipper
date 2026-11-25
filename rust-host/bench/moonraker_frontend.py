@@ -150,7 +150,8 @@ enable_object_processing: False
         assert ans["status"]=={"toolhead":{"position":[10,2,3,0]}},ans
         objects = {"webhooks", "toolhead"}
         if with_program:
-            objects.update(("configfile", "fan", "virtual_mixed_job", "virtual_fixture"))
+            objects.update(("configfile", "fan", "virtual_mixed_job", "virtual_fixture",
+                            "virtual_sdcard", "print_stats"))
         assert set((await get("/printer/objects/list"))["objects"]) == objects
         ws=await websocket_connect(HTTPRequest(base.replace("http:","ws:")+"/websocket",headers=headers))
         async def receive(predicate):
@@ -186,13 +187,39 @@ enable_object_processing: False
             await ws.write_message(json.dumps({
                 "jsonrpc":"2.0","id":100,"method":"printer.objects.subscribe",
                 "params":{"objects":{"virtual_mixed_job":None,"virtual_fixture":None,
-                                     "fan":["speed"]}},
+                                     "fan":["speed"], "virtual_sdcard": None,
+                                     "print_stats": ["state", "filename"]}},
             }))
             subscribed=await receive(lambda v:v.get("id")==100)
             initial=subscribed["result"]["status"]["virtual_mixed_job"]
             assert initial["mode"]=="simulation" and initial["state"]=="ready"
             assert initial["active_tool"]==2 and initial["peer_proof"] is None
             assert subscribed["result"]["status"]["fan"] == {"speed": 0.0}
+            sd_query = "/printer/objects/query?print_stats&virtual_sdcard"
+            sd_path = "/virtual/상태.gcode"
+            states = ["standby", "printing", "printing", "paused", "paused", "printing",
+                      "complete", "standby", "cancelled", "standby"]
+            sizes = [14, 14, 14, 14, 14, 14, 14, 14, 0, 0]
+            positions = [0, 0, 0, 10, 10, 10, 14, 0, 0, 0]
+            active_steps = {1, 2, 5}
+            def check_sd(status, step):
+                sd, stats = status["virtual_sdcard"], status["print_stats"]
+                size, position = sizes[step], positions[step]
+                assert sd == {"file_path": None if step in (6, 8, 9) else sd_path,
+                              "file_position": position, "file_size": size,
+                              "progress": position / size if size else 0.,
+                              "is_active": step in active_steps}, (step, sd)
+                assert stats["state"] == states[step] and stats["filename"] == ("" if step == 9 else "상태.gcode"), stats
+            check_sd((await get(sd_query))["status"], 0)
+            assert subscribed["result"]["status"]["print_stats"] == {
+                "state": "standby", "filename": "상태.gcode"
+            }
+            await ws.write_message(json.dumps({"jsonrpc":"2.0", "id":103,
+                                              "method":"printer.gcode.script",
+                                              "params":{"script":"M105"}}))
+            denied = await receive(lambda v: v.get("id") == 103)
+            assert "error" in denied and "result" not in denied, denied
+            check_sd((await get(sd_query))["status"], 0)
             generations = []
             for step in range(1, 10):
                 set_program(step)
@@ -201,6 +228,18 @@ enable_object_processing: False
                                     .get("fixture_step")==step)
                 changed = pushed["params"][0]
                 diff = changed.get("virtual_mixed_job",{})
+                check_sd((await get(sd_query))["status"], step)
+                if step in (2, 4):
+                    assert "virtual_sdcard" not in changed and "print_stats" not in changed, changed
+                elif step in (3, 6):
+                    assert changed["virtual_sdcard"]["file_position"] == positions[step], changed
+                    assert changed["print_stats"] == {"state": states[step]}, changed
+                elif step == 8:
+                    assert changed["virtual_sdcard"]["file_size"] == 0, changed
+                    assert changed["print_stats"] == {"state": "cancelled"}, changed
+                elif step == 9:
+                    assert "virtual_sdcard" not in changed, changed
+                    assert changed["print_stats"] == {"state": "standby", "filename": ""}, changed
                 if step != 5:
                     assert "fan" not in changed, changed
                 if step==3:
@@ -274,6 +313,9 @@ enable_object_processing: False
             check_fan((await get(fan_query))["status"], 0.0)
             fresh = (await get("/printer/objects/query?virtual_mixed_job"))["status"]["virtual_mixed_job"]
             assert fresh["state"] == "ready" and fresh["peer_proof"] is None and fresh["active_tool"] == 2
+            check_sd((await get(sd_query))["status"], 0)
+            print("Read-only print_stats/virtual_sdcard: UTF-8 byte checkpoints, pending pause, "
+                  "completed/cancelled/reset, denied G-code and fresh reconnect", flush=True)
             await ws.write_message(json.dumps({
                 "jsonrpc":"2.0","id":101,"method":"printer.objects.subscribe",
                 "params":{"objects":{"fan":["speed"], "toolhead":["position"]}},

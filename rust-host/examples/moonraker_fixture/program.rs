@@ -16,6 +16,9 @@ use klipper_host_protocol::{
 use serde_json::json;
 use std::{collections::BTreeMap, io};
 
+#[path = "sd_status.rs"]
+mod sd_status;
+
 const HZ: f64 = 20e6;
 const SCRIPT: &str =
     "M107\nM109 S210\nG90\nM83\nG1 X4 E.1 F800\nM106 S102\nT5\nM109 S220\nG1 Y5 E.2 F800\n";
@@ -28,6 +31,7 @@ pub struct FixtureProgram {
     program: Program,
     step: u8,
     prior_generation: Option<u64>,
+    sd_status: sd_status::SdStatus,
 }
 
 impl FixtureProgram {
@@ -122,6 +126,7 @@ impl FixtureProgram {
             program,
             step: 0,
             prior_generation: None,
+            sd_status: sd_status::SdStatus::new()?,
         })
     }
 
@@ -261,12 +266,14 @@ impl FixtureProgram {
             }
             _ => return Err(err("unknown fixture control step")),
         }
+        self.sd_status.advance(next)?;
         self.step = next;
         Ok(())
     }
 
-    pub fn publish(&self, source: &mut Snapshot) {
+    pub fn publish(&mut self, source: &mut Snapshot) {
         assert!(self.program.publish_status(source));
+        self.sd_status.publish(source, self.step);
         // Stock-shaped read-only fields for frontend compatibility. Speed
         // is simulated demand; there is no tachometer, PWM or command API.
         for (name, data) in [

@@ -1893,6 +1893,28 @@ original command bytes in order. Separate tests enforce pause/resume
 without replay, fault isolation, and read-only status differences. No
 device path, motor, external service or physical bus is opened.
 
+### Virtual SD and print accounting status
+
+The optional WebHooks projection maps existing in-memory state to
+stock-shaped `virtual_sdcard` and `print_stats` objects. It uses committed
+byte offsets, keeps an in-flight pause active until its issued line commits,
+and publishes the empty SD slot on cancellation or reset. It consumes
+already sampled print accounting and treats paths as metadata; it never
+opens those paths or accepts commands.
+
+```sh
+cargo build --locked --release --example virtual_sd_replay --example print_stats_replay
+python3 bench/virtual_sd.py /path/to/pinned/klipper --status
+python3 bench/print_stats.py /path/to/pinned/klipper
+```
+
+The pinned handlers matched 17,784 SD and 12,480 print accounting status
+snapshots through the Rust query handler. The pinned Moonraker loopback
+fixture with `--program --delay-ready` additionally verifies HTTP,
+projected WebSocket diffs, an unavailable G-code endpoint and fresh
+reconnect. These are injected socket-pair software fixtures, not live
+printing or named Klippy socket compatibility.
+
 ## Opt-in Python plugin compatibility bridge
 
 The optional `python-bridge` feature exposes the Rust junction solver to

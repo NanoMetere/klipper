@@ -68,6 +68,28 @@ impl<'a> Job<'a> {
         }
     }
 
+    /// Render a Klippy-compatible read-only status object for this in-memory
+    /// job. The supplied path is metadata only; it is never opened.
+    #[cfg(feature = "webhooks")]
+    pub fn publish_status(&self, file_path: &str, output: &mut crate::webhooks::Snapshot) -> bool {
+        if file_path.is_empty() || file_path.len() > 512 || file_path.contains('\0') {
+            return false;
+        }
+        let cancelled = self.state == State::Cancelled;
+        let position = if cancelled { 0 } else { self.position };
+        let size = if cancelled { 0 } else { self.source.len() };
+        let attached = !matches!(self.state, State::Completed | State::Cancelled);
+        let active =
+            self.state == State::Running || (self.state == State::Paused && self.waiting.is_some());
+        project_status(
+            output,
+            attached.then_some(file_path),
+            active,
+            position,
+            size,
+        )
+    }
+
     pub fn resume(&mut self) -> Result<(), Error> {
         if !matches!(self.state, State::Selected | State::Paused) || self.waiting.is_some() {
             return Err(Error::State);
@@ -180,6 +202,28 @@ impl<'a> Job<'a> {
         self.state = State::Faulted;
         Ok(())
     }
+}
+
+/// Read-only reset/unselected shape. The caller owns clearing its selected
+/// job; this function does not cancel it, open a file, or dispatch commands.
+#[cfg(feature = "webhooks")]
+pub fn publish_unselected_status(output: &mut crate::webhooks::Snapshot) -> bool {
+    project_status(output, None, false, 0, 0)
+}
+
+#[cfg(feature = "webhooks")]
+fn project_status(
+    output: &mut crate::webhooks::Snapshot,
+    path: Option<&str>,
+    active: bool,
+    position: usize,
+    size: usize,
+) -> bool {
+    let fields = serde_json::json!({
+        "file_path": path, "progress": if size == 0 { 0.0 } else { position as f64 / size as f64 },
+        "is_active": active, "file_position": position, "file_size": size,
+    });
+    output.set_object("virtual_sdcard".into(), fields.as_object().unwrap().clone())
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //! Compare simulated print reporting without access to an actual printer.
 
 use klipper_host_protocol::print_stats::{Extrusion, State, Stats};
-use serde_json::json;
+use klipper_host_protocol::webhooks::{Session, Snapshot};
 use std::io::{self, BufRead};
 
 fn main() {
@@ -35,15 +35,14 @@ fn main() {
                         .unwrap(),
                     "status" => {
                         let s = stats.observe(at, e).unwrap();
-                        println!(
-                            "{}",
-                            json!({
-                                "filename": s.filename, "total_duration": s.total_duration,
-                                "print_duration": s.print_duration, "filament_used": s.filament_used,
-                                "state": s.state.as_str(), "message": s.message,
-                                "info": {"total_layer": s.layers[0], "current_layer": s.layers[1]},
-                            })
-                        );
+                        let mut output = Snapshot::default();
+                        assert!(s.publish_status(&mut output));
+                        let mut session = Session::default();
+                        session.feed(b"{\"id\":1,\"method\":\"objects/query\",\"params\":{\"objects\":{\"print_stats\":null}}}\x03",
+                                     &output, at, &mut |raw: &[u8]| {
+                            let result: serde_json::Value = serde_json::from_slice(&raw[..raw.len()-1]).unwrap();
+                            println!("{}", result["result"]["status"]["print_stats"]);
+                        });
                     }
                     _ => unreachable!(),
                 }

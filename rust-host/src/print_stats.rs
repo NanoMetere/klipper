@@ -52,6 +52,21 @@ pub struct Snapshot<'a> {
     pub layers: [Option<u32>; 2],
 }
 
+#[cfg(feature = "webhooks")]
+impl Snapshot<'_> {
+    /// Project an already-sampled offline observation without sampling
+    /// clocks or moving the extruder on behalf of a frontend.
+    pub fn publish_status(&self, output: &mut crate::webhooks::Snapshot) -> bool {
+        let fields = serde_json::json!({
+            "filename": self.filename, "total_duration": self.total_duration,
+            "print_duration": self.print_duration, "filament_used": self.filament_used,
+            "state": self.state.as_str(), "message": self.message,
+            "info": {"total_layer": self.layers[0], "current_layer": self.layers[1]},
+        });
+        output.set_object("print_stats".into(), fields.as_object().unwrap().clone())
+    }
+}
+
 #[derive(Default)]
 pub struct Stats {
     filename: String,

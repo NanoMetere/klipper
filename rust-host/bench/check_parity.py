@@ -93,7 +93,7 @@ def main():
         ("trigger_dispatch", [sys.executable, ROOT/"bench/trigger_dispatch.py", upstream,
                               "--binary", examples/"trigger_dispatch_replay"]),
         ("virtual_sd", [sys.executable, ROOT/"bench/virtual_sd.py", upstream,
-                        "--binary", examples/"virtual_sd_replay"]),
+                        "--binary", examples/"virtual_sd_replay", "--status"]),
         ("print_stats", [sys.executable, ROOT/"bench/print_stats.py", upstream,
                          "--binary", examples/"print_stats_replay"]),
         ("multi_extruder", [sys.executable, ROOT/"bench/multi_extruder.py", upstream,
