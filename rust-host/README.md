@@ -1295,6 +1295,32 @@ the full `bench/machine_trace.py` comparison also matched 381 Cartesian
 and 423 CoreXY direction/step records across four lanes, including the
 E lane. No physical material flow was measured.
 
+The crossing solver now resolves the pressure gain once per ordered
+trajectory phase rather than looking it up inside each integration.
+Eligibility, gain-change boundaries, and floating-point calculation
+order are unchanged. An explicit boundary test also compares
+prepared gains directly with the individual-query path.
+
+Two 50-pair, single-worker runs of the offline 2,500-move three-tool
+preview against `c4c58ab41a74ec1505aaa217d42176b8189c10d1` measured
+34.461 → 29.679 ms and 30.985 → 27.041 ms median elapsed. The median
+within-pair reductions were 11.5% and 10.3%. With four workers on
+both sides, the within-pair reductions were 7.5% and 5.9% in two
+more 50-pair runs. All 21,683 motion records and the full JSON
+file matched byte for byte. These are measurements of the entire
+offline preview process, not live Klippy or physical printing.
+A separate direct comparison to the pre-scheduling Rust build at
+`ab3f1ac7a366171cf9f681e04d54faf601c9ee58`, with four workers
+on both sides, measured 21.8% and 23.2% paired reductions. Those
+results were measured together; they are not sums of the individual
+optimizations.
+
+```sh
+taskset -c 2 python3 bench/preview_cli_timing.py \
+  /path/to/c4c58ab4/klipper-preview target/release/klipper-preview \
+  --tools --rounds 50 --moves 2500
+```
+
 ## Offline Classic CAN packetization
 
 `can` splits a bounded Klipper write into up-to-eight-byte data fields

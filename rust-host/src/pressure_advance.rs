@@ -59,9 +59,30 @@ impl Advance {
         i.checked_sub(1).map_or(0.0, |i| self.changes[i].1)
     }
 
-    fn integrate(&self, m: &Segment, mut base: f64, start: f64, end: f64, offset: f64) -> f64 {
+    fn phase_gains(&self, segs: &[Segment]) -> Vec<f64> {
+        if self.half == 0.0 {
+            return Vec::new();
+        }
+        // The iterative crossing solver revisits the same phases. Resolve
+        // gains once by traversing both sorted timelines in lockstep.
+        let mut next_change = self.changes.iter().peekable();
+        let mut gain = 0.0;
+        segs.iter()
+            .map(|m| {
+                while let Some(&(_, active)) = next_change.next_if(|&&(at, _)| at <= m.at) {
+                    gain = active;
+                }
+                if m.direction[1] == 0.0 {
+                    0.0
+                } else {
+                    gain
+                }
+            })
+            .collect()
+    }
+
+    fn integrate(m: &Segment, gain: f64, mut base: f64, start: f64, end: f64, offset: f64) -> f64 {
         let (from, to) = (start.max(0.0), end.min(m.duration));
-        let gain = self.gain_for(m);
         base += gain * m.start_velocity;
         let vel = m.start_velocity + gain * 2.0 * m.half_acceleration;
         let accel = m.half_acceleration;
@@ -100,40 +121,42 @@ impl Advance {
             insertion as isize - 1
         };
         let m = pick(segs, &head, &tail, k);
-        Ok(Some(self.sample_relative(
-            segs,
-            &head,
-            &tail,
-            k,
-            time - m.at,
-        )?))
+        let lookup = |i| {
+            let phase = pick(segs, &head, &tail, i);
+            (phase, self.gain_for(phase))
+        };
+        Ok(Some(self.sample_relative(lookup, k, time - m.at)?))
     }
 
-    fn sample_relative(
+    fn sample_relative<'a>(
         &self,
-        segs: &[Segment],
-        head: &Segment,
-        tail: &Segment,
+        lookup: impl Fn(isize) -> (&'a Segment, f64),
         k: isize,
         local: f64,
     ) -> Result<f64, Error> {
-        let lookup = |index| pick(segs, head, tail, index);
-        let m = lookup(k);
+        let (m, gain) = lookup(k);
         let base = m.position[0];
         if self.half == 0.0 {
             return Ok(base + (m.start_velocity + m.half_acceleration * local) * local);
         }
         let (mut left, mut right) = (local - self.half, local + self.half);
-        let mut area = self.integrate(m, 0.0, left, local, left);
-        area -= self.integrate(m, 0.0, local, right, right);
+        let mut area = Self::integrate(m, gain, 0.0, left, local, left);
+        area -= Self::integrate(m, gain, 0.0, local, right, right);
         let mut budget = MAX_PHASES_PER_SAMPLE;
         let mut idx = k;
         while left < 0.0 {
             budget = budget.checked_sub(1).ok_or(Error::TooManyPhases)?;
             idx -= 1;
-            let prev = lookup(idx);
+            let (prev, gain) = lookup(idx);
             left += prev.duration;
-            area += self.integrate(prev, prev.position[0] - base, left, prev.duration, left);
+            area += Self::integrate(
+                prev,
+                gain,
+                prev.position[0] - base,
+                left,
+                prev.duration,
+                left,
+            );
         }
         idx = k;
         let mut m = m;
@@ -141,8 +164,9 @@ impl Advance {
             budget = budget.checked_sub(1).ok_or(Error::TooManyPhases)?;
             right -= m.duration;
             idx += 1;
-            m = lookup(idx);
-            area -= self.integrate(m, m.position[0] - base, 0.0, right, right);
+            let (next, gain) = lookup(idx);
+            m = next;
+            area -= Self::integrate(m, gain, m.position[0] - base, 0.0, right, right);
         }
         let sample = base + area * self.inverse_half_squared;
         if !sample.is_finite() {
@@ -177,6 +201,13 @@ impl Advance {
         let mut solver = Solver::new(Axis::X, distance, [initial, 0., 0.])?;
         let head = idle(first.at - 1.0, 1.0, first.position[0]);
         let tail = idle(last.end(), 1.0, last.local(last.duration)[0]);
+        let gains = self.phase_gains(segs);
+        let lookup = |i: isize| {
+            (
+                pick(segs, &head, &tail, i),
+                gains.get(i as usize).copied().unwrap_or(0.0),
+            )
+        };
         let mut out = Vec::new();
         let mut solve = |idx: usize, start: f64, end: f64| -> Result<(), step_times::Error> {
             let room = 65_535_usize
@@ -185,7 +216,7 @@ impl Advance {
                 .ok_or(step_times::Error::EventLimit)?;
             let seg = pick(segs, &head, &tail, idx as isize);
             solver.solve_range_into(seg, start.max(0.0)..end, room, &mut out, |t| {
-                self.sample_relative(segs, &head, &tail, idx as isize, t)
+                self.sample_relative(lookup, idx as isize, t)
                     .map_err(|_| step_times::Error::Invalid)
             })
         };
@@ -268,5 +299,36 @@ mod tests {
         assert!((a.sample(&reverse, 2.5).unwrap().unwrap() + 5.0).abs() < 1e-12);
         assert_eq!(a.sample(&forward, 20.), Ok(Some(10.)));
         assert!(Advance::new(0.201, &[]).is_err());
+    }
+
+    #[test]
+    fn prepared_gains_match_queries_at_exact_phase_boundaries() {
+        let a = Advance::new(0.08, &[(1.0, 0.1), (2.0, 0.2), (2.5, 0.0), (4.0, 0.4)]).unwrap();
+        let phases: Vec<_> = [
+            (0.5, true),
+            (1.0, false),
+            (1.2, true),
+            (2.0, true),
+            (2.5, true),
+            (4.0, false),
+            (5.0, true),
+        ]
+        .into_iter()
+        .map(|(at, eligible)| {
+            let mut phase = idle(at, 0.1, 0.0);
+            phase.direction[1] = if eligible { 1.0 } else { 0.0 };
+            phase
+        })
+        .collect();
+        let prepared = a.phase_gains(&phases);
+        assert_eq!(prepared, [0.0, 0.0, 0.1, 0.2, 0.0, 0.0, 0.4]);
+        assert_eq!(
+            prepared,
+            phases.iter().map(|m| a.gain_for(m)).collect::<Vec<_>>()
+        );
+        assert!(Advance::new(0.0, &[(0.0, 0.1)])
+            .unwrap()
+            .phase_gains(&phases)
+            .is_empty());
     }
 }
