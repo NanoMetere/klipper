@@ -33,6 +33,41 @@ sides within a run, and no printing hardware. The platform is Linux
 x86-64 (AMD EPYC 9V74), not a Raspberry Pi. Use the runnable commands in
 [README](README.md) to reproduce the individual measurements.
 
+### Zero-error step compression
+
+At zero timing tolerance, two increasing step timestamps uniquely
+determine the interval and signed interval delta. The offline Rust
+compressor now walks that progression instead of searching for an error
+range. Nonzero tolerance still uses the general compressor. The pinned
+stock and shadow C versions, and both Rust versions, matched 32,153
+encoded blocks over 432,488 input clocks (2,222 runs), including clock
+wrap, the signed delta limits, and a 65,535-step run.
+
+The following are paired whole-process elapsed changes against each
+language's own baseline. Both Rust executables include complete,
+byte-identical JSON; the shadow C runs include pinned Klippy and drained
+debug-file output. Negative numbers indicate a shorter elapsed time.
+
+| Workload and timing tolerance | Paired elapsed change |
+| --- | ---: |
+| Rust CoreXY, 2,500 moves, zero | −4.8% / −3.9% |
+| Rust layered, 220 moves, zero | −5.9% / −6.9% |
+| Rust shaped extrusion, 420 moves, zero | −4.8% / −6.1% |
+| Rust shared-extruder CLI, three fixtures, zero | −4.76% to −3.93% |
+| Rust shared-extruder CLI, the same fixtures, 1,250 ticks | −1.38% to +0.09% |
+| Shadow C layered, 12,000 moves, zero | −1.12% / −6.59% |
+| Shadow C shaped extrusion, 16,000 moves, zero | −3.07% / −4.50% |
+| Shadow C layered / shaped, stock tolerance | −5.75% / −0.34% layered; +1.06% / +0.69% shaped |
+
+Rust used 70–100 pairs per fixture/core, and shadow C used 20 pairs per
+fixture/core. The two zero-error C fixtures matched 623,651 and 563,044
+motor records. The shadow's zero-error results varied more, and its
+default-tolerance shaped runs did not improve, so the stock C source
+remains unchanged. The Rust change is not a claim about live Klippy,
+nonzero-error speed, or print duration. Reproduce the shadow comparison
+with `python3 bench/step_compress_exact_zero.py /path/to/pinned-klipper
+--mode exact --rounds 20` (or `--mode default`).
+
 ### Shared traversal for matching X/Y input shapers
 
 The Rust offline CoreXY preview shares the phase walk and distance

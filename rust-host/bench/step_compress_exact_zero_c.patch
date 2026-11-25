@@ -1,0 +1,43 @@
+--- a/klippy/chelper/stepcompress.c
++++ b/klippy/chelper/stepcompress.c
+@@ -112,0 +113,34 @@
++#define CLOCK_DIFF_MAX (3u << 28)
++// With zero tolerance the first two increasing pulse times determine
++// the entire arithmetic sequence. Preserve the existing path for
++// duplicate or otherwise invalid initial clock pairs.
++static int
++compress_exact_zero(struct stepcompress *sc, struct qstep *qlast,
++                    struct step_move *result)
++{
++    struct qstep *first = sc->queue_pos;
++    uint32_t interval = first->clock32 - (uint32_t)sc->last_step_clock;
++    if (!interval || interval >= CLOCK_DIFF_MAX)
++        return 0;
++    *result = (struct step_move){ interval, 1, 0 };
++    if (first + 1 >= qlast)
++        return 1;
++    uint32_t second = (first+1)->clock32 - first->clock32;
++    if (!second || second >= CLOCK_DIFF_MAX)
++        return 0;
++    int64_t add = (int64_t)second - interval;
++    if (add < INT16_MIN || add > INT16_MAX)
++        return 1;
++    int64_t expected = (int64_t)second + add;
++    struct qstep *pos = first + 2;
++    for (; pos < qlast; pos++, expected += add) {
++        uint32_t actual = pos->clock32 - (pos-1)->clock32;
++        if (!actual)
++            return 0;
++        if (expected != actual)
++            break;
++    }
++    *result = (struct step_move){ interval, pos - first, add };
++    return 1;
++}
++
+@@ -119,0 +154,3 @@
++    struct step_move exact;
++    if (!sc->max_error && compress_exact_zero(sc, qlast, &exact))
++        return exact;
+@@ -344 +380,0 @@
+-#define CLOCK_DIFF_MAX (3<<28)

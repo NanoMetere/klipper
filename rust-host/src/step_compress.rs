@@ -108,6 +108,9 @@ pub(crate) fn compress_verified_prefix(
 }
 
 fn compress_valid(base: u64, clocks: &[u64], max_error: u32) -> Result<Block, Error> {
+    if max_error == 0 {
+        return Ok(exact_prefix(base, clocks));
+    }
     let max_error = i64::from(max_error);
     let bounds = |i: usize| {
         let point = (clocks[i] - base) as i64;
@@ -207,6 +210,41 @@ fn compress_valid(base: u64, clocks: &[u64], max_error: u32) -> Result<Block, Er
     })
 }
 
+// With zero tolerance the first two strictly increasing timestamps
+// determine the only possible interval/add pair. Once it fails, no
+// alternative can extend the block without changing those first steps.
+fn exact_prefix(base: u64, clocks: &[u64]) -> Block {
+    let interval = clocks[0] - base;
+    let single = Block {
+        interval: interval as u32,
+        count: 1,
+        add: 0,
+        last_clock: clocks[0],
+    };
+    if clocks.len() == 1 {
+        return single;
+    }
+    let step = (clocks[1] - clocks[0]) as i64;
+    let Ok(add) = i16::try_from(step - interval as i64) else {
+        return single;
+    };
+    let mut count = 2;
+    let mut next = step + i64::from(add);
+    for pair in clocks[1..].windows(2) {
+        if next != (pair[1] - pair[0]) as i64 {
+            break;
+        }
+        count += 1;
+        next += i64::from(add);
+    }
+    Block {
+        count: count as u16,
+        add,
+        last_clock: clocks[count - 1],
+        ..single
+    }
+}
+
 fn preferred(
     best_int: i64,
     best_count: i64,
@@ -246,6 +284,50 @@ mod tests {
                 count: 300,
                 add: 1,
                 last_clock: *slope.last().unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn zero_tolerance_splits_at_incompatible_spacing_or_unencodable_add() {
+        let base = (1_u64 << 32) - 31;
+        let clocks = [base + 40, base + 82, base + 126, base + 173, base + 222];
+        let blocks = compress_run(base, &clocks, 0).unwrap();
+        assert_eq!(
+            blocks,
+            [
+                Block {
+                    interval: 40,
+                    count: 3,
+                    add: 2,
+                    last_clock: clocks[2]
+                },
+                Block {
+                    interval: 47,
+                    count: 2,
+                    add: 2,
+                    last_clock: clocks[4]
+                },
+            ]
+        );
+        let over = [base + 1, base + 32770, base + 98307];
+        assert_eq!(
+            compress_prefix(base, &over, 0).unwrap(),
+            Block {
+                interval: 1,
+                count: 1,
+                add: 0,
+                last_clock: over[0]
+            }
+        );
+        let min = [base + 33000, base + 33232, base + 33233];
+        assert_eq!(
+            compress_prefix(base, &min, 0).unwrap(),
+            Block {
+                interval: 33000,
+                count: 2,
+                add: i16::MIN,
+                last_clock: min[1]
             }
         );
     }
