@@ -498,6 +498,19 @@ justify changing either solver. No live performance claim follows.
   motor or tool dock.
 
 
+### Absolute extrusion resume after a one-motor pickup
+
+The stock runtime-shaper test includes a synthetic fixed-motor pickup:
+an absolute-E printing move saves state, a relative dock command
+retracts 0.40 mm, and non-moving restore and XYZ-offset commands precede
+a resumed absolute move that extrudes 0.15 mm. Stock confirms the
+resumed move starts at the last dock coordinates and neither state
+command queues another XYZ profile. Four lanes match pinned stock,
+serial/four-worker C replay and serial/worker Rust at zero and 25 µs
+compression tolerance (5,263 steps in each case). This covers the state
+sequence only, not CxChanger plugin behavior or hardware.
+
+
 ## Offline MCU clock-query liveness
 
 The optional `clock-liveness-preview` model reproduces the stock

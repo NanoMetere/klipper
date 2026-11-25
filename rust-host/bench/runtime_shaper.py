@@ -4,6 +4,7 @@
 from pathlib import Path
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -38,6 +39,42 @@ shaper_freq_y: 44.8
 """
 
 
+# Synthetic one-motor nozzle pickup, not a plugin or hardware test.
+ABSOLUTE_E_RESUME = START + """G90
+M82
+G92 E10
+SET_GCODE_OFFSET X=.10 Y=-.05 Z=.02 MOVE=0
+G1 X22 Y18 Z1.2 E10.20 F720
+SAVE_GCODE_STATE NAME=pickup
+SET_GCODE_OFFSET X=0 Y=0 Z=0 MOVE=0
+G0 X34 Y29 Z2 F840
+M83
+G1 E-.40 F480
+RESTORE_GCODE_STATE NAME=pickup MOVE=0
+SET_GCODE_OFFSET X=.20 Y=-.10 Z=.04 MOVE=0
+G1 X29 Y33 Z1.6 E10.35 F840
+M400
+"""
+
+
+def check_absolute_e_resume(rows):
+    e = [p for p in rows_with_prefix(rows, "SHARED_INPUT") if p["kind"] == "move"]
+    assert [p["queue"] for p in e] == ["extruder"] * 3, e
+    for p, expected in zip(e, (.20, -.20, -.05), strict=True):
+        assert math.isclose(p["end"], expected, abs_tol=1e-12), e
+    # Only the three explicit XYZ moves append profiles. The last one starts
+    # at the dock position, not the saved position, and uses the new offset.
+    xyz = [p for p in rows_with_prefix(rows, "XYZ") if p["op"] == "a"]
+    assert len(xyz) == 3, xyz
+    move = xyz[-1]
+    sv, cv, ta, tc, td, acc = (move[k] for k in ("sv", "cv", "ta", "tc", "td", "acc"))
+    distance = .5 * (sv + cv) * ta + cv * tc + (cv - .5 * acc * td) * td
+    for axis, start, end in zip("xyz", (34., 29., 2.), (29.2, 32.9, 1.64), strict=True):
+        assert math.isclose(move[axis], start, abs_tol=1e-12), xyz
+        assert math.isclose(start + distance * move["r"+axis], end, abs_tol=1e-10), xyz
+
+
+
 def scripts(fixture):
     one = (START+"G90\nM83\n"
            +"G1 X25 Y20 E.6 F750\nG1 X42 Y30 E.7 F1000\n"
@@ -65,7 +102,8 @@ def scripts(fixture):
     priority = one.replace(PROFILE1,
         "set_input_shaper shaper_type=zv shaper_type_x=ei damping_ratio_x=0.14\n").replace(
         PROFILE0, PROFILE0.rstrip()+" DAMPING_RATIO_X=0.1\n")
-    return (("one-queue",one,3), ("shared-a-b-a",both,3), ("wider-window",slow,3),
+    return (("one-queue",one,3), ("shared-a-b-a",both,3),
+            ("absolute-e-resume", ABSOLUTE_E_RESUME, 1), ("wider-window",slow,3),
             ("disabled",disabled,3), ("partial",partial,3), ("global-priority",priority,3),
             ("report-only",base.replace("G1 X46 Y21", "SET_INPUT_SHAPER\nG1 X46 Y21",1),1),
             *boundaries)
@@ -202,6 +240,9 @@ def main(argv):
                 rows, gold = run_stock(upstream, dictionary, fixture, t, script, tolerance == 0)
                 r2, g2 = run_stock(upstream, dictionary, fixture, t, script, tolerance == 0)
                 assert g2 == gold
+                if label == "absolute-e-resume":
+                    check_absolute_e_resume(rows)
+                    check_absolute_e_resume(r2)
                 states = rows_with_prefix(rows, "SHAPE_STATE")
                 assert len(states) == n and states == rows_with_prefix(r2, "SHAPE_STATE"), (label, len(states))
                 if n >= 3:
