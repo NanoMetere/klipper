@@ -412,6 +412,36 @@ python3 bench/preview_cli_timing.py /path/to/prior /path/to/current --moves 2500
   --baseline-workers 1 --candidate-workers 1
 ```
 
+### Opt-in longer offline traces
+
+Build with `cargo build --locked --release --features long-step-preview
+--bin klipper-preview` to make `--long-step-preview` available. The normal
+build does not include the extended queue. The option allows inert XYZ traces or
+one explicitly modeled extruder with `--tool-temps 0:210 --fixed-pressure-script`.
+It follows the pinned C step queue's clock horizon, bounded queue extension
+and prefix compression. A single step after a long idle can exceed the
+normal compression horizon; if its interval does not fit the 32-bit
+output field, the entire preview fails instead of wrapping it. This mode
+does not run live queue deadlines or send anything to a device.
+
+A lane has at most 1,000,000 crossing and commit events, 65,535 events per
+solved phase, 131,072 queued clock slots, and 262,144 output records.
+There are at most four sequentially solved lanes; the existing input and
+trajectory limits are unchanged. The option rejects multi-tool selection,
+mixed heater plans, saved mesh, macro expansion, and virtual SD. The
+flag-free path keeps its earlier limits.
+
+Pinned stock's planner, input shaper, pressure advance and C clock queue
+matched all 257,111 timed records on a 3,000-move layered path and 115,855
+on a 3,000-move shaped extrusion path. Smaller controls matched the default
+Rust output byte-for-byte; an XYZ fixture without an extruder and a
+43-second dwell also matched stock. These are compatibility tests, not
+printing speed measurements.
+
+```sh
+python3 bench/long_step_preview.py /path/to/pinned/klipper --target-dir target/long-preview
+```
+
 ## Offline configuration resolution
 
 `config::parse` reads only a caller-supplied map of relative file names and

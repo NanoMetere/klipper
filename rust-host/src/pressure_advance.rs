@@ -276,7 +276,14 @@ impl Advance {
         distance: f64,
         initial: f64,
     ) -> Result<Vec<Event>, step_times::Error> {
-        self.crossing_batches_from(timeline, distance, initial, |_| Ok(()))
+        self.crossing_batches_from(
+            timeline,
+            distance,
+            initial,
+            #[cfg(feature = "long-step-preview")]
+            None,
+            |_| Ok(()),
+        )
     }
 
     // The visitor may leave the collected events in place or consume and
@@ -286,6 +293,7 @@ impl Advance {
         timeline: &Trajectory,
         distance: f64,
         initial: f64,
+        #[cfg(feature = "long-step-preview")] limit: Option<usize>,
         mut visit: impl FnMut(&mut Vec<Event>) -> Result<(), E>,
     ) -> Result<Vec<Event>, E> {
         let segs = timeline.segments();
@@ -304,14 +312,25 @@ impl Advance {
             )
         };
         let mut out = Vec::new();
+        #[cfg(not(feature = "long-step-preview"))]
         let mut remaining = 65_535_usize;
+        #[cfg(feature = "long-step-preview")]
+        let mut remaining = limit.unwrap_or(65_535);
         let mut solve = |idx: usize, start: f64, end: f64| -> Result<(), E> {
             if remaining == 0 {
                 return Err(step_times::Error::EventLimit.into());
             }
             let seg = pick(segs, &head, &tail, idx as isize);
             let before = out.len();
-            solver.solve_range_into(seg, start.max(0.0)..end, remaining, &mut out, |t| {
+            #[cfg(feature = "long-step-preview")]
+            let room = if limit.is_some() {
+                remaining.min(65_535)
+            } else {
+                remaining
+            };
+            #[cfg(not(feature = "long-step-preview"))]
+            let room = remaining;
+            solver.solve_range_into(seg, start.max(0.0)..end, room, &mut out, |t| {
                 self.sample_relative(lookup, idx as isize, t)
                     .map_err(|_| step_times::Error::Invalid)
             })?;

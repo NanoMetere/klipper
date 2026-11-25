@@ -89,6 +89,24 @@ pub fn compress_each(
     Ok(())
 }
 
+#[cfg(feature = "long-step-preview")]
+pub(crate) fn compress_verified_prefix(
+    base: u64,
+    clocks: &[u64],
+    max_error: u32,
+) -> Result<Block, Error> {
+    if clocks.is_empty()
+        || clocks.len() > MAX_COUNT
+        || max_error > MAX_ERROR
+        || clocks[0] <= base
+        || *clocks.last().unwrap() - base >= HORIZON
+    {
+        return Err(Error::OutOfRange);
+    }
+    debug_assert!(clocks.windows(2).all(|w| w[0] < w[1]));
+    compress_valid(base, clocks, max_error)
+}
+
 fn compress_valid(base: u64, clocks: &[u64], max_error: u32) -> Result<Block, Error> {
     let max_error = i64::from(max_error);
     let bounds = |i: usize| {

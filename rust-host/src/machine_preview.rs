@@ -69,6 +69,8 @@ pub struct Machine {
     fixed_mesh: Option<bed_mesh::Transform>,
     script_mesh: Option<(String, bed_mesh::Transform)>,
     lane_workers: usize,
+    #[cfg(feature = "long-step-preview")]
+    long_steps: bool,
     virtual_tool_pressure_script: bool,
     pressure_tool_names: Vec<(String, u8)>,
 }
@@ -236,6 +238,8 @@ impl Machine {
             fixed_mesh: None,
             script_mesh: None,
             lane_workers: 1,
+            #[cfg(feature = "long-step-preview")]
+            long_steps: false,
             virtual_tool_pressure_script: false,
             pressure_tool_names: Vec::new(),
         })
@@ -927,6 +931,14 @@ impl Machine {
         })
     }
 
+    /// Explicitly opt in to the bounded stock clock queue for single-path
+    /// offline traces only. Does not change live scheduling or multi-tools.
+    #[cfg(feature = "long-step-preview")]
+    pub fn with_long_step_preview(mut self) -> Self {
+        self.long_steps = true;
+        self
+    }
+
     /// Offline trace with an explicitly modeled single extruder.
     #[allow(clippy::too_many_arguments)]
     pub fn trace_with_extruder(
@@ -1079,6 +1091,61 @@ impl Machine {
                 line: n + 1,
                 error: gcode::Error::InvalidSession,
             })?;
+        #[cfg(feature = "long-step-preview")]
+        if self.long_steps {
+            let mut commands = std::array::from_fn(|_| Vec::new());
+            for (motor, output) in commands.iter_mut().enumerate() {
+                let axis = self.motor_axis[motor];
+                let distance = self.motor_step[motor];
+                let inv = invert[motor];
+                *output = if let Some(shaper) = self
+                    .fixed_shaper
+                    .as_ref()
+                    .filter(|s| s.is_enabled_for(axis))
+                {
+                    step_lane_shaped_long(
+                        shaper,
+                        &queue,
+                        axis,
+                        distance,
+                        start,
+                        (clock, max_error, inv),
+                    )?
+                } else {
+                    step_lane_long(&queue, axis, distance, start, clock, max_error, inv)?
+                };
+            }
+            let e = match (e_queue, extruder) {
+                (Some(queue), Some(e)) => Some(
+                    if let Some(advance) = runtime_advance.as_ref().or(e.pressure_advance) {
+                        step_lane_advance_long(
+                            advance,
+                            &queue,
+                            e.step_distance,
+                            clock,
+                            max_error,
+                            e.inverse_direction,
+                        )?
+                    } else {
+                        step_lane_long(
+                            &queue,
+                            Axis::X,
+                            e.step_distance,
+                            [0.0; 3],
+                            clock,
+                            max_error,
+                            e.inverse_direction,
+                        )?
+                    },
+                ),
+                _ => None,
+            };
+            return Ok(Trace {
+                motors: commands,
+                extruder: e,
+                duration: time - at,
+            });
+        }
         let mut commands = std::array::from_fn(|_| Vec::new());
         for (motor, output) in commands.iter_mut().enumerate() {
             let (axis, dist, inv) = (
@@ -1231,9 +1298,15 @@ fn step_lane_shaped(
     (clock, max_error, invert): (Clock, u32, bool),
 ) -> Result<Vec<Command>, Error> {
     let mut encoder = step_clock::TraceEncoder::new(clock, max_error, invert);
-    shaper.crossing_batches(queue, axis, distance, start, |batch| {
-        encode_batch(&mut encoder, batch)
-    })?;
+    shaper.crossing_batches(
+        queue,
+        axis,
+        distance,
+        start,
+        #[cfg(feature = "long-step-preview")]
+        None,
+        |batch| encode_batch(&mut encoder, batch),
+    )?;
     encoder.finish().map_err(Error::Clock)
 }
 
@@ -1247,9 +1320,93 @@ fn step_lane_advance(
 ) -> Result<Vec<Command>, Error> {
     let mut encoder = step_clock::TraceEncoder::new(clock, max_error, invert);
     let initial = queue.segments().first().map_or(0., |s| s.position[0]);
-    advance.crossing_batches_from(queue, distance, initial, |batch| {
-        encode_batch(&mut encoder, batch)
-    })?;
+    advance.crossing_batches_from(
+        queue,
+        distance,
+        initial,
+        #[cfg(feature = "long-step-preview")]
+        None,
+        |batch| encode_batch(&mut encoder, batch),
+    )?;
+    encoder.finish().map_err(Error::Clock)
+}
+
+#[cfg(feature = "long-step-preview")]
+fn step_lane_long(
+    queue: &Trajectory,
+    axis: Axis,
+    distance: f64,
+    start: [f64; 3],
+    clock: Clock,
+    max_error: u32,
+    invert: bool,
+) -> Result<Vec<Command>, Error> {
+    use step_clock::long::{LongEncoder, MAX_INPUT};
+    let mut solver = Solver::new(axis, distance, start)?;
+    let mut events = Vec::new();
+    let mut encoder = LongEncoder::new(clock, max_error, invert).map_err(Error::Clock)?;
+    let mut room = MAX_INPUT;
+    for seg in queue.segments().iter().filter(|s| s.direction != [0.0; 3]) {
+        if room == 0 {
+            return Err(step_times::Error::EventLimit.into());
+        }
+        solver.crossing_events_into(seg, seg.at..seg.end(), room.min(MAX_EVENTS), &mut events)?;
+        room -= events.len();
+        encoder.push(&events).map_err(Error::Clock)?;
+        events.clear();
+    }
+    encoder.finish().map_err(Error::Clock)
+}
+
+#[cfg(feature = "long-step-preview")]
+fn step_lane_shaped_long(
+    shaper: &Shaper,
+    queue: &Trajectory,
+    axis: Axis,
+    distance: f64,
+    start: [f64; 3],
+    (clock, max_error, invert): (Clock, u32, bool),
+) -> Result<Vec<Command>, Error> {
+    use step_clock::long::{LongEncoder, MAX_INPUT};
+    let mut encoder = LongEncoder::new(clock, max_error, invert).map_err(Error::Clock)?;
+    shaper.crossing_batches(
+        queue,
+        axis,
+        distance,
+        start,
+        Some(MAX_INPUT),
+        |batch| -> Result<(), Error> {
+            encoder.push(batch).map_err(Error::Clock)?;
+            batch.clear();
+            Ok(())
+        },
+    )?;
+    encoder.finish().map_err(Error::Clock)
+}
+
+#[cfg(feature = "long-step-preview")]
+fn step_lane_advance_long(
+    advance: &Advance,
+    queue: &Trajectory,
+    distance: f64,
+    clock: Clock,
+    max_error: u32,
+    invert: bool,
+) -> Result<Vec<Command>, Error> {
+    use step_clock::long::{LongEncoder, MAX_INPUT};
+    let mut encoder = LongEncoder::new(clock, max_error, invert).map_err(Error::Clock)?;
+    let initial = queue.segments().first().map_or(0., |s| s.position[0]);
+    advance.crossing_batches_from(
+        queue,
+        distance,
+        initial,
+        Some(MAX_INPUT),
+        |batch| -> Result<(), Error> {
+            encoder.push(batch).map_err(Error::Clock)?;
+            batch.clear();
+            Ok(())
+        },
+    )?;
     encoder.finish().map_err(Error::Clock)
 }
 

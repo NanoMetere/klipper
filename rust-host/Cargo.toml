@@ -13,6 +13,7 @@ default = ["identify", "webhooks"]
 identify = ["dep:flate2", "dep:serde", "dep:serde_json"]
 webhooks = ["dep:serde", "dep:serde_json"]
 python-bridge = []
+long-step-preview = []
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }

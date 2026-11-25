@@ -244,6 +244,9 @@ pub fn encode_trace(
     encoder.finish()
 }
 
+#[cfg(feature = "long-step-preview")]
+pub(crate) mod long;
+
 #[cfg(test)]
 mod tests {
     use super::*;

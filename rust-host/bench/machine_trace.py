@@ -134,7 +134,7 @@ SHAPES = [
 
 
 def traced(config_path, c, script, use_extruder, pressure, shaped=False, runtime_pressure=False,
-           native_samples=None):
+           native_samples=None, preview_cli=False):
     from configfile import ConfigFileReader, ConfigWrapper
     from kinematics.cartesian import CartKinematics
     from kinematics.corexy import CoreXYKinematics
@@ -147,13 +147,14 @@ def traced(config_path, c, script, use_extruder, pressure, shaped=False, runtime
     raw = reader.build_fileconfig_with_includes(config_text, config_path)
     printer = ConfigWrapper(None, raw, {}, "printer")
     cart = printer.get("kinematics") == "cartesian"
-    start = (1., 1., .2)
+    start = (10., 10., 1.) if preview_cli else (1., 1., .2)
     rails = [ConfigWrapper(None, raw, {}, f"stepper_{a}") for a in "xyz"]
     ranges = [(r.getfloat("position_min", 0.), r.getfloat("position_max")) for r in rails]
     distances = [pos / micro for pos, micro in (parse_step_distance(r, False) for r in rails)]
     settings = ((CartKinematics if cart else CoreXYKinematics), ranges,
-                *(printer.getfloat(k) for k in ("max_velocity", "max_accel", "square_corner_velocity",
-                                                "minimum_cruise_ratio", "max_z_velocity", "max_z_accel")),
+                *(printer.getfloat(k, d) for k, d in (("max_velocity", None), ("max_accel", None),
+                    ("square_corner_velocity", 5.), ("minimum_cruise_ratio", .5),
+                    ("max_z_velocity", None), ("max_z_accel", None))),
                 start)
     rows = []
     gains = []
@@ -229,15 +230,25 @@ def traced(config_path, c, script, use_extruder, pressure, shaped=False, runtime
         rows.extend(("h", axis, len(shape), *(p for pair in shape for p in pair))
                     for axis, shape in zip("xyz", shapes, strict=True))
     for axis, distance, invert in zip(("x", "y", "z") if cart else ("+", "-", "z"),
-                                     distances, (0, 1, 0), strict=True):
-        rows.append(("s", axis, *start, distance, time + (.51 if shapes else .01), 20e6, 20, invert))
+                                     distances, (0, 0, 0) if preview_cli else (0, 1, 0), strict=True):
+        rows.append(("s", axis, *start, distance, time + (.51 if shapes else .01), 20e6,
+                     0 if preview_cli else 20, invert))
     if use_extruder:
-        if runtime_pressure:
+        if preview_cli:
+            config_e = ConfigWrapper(None, raw, {}, "extruder")
+            drive, micro = parse_step_distance(config_e, False)
+            smooth = config_e.getfloat("pressure_advance_smooth_time", .04)
+            gain = config_e.getfloat("pressure_advance", 0.)
+            rows.append(("g", 0., gain, smooth))
+            inv = int(config_e.get("dir_pin", "").startswith("!"))
+            rows.append(("s", "e", 0., 0., 0., drive/micro, time + .08, 20e6, 0, inv))
+        elif runtime_pressure:
             rows.append(("g", 0., .05, .04))
             rows.extend(("g", *entry) for entry in gains)
         elif pressure:
             rows.extend([("g", 0., .05, .04), ("g", 2.46, .075, .04)])
-        rows.append(("s", "e", 0., 0., 0., 0.004, time + .08, 20e6, 20, 1))
+        if not preview_cli:
+            rows.append(("s", "e", 0., 0., 0., 0.004, time + .08, 20e6, 20, 1))
     run = subprocess.run([c], text=True, capture_output=True, check=True,
                          input="\n".join(" ".join(map(str, r)) for r in rows)+"\n")
     native_ns = int(run.stderr.split()[1])

@@ -26,7 +26,7 @@ use std::{
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 const HELP: &str =
-    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] [--mesh-profile NAME] [--mesh-script] [--mixed-plan] [--fixed-pressure-script] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
+    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] [--mesh-profile NAME] [--mesh-script] [--mixed-plan] [--fixed-pressure-script] [--long-step-preview] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
     ROOT contains config files; ENTRY and INCLUDE paths must be relative to it.\n\
     List every included file needed, including matches for wildcard includes.\n\
     XYZ is the explicit virtual starting position in millimeters.\n\
@@ -40,7 +40,8 @@ const HELP: &str =
     --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.
 \
     A multi-tool mixed plan requires --initial-tool and every modeled tool temperature.\n\
-    --fixed-pressure-script previews positive ADVANCE at fixed smoothing. Multi-tool preview accepts exact EXTRUDER names.";
+    --fixed-pressure-script previews positive ADVANCE at fixed smoothing. Multi-tool preview accepts exact EXTRUDER names.\n\
+    --long-step-preview requires the long-step-preview Cargo feature and never performs device I/O.";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -301,6 +302,7 @@ fn run() -> Result<(), String> {
     let mut mesh_script = false;
     let mut mixed_plan = false;
     let mut fixed_pressure = false;
+    let mut long_steps = false;
     let mut args = args.as_slice();
     while let Some(flag) = args.first() {
         if flag == "--expand-macros" && !expand_macros {
@@ -330,6 +332,8 @@ fn run() -> Result<(), String> {
             args = &args[1..];
         } else if flag == "--mixed-plan" && !mixed_plan {
             mixed_plan = true;
+        } else if flag == "--long-step-preview" && !long_steps {
+            long_steps = true;
         } else if flag == "--fixed-pressure-script" && !fixed_pressure {
             fixed_pressure = true;
         } else if flag == "--mesh-script" && !mesh_script {
@@ -390,6 +394,28 @@ fn run() -> Result<(), String> {
     {
         return Err("--fixed-pressure-script requires modeled tool temperatures and a motion-only offline plan".into());
     }
+    if long_steps && !cfg!(feature = "long-step-preview") {
+        return Err(
+            "--long-step-preview requires a build with --features long-step-preview".into(),
+        );
+    }
+    if long_steps
+        && (mixed_plan
+            || multi_pressure
+            || expand_macros
+            || virtual_sd
+            || workers.is_some()
+            || initial_tool.is_some()
+            || mesh_script
+            || mesh_profile.is_some()
+            || parsed.values("toolchanger").is_some()
+            || (tool_temps.is_some() && !fixed_pressure))
+    {
+        return Err(
+            "--long-step-preview accepts simple XYZ or one explicit fixed-pressure extruder only"
+                .into(),
+        );
+    }
     let sd = if virtual_sd {
         let mut job = SdJob::select(script.as_bytes());
         let parse = |e| format!("virtual SD: {e:?}");
@@ -418,6 +444,10 @@ fn run() -> Result<(), String> {
     let mut machine = Machine::from_config(&parsed)
         .and_then(|m| m.with_lane_workers(workers.unwrap_or(1)))
         .map_err(|e| format!("machine: {e:?}"))?;
+    #[cfg(feature = "long-step-preview")]
+    if long_steps {
+        machine = machine.with_long_step_preview();
+    }
     if mesh_script
         && (mesh_profile.is_none()
             || mixed_plan
