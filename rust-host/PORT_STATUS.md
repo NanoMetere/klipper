@@ -498,6 +498,25 @@ justify changing either solver. No live performance claim follows.
   motor or tool dock.
 
 
+## Offline MCU clock-query liveness
+
+The optional `clock-liveness-preview` model reproduces the stock
+0.9839-second query cadence, the five-unanswered-query threshold, reset
+on a decoded reply even without usable RTT, suppression under file
+output, and a one-shot lost-communication indication per session.
+It is a policy model only: it does **not** publish an emergency stop,
+abort a physical wait, schedule real traffic, or reset a device.
+
+```sh
+cargo build --locked --release --features clock-liveness-preview --example clock_liveness_replay
+python3 bench/clock_liveness.py UPSTREAM target/release/examples/clock_liveness_replay
+```
+
+The fixture runs the actual pinned stock policy methods with mocked
+serial and shutdown callbacks, and checks the exact same 12,910
+records against original-counter C, saturation-counter C and Rust.
+Add `--rounds 80 --core 0` for same-output offline replay timing.
+
 ## Remaining integration work
 
 A deployable host still needs a long-running runtime and independently
