@@ -375,6 +375,9 @@ justify changing either solver. No live performance claim follows.
   relative mode and feed restoration and an explicit XYZ return move.
   Stock, Rust and C E replay match at both tolerances: 21,738 and
   21,874 steps over all four lanes, respectively.
+  A tenth job verifies absolute XYZ offsets, a Z adjustment with a
+  simulated move, and clearing the offsets without a move. Across the
+  four lanes, 21,798 steps match stock at both tolerances.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

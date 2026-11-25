@@ -289,6 +289,7 @@ pub fn plan(
                     "SET_VELOCITY_LIMIT",
                     "SAVE_GCODE_STATE",
                     "RESTORE_GCODE_STATE",
+                    "SET_GCODE_OFFSET",
                 ]
                 .iter()
                 .any(|code| code.eq_ignore_ascii_case(opcode))

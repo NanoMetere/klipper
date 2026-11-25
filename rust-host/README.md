@@ -2102,6 +2102,9 @@ The preview does not display progress or track text state.
 coordinate snapshot store. An explicit `MOVE=1` emits a simulated XYZ
 return move subject to the same virtual limits; it keeps the current
 physical E position rather than undoing extrusion.
+`SET_GCODE_OFFSET` uses the same virtual coordinate rules, including
+incremental adjustments. If `MOVE=1` is requested, the resulting move
+must stay within the configured virtual bounds.
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

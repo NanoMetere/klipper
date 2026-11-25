@@ -184,6 +184,13 @@ def main():
          .replace("G1 Z1.17 F360\n",
          "G1 Z1.17 F360\nRESTORE_GCODE_STATE NAME=First MOVE=1 MOVE_SPEED=9\n", 1),
          (577, 113), 1250, (7150, 114)),
+        ("coordinate-offset", source.replace("G1 X28 Y18 E0.83 F900\n",
+         "G1 X28 Y18 E0.83 F900\nSET_GCODE_OFFSET X=0.25 Y=-0.125 Z=0.02\n", 1)
+         .replace("G1 X46 Y21 E1.24 F900\n",
+         "SET_GCODE_OFFSET Z_ADJUST=0.1 MOVE=1 MOVE_SPEED=7.5\nG1 X46 Y21 E1.24 F900\n", 1)
+         .replace("G1 Z1.42 F360\n",
+         "SET_GCODE_OFFSET X=0 Y=0 Z=0 MOVE=0\nG1 Z1.42 F360\n", 1),
+         (635, 112), 1250, (6830, 98)),
     )
     with tempfile.TemporaryDirectory(prefix="klipper-captured-window-") as d:
         temp = Path(d)
@@ -249,7 +256,7 @@ def main():
                 independently_planned_xyz = subprocess.check_output([plan, "--xyz"], input=executable,
                                                                     text=True, timeout=10)
                 assert same_plan(events, independently_planned_e) == 38
-                expect_xyz_rows = 25 if name == "restore-move" else 24
+                expect_xyz_rows = 25 if name in ("restore-move", "coordinate-offset") else 24
                 assert same_plan(xyz_events, independently_planned_xyz) == expect_xyz_rows
                 plan_e = subprocess.check_output([rust, "--wire", hz, tol], input=independently_planned_e,
                                                  text=True, timeout=15)
@@ -267,7 +274,7 @@ def main():
                     assert expected == wire_records(candidate)
                     tick_count += n
                     records += len(expected)
-                expect_xyz_ticks = 20624 if name == "restore-move" else 20488
+                expect_xyz_ticks = {"restore-move": 20624, "coordinate-offset": 20548}.get(name, 20488)
                 assert (records, tick_count) == (xyz_counts[mode], expect_xyz_ticks)
                 print(f"Actual stock debug, max compress error {tol} ticks, XYZ, case={name}: "
                       f"{records} compressed blocks/directions, {tick_count} individual ticks, exact independently planned Rust")
@@ -291,12 +298,14 @@ def main():
             rejected(body, b"Offline preview")
             body.write_text("G1 X11\nRESTORE_GCODE_STATE NAME=Missing MOVE=1\nM400\n")
             rejected(body, b"Offline preview")
+            body.write_text("G1 X11\nSET_GCODE_OFFSET X=1000 MOVE=1\nM400\n")
+            rejected(body, b"Offline preview")
             symlink = temp / "symlink.gcode"
             symlink.symlink_to(body)
             rejected(symlink, b"non-symlink")
             body.write_bytes(b" " * 65_537)
             rejected(body, b"exceeds 65536 bytes")
-            print("Standalone shared preview matched all eighteen stock file cases; invalid inputs rejected")
+            print("Standalone shared preview matched all twenty stock file cases; invalid inputs rejected")
 
 
 
