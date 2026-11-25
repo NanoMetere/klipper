@@ -33,6 +33,39 @@ sides within a run, and no printing hardware. The platform is Linux
 x86-64 (AMD EPYC 9V74), not a Raspberry Pi. Use the runnable commands in
 [README](README.md) to reproduce the individual measurements.
 
+### Offline worker scheduling experiment
+
+The Rust CLI can already choose one or four workers for the same
+three-tool preview. With the process restricted to one CPU, switching
+from four workers to one lowered paired elapsed time by 2.6–2.8%, but
+raised CPU time by 16.0–16.9%. On two distinct four-CPU affinity sets,
+using four workers instead of one lowered paired elapsed time by
+39–49%. Each affinity used 100 alternating pairs of 2,500 moves,
+with exactly the same 21,683 step records and identical full JSON.
+This compares worker settings, not languages or live printer speed.
+
+A shadow C patch runs the pinned Klippy step-generation jobs inline,
+keeping the same per-emitter work and output ordering. Twenty-four
+alternating pairs per affinity tested whole processes with drained
+debug files and stock 25 μs tolerance (60,340 exact layered records,
+74,811 exact shaped-extrusion records):
+
+| CPU affinity | Layered elapsed change | Shaped extrusion elapsed change |
+| --- | ---: | ---: |
+| One CPU, two runs | −2.34% / −6.18% | −2.18% / +2.52% |
+| Two CPUs, two runs | −11.33% / −6.36% | −5.49% / −15.26% |
+| Four CPUs, one run | −1.72% | +1.50% |
+
+Negative values favor inline C. Output equality is limited to the
+offline jobs; default-tolerance timing did not consistently improve
+across workload and affinity, and no realtime behavior was validated.
+Production C and the default Rust worker count remain unchanged.
+For this offline workload, the Rust `--lane-workers 4` flag is useful
+only when multiple CPUs are actually available and elapsed time matters.
+The C fixture can be reproduced with
+`python3 bench/step_compress_exact_zero.py /path/to/pinned-klipper
+--shadow inline-steppersync --mode default --rounds 24`.
+
 ### Zero-error step compression
 
 At zero timing tolerance, two increasing step timestamps uniquely

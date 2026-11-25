@@ -1,0 +1,31 @@
+--- a/klippy/chelper/steppersync.c
++++ b/klippy/chelper/steppersync.c
+@@ -415,7 +415,18 @@
+         uint64_t clear_clock = clock_from_time(&ss->ce, clear_history_time);
+         struct syncemitter *se;
+         list_for_each_entry(se, &ss->se_list, ss_node) {
+-            se_start_gen_steps(se, gen_steps_time, flush_clock, clear_clock);
++            if (!se->sc || !se->sk) {
++                se->bg_result = 0;
++                continue;
++            }
++            // Offline shadow only: request generation inline, while the
++            // original worker remains idle. Never installed on a printer.
++            se->bg_gen_steps_time = gen_steps_time;
++            se->bg_flush_clock = flush_clock;
++            se->bg_clear_history_clock = clear_clock;
++            se->bg_result = se_generate_steps(se);
++            if (se->bg_result)
++                errorf("Error in syncemitter '%s' step generation", se->name);
+         }
+     }
+     // Wait for step generation threads to complete
+@@ -423,7 +434,7 @@
+     list_for_each_entry(ss, &ssm->ss_list, ssm_node) {
+         struct syncemitter *se;
+         list_for_each_entry(se, &ss->se_list, ss_node) {
+-            int32_t ret = se_finalize_gen_steps(se);
++            int32_t ret = se->bg_result;
+             if (ret)
+                 failed_se = se;
+         }
