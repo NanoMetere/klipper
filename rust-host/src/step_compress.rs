@@ -92,7 +92,9 @@ pub fn compress_each(
     Ok(())
 }
 
-#[cfg(feature = "long-step-preview")]
+/// Compress a prefix of an internal queue already proven strictly increasing.
+/// Keep the scalar bounds checks even on callers that own that invariant.
+#[cfg(any(feature = "long-step-preview", feature = "capture-replay"))]
 pub(crate) fn compress_verified_prefix(
     base: u64,
     clocks: &[u64],

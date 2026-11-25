@@ -2163,6 +2163,21 @@ python3 bench/file_debug_lane_timing.py UPSTREAM UPSTREAM/out/klipper.dict \
 Use four CPUs available to the process for a parallel run, then rerun
 with one CPU to check the serial default remains the better choice there.
 
+Captured replay also validates tick ordering when crossings enter the
+encoder, rather than scanning the remaining queue before each compressed
+block. The prefix still checks the count, error tolerance, base tick and
+relative clock horizon. To compare the same placement of order checks
+with pinned stock C, run the separate offline check below. It compares
+unchanged stock C, a lab version that scans each remaining suffix, and
+a lab version that checks during insertion. Actual stock C does not scan
+the remaining suffix, so gains against that lab version are not gains
+over stock C.
+
+```sh
+python3 bench/file_debug_queue_proof.py UPSTREAM UPSTREAM/out/klipper.dict \
+  --cores 0 --rounds 120
+```
+
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

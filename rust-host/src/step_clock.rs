@@ -237,7 +237,10 @@ impl TraceEncoder {
         }
         let mut consumed = 0;
         while consumed < self.run.len() && self.clock.last_encoded < clock {
-            let block = crate::step_compress::compress_prefix(
+            // Filter commits strictly increasing ticks; consuming an earlier
+            // prefix cannot invalidate that order. Prefix validation still
+            // checks count, error, base and horizon.
+            let block = crate::step_compress::compress_verified_prefix(
                 self.clock.last_encoded,
                 &self.run[consumed..],
                 self.max_error,
@@ -501,6 +504,40 @@ mod tests {
         let representation = 10.25 + ((1u64 << 32) as f64 + 41.0) / 1_000_000.0;
         assert_eq!(clock.to_tick(representation, 0.), Ok((1 << 32) + 41));
         assert_eq!(clock.to_tick(representation, -0.1), Err(Error::InvalidTime));
+    }
+
+    #[cfg(feature = "capture-replay")]
+    #[test]
+    fn captured_subruns_keep_strict_order_across_partial_flushes() {
+        let clock = Clock {
+            last_encoded: 0,
+            time_origin: 0.0,
+            hz: 1_000_000.,
+        };
+        let crossings = [1000, 2000, 4000, 7200, 9900].map(|tick| step(tick, true));
+        let mut first = crossings[..4].to_vec();
+        first.push(Event::Commit);
+        let valid = [(first, 2500)];
+        let output = encode_captured_windows(clock, &valid, &crossings[4..], 0, false).unwrap();
+        let pulses: Vec<_> = output
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                Command::Steps(block) => Some((block.count, block.last_clock)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pulses, [(2, 2000), (2, 7200), (1, 9900)]);
+        let partly_queued = [(valid[0].0.clone(), 1000)];
+        for invalid in [step(7200, true), step(7199, false)] {
+            assert_eq!(
+                encode_captured_windows(clock, &partly_queued, &[invalid], 0, false),
+                Err(Error::Nonmonotonic)
+            );
+        }
+        assert_eq!(
+            encode_captured_windows(clock, &valid, &[step(7199, false)], 0, false),
+            Err(Error::InvalidTime)
+        );
     }
 
     #[cfg(feature = "capture-replay")]
