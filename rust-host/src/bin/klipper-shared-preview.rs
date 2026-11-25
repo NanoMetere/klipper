@@ -246,3 +246,11 @@ mod runtime_workers;
 #[cfg(feature = "runtime-shaper-workers")]
 #[allow(unused_imports)]
 pub(crate) use runtime_workers::entry as entry_runtime_workers;
+
+#[cfg(feature = "runtime-mesh-preview")]
+#[allow(dead_code)]
+#[path = "support/runtime_mesh_entry.rs"]
+mod runtime_mesh;
+#[cfg(feature = "runtime-mesh-preview")]
+#[allow(unused_imports)]
+pub(crate) use runtime_mesh::entry as entry_runtime_mesh;

@@ -2266,6 +2266,34 @@ and `--worker-rounds 120 --cores 0,1,2,3`. The C arm replays captured
 steps; the Rust arm begins with G-code. Compare each to its own serial
 baseline, not their absolute elapsed times.
 
+For a saved mesh in the same runtime-shaper job, build the separate
+`runtime-mesh-preview` feature and pass an isolated mesh config and
+one exact profile name:
+
+```sh
+cargo run --locked --release --features runtime-mesh-preview \
+  --bin klipper-runtime-mesh-preview -- \
+  bench/shared_extruder_fixture/offline_model.json path.gcode shape.cfg mesh.cfg test_surface
+```
+
+The mesh is inactive until `BED_MESH_PROFILE LOAD=test_surface`.
+`BED_MESH_CLEAR` and `BED_MESH_OFFSET X=… Y=… ZFADE=…` affect later
+motion only. The file may contain either the version-one named mesh
+section or a stock SAVE_CONFIG entry alongside `[bed_mesh]`. Probing,
+calibration, saving, includes and live printing are not supported.
+The resulting JSON uses the same schema and lane order as the
+runtime-shaper trace.
+
+```sh
+python3 bench/runtime_mesh.py UPSTREAM UPSTREAM/out/klipper.dict \
+  target/release/klipper-runtime-mesh-preview
+```
+
+Add `--rounds 16 --core 0` to time both complete offline paths through
+identical normalized output. The test requires both profile formats,
+all four lane packet sequences, and both stock compression tolerances
+to match. It never guesses an unsupported mesh or saves a setting.
+
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

@@ -179,6 +179,12 @@ def main():
                        "klipper-runtime-shaper-preview", "--target-dir", runtime_shape]))
         phases.append(("stock_runtime_shaper_preview", [sys.executable, ROOT/"bench/runtime_shaper.py",
                        upstream, dictionary, runtime_shape / "release/klipper-runtime-shaper-preview"]))
+        runtime_mesh = target / "runtime-mesh-preview"
+        phases.append(("build_runtime_mesh_preview", ["cargo", "build", "--locked",
+                       "--release", "--features", "runtime-mesh-preview", "--bin",
+                       "klipper-runtime-mesh-preview", "--target-dir", runtime_mesh]))
+        phases.append(("stock_runtime_mesh_preview", [sys.executable, ROOT/"bench/runtime_mesh.py",
+                       upstream, dictionary, runtime_mesh / "release/klipper-runtime-mesh-preview"]))
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
         phases.append(("mcu_config_payloads", [sys.executable, ROOT/"bench/mcu_config.py", upstream,

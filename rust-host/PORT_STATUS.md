@@ -430,6 +430,13 @@ justify changing either solver. No live performance claim follows.
   and re-enabled axes, bare status commands, argument precedence,
   and byte-chunk boundaries. This does not run macros, install a
   toolchanger, or configure a real printer.
+  The separately enabled runtime-mesh preview accepts one saved profile
+  and models load, clear and lookup offsets together with X/Y shaper
+  updates. All six job/tolerance combinations matched independent pinned
+  stock and captured C in all four lanes. Both explicit and SAVE_CONFIG
+  profile forms emit identical output; probing and device I/O remain
+  outside the scope. Production C is unchanged.
+
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented
@@ -489,6 +496,7 @@ justify changing either solver. No live performance claim follows.
   stages with an explicit fan configuration; this does not schedule
   PWM or imply measured RPM. No endpoints operate a real heater, probe,
   motor or tool dock.
+
 
 ## Remaining integration work
 

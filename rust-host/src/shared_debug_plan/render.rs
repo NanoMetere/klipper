@@ -185,6 +185,8 @@ type ShapedPlan = (
 
 #[cfg(feature = "runtime-shaper-preview")]
 pub(super) struct ShapeCaptureSchedule<'a> {
+    #[cfg(feature = "runtime-mesh-preview")]
+    pub(super) mesh: Option<(&'a str, &'a crate::bed_mesh::Transform)>,
     pub(super) delays: &'a [(usize, f64)],
     pub(super) positions: &'a mut Vec<(usize, usize)>,
 }
@@ -216,6 +218,8 @@ pub(super) fn shaped_plan(
     let mut positions = Vec::new();
     #[cfg(feature = "runtime-shaper-preview")]
     let (events, mut output_positions) = if let Some(ShapeCaptureSchedule {
+        #[cfg(feature = "runtime-mesh-preview")]
+        mesh,
         delays,
         positions: output_positions,
     }) = updates
@@ -227,6 +231,8 @@ pub(super) fn shaped_plan(
             geometries,
             delay,
             Some(super::RuntimePlan {
+                #[cfg(feature = "runtime-mesh-preview")]
+                mesh,
                 updates: delays,
                 positions: &mut positions,
             }),

@@ -129,6 +129,53 @@ fn collect_updates(body: &str, mut settings: ShapeSettings) -> Result<Vec<(usize
     Ok(changes)
 }
 
+macro_rules! trace_runtime {
+    ($file:ident,$start:ident,$options:ident,$geometries:ident,$wire:ident,$initial:ident,$mesh:expr) => {{
+        let shaper = Shaper::from_file_debug_config($initial).map_err(|_| TraceError::Options)?;
+        let (_, body) = $file.split_once('\n').ok_or(TraceError::Options)?;
+        let settings = ShapeSettings::from_config($initial).map_err(|_| TraceError::Options)?;
+        let shapes = collect_updates(body, settings).map_err(|_| TraceError::Options)?;
+        let mut delays = Vec::with_capacity(shapes.len());
+        let mut updates = Vec::with_capacity(shapes.len());
+        for (line, shape) in shapes {
+            let (pre, post) = shape.window(Axis::CoreXYPlus);
+            delays.push((line, pre.max(post)));
+            updates.push(shape);
+        }
+        let mut positions = Vec::with_capacity(delays.len());
+        let (events, captures, lanes) = shaped_plan(
+            $file,
+            $start,
+            $options,
+            $geometries,
+            $wire,
+            &shaper,
+            Some(ShapeCaptureSchedule {
+                #[cfg(feature = "runtime-mesh-preview")]
+                mesh: $mesh,
+                delays: &delays,
+                positions: &mut positions,
+            }),
+        )?;
+        let [a, b, z] = captured::replay(
+            &shaper,
+            &captures,
+            lanes,
+            $wire.clock_hz,
+            $wire.max_error_ticks,
+            Some(captured::ReplayUpdates {
+                positions: &positions,
+                shapes: &updates,
+            }),
+        )
+        .map_err(replay_error)?;
+        let e = solve_e(&events, $options.smooth, $wire)?;
+        Ok(MotionTrace {
+            lanes: [a, b, z, e],
+        })
+    }};
+}
+
 /// Predict bounded file-debug steps including supported X/Y shaper changes.
 /// Only the offline time model and ordered JSON records are affected.
 pub fn trace_file_debug_runtime_shaper(
@@ -139,46 +186,21 @@ pub fn trace_file_debug_runtime_shaper(
     wire: OutputOptions,
     initial: &config::Config,
 ) -> Result<MotionTrace, TraceError> {
-    let shaper = Shaper::from_file_debug_config(initial).map_err(|_| TraceError::Options)?;
-    let (_, body) = file.split_once('\n').ok_or(TraceError::Options)?;
-    let settings = ShapeSettings::from_config(initial).map_err(|_| TraceError::Options)?;
-    let shapes = collect_updates(body, settings).map_err(|_| TraceError::Options)?;
-    let mut delays = Vec::with_capacity(shapes.len());
-    let mut updates = Vec::with_capacity(shapes.len());
-    for (line, shape) in shapes {
-        let (pre, post) = shape.window(Axis::CoreXYPlus);
-        delays.push((line, pre.max(post)));
-        updates.push(shape);
-    }
-    let mut positions = Vec::with_capacity(delays.len());
-    let (events, captures, lanes) = shaped_plan(
-        file,
-        start,
-        options,
-        geometries,
-        wire,
-        &shaper,
-        Some(ShapeCaptureSchedule {
-            delays: &delays,
-            positions: &mut positions,
-        }),
-    )?;
-    let [a, b, z] = captured::replay(
-        &shaper,
-        &captures,
-        lanes,
-        wire.clock_hz,
-        wire.max_error_ticks,
-        Some(captured::ReplayUpdates {
-            positions: &positions,
-            shapes: &updates,
-        }),
-    )
-    .map_err(replay_error)?;
-    let e = solve_e(&events, options.smooth, wire)?;
-    Ok(MotionTrace {
-        lanes: [a, b, z, e],
-    })
+    trace_runtime!(file, start, options, geometries, wire, initial, None)
+}
+
+/// Same offline schedule with one validated selectable bed mesh.
+#[cfg(feature = "runtime-mesh-preview")]
+pub fn trace_file_debug_runtime_mesh(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    initial: &config::Config,
+    mesh: (&str, &crate::bed_mesh::Transform),
+) -> Result<MotionTrace, TraceError> {
+    trace_runtime!(file, start, options, geometries, wire, initial, Some(mesh))
 }
 
 #[cfg(feature = "runtime-shaper-workers")]
@@ -221,6 +243,8 @@ pub(super) fn prepare_runtime(
         wire,
         &shaper,
         Some(ShapeCaptureSchedule {
+            #[cfg(feature = "runtime-mesh-preview")]
+            mesh: None,
             delays: &delays,
             positions: &mut positions,
         }),

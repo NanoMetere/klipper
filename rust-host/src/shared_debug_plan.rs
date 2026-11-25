@@ -75,6 +75,8 @@ pub struct Options {
 // Runtime-only sideband: keep the stable motion events unchanged.
 #[cfg(feature = "runtime-shaper-preview")]
 pub(super) struct RuntimePlan<'a> {
+    #[cfg(feature = "runtime-mesh-preview")]
+    mesh: Option<(&'a str, &'a crate::bed_mesh::Transform)>,
     updates: &'a [(usize, f64)],
     positions: &'a mut Vec<(usize, usize)>,
 }
@@ -425,6 +427,12 @@ fn plan_body(
         };
         #[cfg(feature = "runtime-shaper-preview")]
         if let Some(runtime) = shape_updates.as_mut() {
+            #[cfg(feature = "runtime-mesh-preview")]
+            if let Some((name, mesh)) = runtime.mesh {
+                if preview.saved_mesh_command(pure, name, mesh)? {
+                    continue;
+                }
+            }
             let mut words = pure.split_ascii_whitespace();
             if words
                 .next()
@@ -573,6 +581,9 @@ fn plan_body(
     time.flush(&mut result, 0.25);
     Ok(result)
 }
+
+#[cfg(feature = "runtime-mesh-preview")]
+pub use runtime_shaper::trace_file_debug_runtime_mesh;
 
 #[cfg(test)]
 mod tests {
