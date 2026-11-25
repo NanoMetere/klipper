@@ -96,6 +96,8 @@ def main():
                            "--binary", examples/"tool_motion_replay", "--cli-binary", target/"release/klipper-preview"]),
         ("mesh_profile_motion", [sys.executable, ROOT/"bench/mesh_profile_motion.py", upstream,
                                  "--binary", target/"release/klipper-preview"]),
+        ("display_status", [sys.executable, ROOT/"bench/display_status.py", upstream,
+                            examples/"display_status_replay", target/"release/klipper-preview"]),
         ("fan_commands", [sys.executable, ROOT/"bench/fan_commands.py", upstream,
                           "--binary", examples/"fan_command_replay"]),
         ("fan", [sys.executable, ROOT/"bench/fan.py", upstream,

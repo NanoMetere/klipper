@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 #[path = "gcode/arcs.rs"]
 mod arcs;
+#[path = "gcode/display.rs"]
+pub mod display;
 #[path = "gcode/extended.rs"]
 mod extended;
 #[path = "gcode/transform.rs"]
@@ -104,6 +106,11 @@ impl State {
     /// Evaluate one traditional line. Reject unsupported/ambiguous input rather
     /// than silently ignoring it. Errors leave coordinate state untouched.
     pub fn apply(&mut self, line: &str) -> Result<Effect, Error> {
+        if matches!(line.trim_start().as_bytes().first(), Some(b'M' | b'm'))
+            && display::parse(line)?.is_some()
+        {
+            return Ok(Effect::None);
+        }
         let Some(words) = parse(line)? else {
             return Ok(Effect::None);
         };

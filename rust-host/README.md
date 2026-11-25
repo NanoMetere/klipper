@@ -1444,6 +1444,32 @@ wins), a smaller and less stable effect. All 21,683 timed records and
 the complete JSON file remained identical. This is additional offline
 preview processing improvement, not a real-print speed measurement.
 
+## Bounded slicer display status
+
+The offline preview accepts unnumbered `M73 P<percent>` (optional
+numeric `R` and `C` do not change displayed progress) and `M117 <text>`
+as non-motion commands. Display commands neither flush look-ahead nor
+alter the timed output. `M117` keeps its UTF-8 text and embedded
+semicolons; an empty command clears the message. Numbered/checksummed
+lines, malformed numeric fields, and extended display commands are not
+accepted by this subset.
+
+The read-only `display_status_replay` fixture supplies explicit virtual
+dispatch time, Printing/Idle state and optional virtual-SD progress.
+It clamps M73 progress and uses the stock five-second expiration
+outside Printing, then falls back to the supplied SD progress (or zero).
+It publishes only a modeled `display_status` object; the preview does
+not schedule display updates or contact a frontend or screen. The
+pinned stock display handler and dispatcher match across 294 sampled
+states; adding display commands left all 984 timed motor records
+and the complete preview JSON unchanged.
+
+```sh
+cargo build --locked --release --example display_status_replay --bin klipper-preview
+python3 bench/display_status.py /path/to/pinned/klipper \
+  target/release/examples/display_status_replay target/release/klipper-preview
+```
+
 ## Offline Classic CAN packetization
 
 `can` splits a bounded Klipper write into up-to-eight-byte data fields
