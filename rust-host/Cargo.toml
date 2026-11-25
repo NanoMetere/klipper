@@ -15,6 +15,7 @@ webhooks = ["dep:serde", "dep:serde_json"]
 python-bridge = []
 long-step-preview = []
 capture-replay = []
+file-debug-preview = ["capture-replay"]
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }

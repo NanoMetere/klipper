@@ -390,6 +390,19 @@ justify changing either solver. No live performance claim follows.
   Both file layouts reproduce their own captured stock stream exactly;
   an independent planner cannot treat packet timing as a function of
   the movement commands alone.
+  The separate `file-debug-preview` feature exposes
+  `shared_debug_plan::trace_file_debug`: it predicts both clocks from the
+  original file bytes and model, without consuming the recorded trace.
+  Across eleven pinned debug-file layouts, 376,169 ordered steps per
+  tolerance matched all stock packet rows on four lanes. Tests include
+  LF at bytes 4095/4096/4097, different feed and XYZ/retraction patterns,
+  extrusion mode switches, waits and dwell. This opt-in accepts bounded
+  ASCII LF fixtures (64 KiB, 512 lines, matching virtual-start header), not
+  a live reactor or arbitrary/virtual-SD jobs. Normal preview still has
+  the 128-line cap. `python3 bench/file_debug_cadence.py --rounds 16`
+  compares the same boundary algorithm with an isolated C shadow across
+  3,004 bounded states; it measures only the cadence test executables,
+  including trace formatting, not whole printer processing.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

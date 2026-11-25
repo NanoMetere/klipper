@@ -2,6 +2,8 @@
 //! Offline typed composition of the bounded planner and step encoders.
 //! Output is a trace only, with no connection to an MCU or printer.
 
+#[cfg(feature = "file-debug-preview")]
+use super::plan_file_debug;
 use super::{plan, Error, Event, Options};
 use crate::{
     extrusion::{append_nominal, prune_prepared, Extruder},
@@ -67,6 +69,34 @@ pub fn trace(
         return Err(TraceError::Options);
     }
     let events = plan(script, start, options, geometries)?;
+    render(events, start, options.smooth, wire)
+}
+
+/// Independently predict the bounded pinned stock-file debug output.
+/// The file includes its checked virtual-start header and original comment
+/// bytes. This is an offline simulation, not virtual SD or live timing.
+#[cfg(feature = "file-debug-preview")]
+pub fn trace_file_debug(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+) -> Result<MotionTrace, TraceError> {
+    if !(1.0..=1e9).contains(&wire.clock_hz) || wire.max_error_ticks > 200_000 {
+        return Err(TraceError::Options);
+    }
+    let events = plan_file_debug(file, start, options, geometries)?;
+    render(events, start, options.smooth, wire)
+}
+
+#[cfg_attr(not(feature = "file-debug-preview"), inline(always))]
+fn render(
+    events: Vec<Event>,
+    start: [f64; 3],
+    smooth: f64,
+    wire: OutputOptions,
+) -> Result<MotionTrace, TraceError> {
     let clock = Clock {
         last_encoded: 0,
         time_origin: 0.0,
@@ -81,7 +111,7 @@ pub fn trace(
     let mut encoders = wire
         .invert
         .map(|invert| TraceEncoder::new(clock, wire.max_error_ticks, invert));
-    let mut motor = WindowStepper::new(e, options.smooth)?;
+    let mut motor = WindowStepper::new(e, smooth)?;
     let mut xyz = Trajectory::new(1024)?;
     let mut queues = [Trajectory::new(1024)?, Trajectory::new(1024)?];
     let mut gains = Vec::new();
@@ -113,8 +143,15 @@ pub fn trace(
                     motor.rebase_after_flush(anchor)?;
                 }
             }
+            #[cfg(feature = "file-debug-preview")]
+            Event::DebugTransmit(at) => {
+                let cutoff = crate::step_clock::captured_cutoff(at, clock.hz)?;
+                for encoder in &mut encoders {
+                    encoder.flush_before(cutoff)?;
+                }
+            }
             Event::Generation { at, retirement } => {
-                let advance = Advance::new(options.smooth, &gains)?;
+                let advance = Advance::new(smooth, &gains)?;
                 let steps = motor.flush(bound.map(|i| &queues[i]), &advance, at, MAX_EVENTS)?;
                 encoders[3].push(&steps)?;
                 for phase in xyz.segments() {
@@ -194,5 +231,33 @@ mod tests {
         assert_eq!(active_only.lanes[3], detached.lanes[3]);
         assert!(!detached.lanes[3].is_empty());
         assert_ne!(active_only.lanes[0], detached.lanes[0]);
+
+        #[cfg(feature = "file-debug-preview")]
+        {
+            let debug = |script: &str| {
+                trace_file_debug(script, [10., 10., 1.], options, [&geometry; 2], output)
+            };
+            let header = "SET_KINEMATIC_POSITION X=10 Y=10 Z=1";
+            assert!(debug(&format!("{header} ; virtual origin\nM400\n")).is_ok());
+            for invalid in [
+                "M400\n".into(),
+                "SET_KINEMATIC_POSITION X=10 Y=10 Z=2\nM400\n".into(),
+                format!("{header} HOMING_AXES=XYZ\nM400\n"),
+                format!("{header}\n{header}\nM400\n"),
+                format!("{header}\nM400"),
+                format!("{header}\r\nM400\r\n"),
+                format!("{header}\n; 보호\nM400\n"),
+                format!("{header}\n;{}\nM400\n", " ".repeat(4096)),
+                format!("{header}\n{}M400\n", ";\n".repeat(511)),
+                format!("{header}\n{}M400\n", ";0123456789abcdef\n".repeat(4096)),
+            ] {
+                assert!(matches!(
+                    debug(&invalid),
+                    Err(TraceError::Plan(Error::Inputs))
+                ));
+            }
+            // Enabling the separate API must not relax the original preview.
+            assert!(run(&format!("{}M400\n", ";\n".repeat(128)), output).is_err());
+        }
     }
 }

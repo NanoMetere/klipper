@@ -27,7 +27,7 @@ XYZ_ATTRS = {"a": "at ta tc td x y z rx ry rz sv cv acc", "b": "x y z",
              "t": "cutoff", "f": "at"}
 
 
-def observe(upstream, dictionary, fixture, temp, path, zero_error, capture_batches=0):
+def run_stock(upstream, dictionary, fixture, temp, path, zero_error):
     out, log = temp / "steps.out", temp / "klippy.log"
     run = subprocess.run(
         [sys.executable, fixture / "stock_entry.py",
@@ -40,6 +40,13 @@ def observe(upstream, dictionary, fixture, temp, path, zero_error, capture_batch
     rows = run.stdout.splitlines()
     drain = [json.loads(s.split(" ", 1)[1]) for s in rows if s.startswith("FILE_OUTPUT_DRAIN ")]
     assert drain == [[str(out)]], drain
+    trace = motor_trace(upstream, dictionary, out.read_bytes())
+    assert len(trace) == 4
+    return rows, trace
+
+
+def observe(upstream, dictionary, fixture, temp, path, zero_error, capture_batches=0):
+    rows, trace = run_stock(upstream, dictionary, fixture, temp, path, zero_error)
     windows = [json.loads(s.split(" ", 1)[1]) for s in rows if s.startswith("WINDOW ")]
     assert len(windows) > 30
     q = 0
@@ -66,8 +73,6 @@ def observe(upstream, dictionary, fixture, temp, path, zero_error, capture_batch
                  "t": 2 * capture_batches, "w": capture_batches} if capture_batches else
                 {"p": 3, "f": 10, "b": 5, "a": 12, "t": 20})
     assert paused_trims == 2 and counts == expected, (capture_batches, counts)
-    trace = motor_trace(upstream, dictionary, out.read_bytes())
-    assert len(trace) == 4
     snaps = [json.loads(s.split(" ", 1)[1]) for s in rows if s.startswith("SHARED_OUTCOME ")]
     ids = {snap["oid"] for snap in snaps}
     assert len(ids) == 1
@@ -129,6 +134,66 @@ def flatten_file(rows):
         else:
             raise AssertionError(f"unexpected clock reset in offline fixture: {line}")
     return packets, expanded
+
+
+def independent_cases(source, fixture, long_case):
+    lines = long_case.splitlines(keepends=True)
+    ends = []
+    size = 0
+    for line in lines:
+        size += len(line)
+        ends.append(size)
+    chosen = max(i for i, end in enumerate(ends) if end <= 4093)
+    assert lines[chosen].startswith("G1 ")
+    for target in (4095, 4096, 4097):
+        # Shift this exact command's newline, preserving all commands.
+        padded = lines.copy()
+        padded[chosen] = lines[chosen].rstrip("\n") + " ;" + "p" * (target - ends[chosen] - 2) + "\n"
+        assert sum(map(len, padded[:chosen+1])) == target
+        yield f"byte-{target}", "".join(padded), 29992
+    for width in (20, 180):
+        padded = "".join(line + " ;" + "c" * width + "\n" for line in long_case.splitlines())
+        yield f"comment-{width}", padded, 29992
+
+    def terminal(lines):
+        return "".join(lines) + "M400\n"
+
+    wide = terminal(f"G1 X{18+(i%2)*.61:.3f} Y{39+(1-i%2)*.29:.3f} E.006 F1020\n" for i in range(240))
+    mixed = terminal(
+        f"G1 X{18+(i%2)*.28:.3f} Y{39+(1-i%2)*.67:.3f} Z{1.42+(i%3)*.017:.3f}"
+        f" E{.008 if i%11 else -.006} F480\n" for i in range(200)
+    )
+    waits = terminal(("M400\nG4 P20\n" if i in (30, 73, 181) else "") +
+        f"G1 X{18+(i%2)*.24:.3f} Y{39+(1-i%2)*.14:.3f} E.002 F600\n" for i in range(216))
+    yield "wide", source.replace("M400\n", wide, 1), 45412
+    yield "xyz-with-retract", source.replace("M400\n", mixed, 1), 45442
+    yield "absolute-then-relative", (fixture / "absolute_flow.gcode").read_text().replace(
+        "M400\n", "M83\n" + wide, 1), 45377
+    yield "waits-and-dwell", source.replace("M400\n", waits, 1), 29994
+
+
+def check_independent(a, fixture, temp, integrated, name, script, count, zero_error, hz):
+    path = temp / "independent.gcode"
+    path.write_text(script)
+    rows, trace = run_stock(a.upstream, a.dictionary, fixture, temp, path, zero_error)
+    # Actual debug-file runs must also agree without using them as inputs.
+    _, repeat = run_stock(a.upstream, a.dictionary, fixture, temp, path, zero_error)
+    assert repeat == trace, (name, zero_error)
+    meta, = [json.loads(s.split(" ", 1)[1]) for s in rows if s.startswith("XYZ_BIND ")]
+    eids = {json.loads(s.split(" ", 1)[1])["oid"] for s in rows if s.startswith("SHARED_OUTCOME ")}
+    eid, = eids
+    tol = str(meta["max_error"])
+    assert int(tol) == (0 if zero_error else int(int(hz) * 0.000025))
+    direct = subprocess.check_output([integrated, tol, "--file-debug"], input=script,
+                                     text=True, timeout=20).split("end\n")
+    assert len(direct) == 5 and direct[-1] == ""
+    observed_count = 0
+    for oid, lane in zip([*meta["oids"], eid], direct[:-1], strict=True):
+        expected, steps = flatten_file(trace[f"oid={oid}"])
+        assert expected == wire_records(lane), (name, zero_error, oid)
+        observed_count += steps
+    assert observed_count == count, (name, zero_error, observed_count)
+    print(f"Independent file debug, {name}, {tol} ticks: {count} exact stock steps")
 
 
 def main():
@@ -222,7 +287,8 @@ def main():
         subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_independent_plan.rs",
                         "--extern", f"klipper_host_protocol={lib}", "-o", plan], check=True)
         integrated = temp / "integrated"
-        subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_integrated_render.rs",
+        subprocess.run(["rustc", "--edition=2021", "-O", "--cfg", 'feature="file-debug-preview"',
+                        ROOT / "bench/shared_integrated_render.rs",
                         "--extern", f"klipper_host_protocol={lib}", "-o", integrated], check=True)
         model = json.loads((fixture / "offline_model.json").read_text())
         mt, body = temp / "model.json", temp / "body.gcode"
@@ -252,6 +318,13 @@ def main():
                 init, executable = script.split("\n", 1)
                 assert init.split(";", 1)[0].rstrip() == "SET_KINEMATIC_POSITION X=10 Y=10 Z=1"
                 if batches:
+                    direct = subprocess.check_output([integrated, tol, "--file-debug"], input=script,
+                                                     text=True, timeout=20)
+                    direct_lanes = direct.split("end\n")
+                    assert len(direct_lanes) == 5 and direct_lanes[-1] == ""
+                    for stock_axis, lane in zip([*xyz_stock_files, stock_file], direct_lanes[:-1], strict=True):
+                        expected, _ = flatten_file(stock_axis)
+                        assert expected == wire_records(lane), (name, tol, "independent debug")
                     replay = subprocess.check_output(xyz_args, input=xyz_events, text=True, timeout=20)
                     fields = replay.split("end\n")
                     assert len(fields) == 4 and fields[-1] == ""
@@ -322,6 +395,8 @@ def main():
                 assert (records, tick_count) == (xyz_counts[mode], expect_xyz_ticks)
                 print(f"Actual stock debug, max compress error {tol} ticks, XYZ, case={name}: "
                       f"{records} compressed blocks/directions, {tick_count} individual ticks, exact independently planned Rust")
+            for name, script, count in independent_cases(source, fixture, long_case[1]):
+                check_independent(a, fixture, temp, integrated, name, script, count, zero_error, hz)
         if a.shared_preview:
             def rejected(path, why):
                 r = subprocess.run([a.shared_preview, mt, path], capture_output=True, timeout=10)

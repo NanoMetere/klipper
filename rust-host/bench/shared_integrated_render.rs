@@ -23,7 +23,15 @@ fn main() {
         min_simulated_temperature: 170.,
     })
     .unwrap();
-    let output = trace(
+    #[cfg(feature = "file-debug-preview")]
+    let processor = if std::env::args().nth(2).as_deref() == Some("--file-debug") {
+        klipper_host_protocol::shared_debug_plan::trace_file_debug
+    } else {
+        trace
+    };
+    #[cfg(not(feature = "file-debug-preview"))]
+    let processor = trace;
+    let output = processor(
         &script,
         [10., 10., 1.],
         Options {

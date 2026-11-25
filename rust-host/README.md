@@ -2105,6 +2105,14 @@ physical E position rather than undoing extrusion.
 `SET_GCODE_OFFSET` uses the same virtual coordinate rules, including
 incremental adjustments. If `MOVE=1` is requested, the resulting move
 must stay within the configured virtual bounds.
+
+For developer tests, `--features file-debug-preview` enables the separate
+`shared_debug_plan::trace_file_debug` library API. It expects original ASCII
+LF bytes, including a first `SET_KINEMATIC_POSITION X=<x> Y=<y> Z=<z>`
+line matching the virtual origin and a terminal newline. The header is
+checked and never executed against a device. This models the pinned
+stock `-i` debug input timing, not virtual SD or a live printer; it does
+not alter the ordinary preview CLI.
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

@@ -2,7 +2,11 @@
 //! Prototype: independent planning for a bounded pin-free stock debug slice.
 //! It requires a caller-chosen virtual origin and does not model live pacing.
 
+#[cfg(feature = "file-debug-preview")]
+mod cadence;
 mod render;
+#[cfg(feature = "file-debug-preview")]
+pub use render::trace_file_debug;
 pub use render::{trace, MotionTrace, OutputOptions, TraceError};
 
 use crate::{
@@ -27,6 +31,8 @@ pub enum Event {
         at: f64,
         retirement: f64,
     },
+    #[cfg(feature = "file-debug-preview")]
+    DebugTransmit(f64),
     Bind {
         queue: Option<u8>,
         anchor: f64,
@@ -63,6 +69,12 @@ struct OriginClock {
     priming: bool,
     bound: Option<u8>,
     smoothing: f64,
+    #[cfg(feature = "file-debug-preview")]
+    wire: f64,
+    #[cfg(feature = "file-debug-preview")]
+    scheduled: bool,
+    #[cfg(feature = "file-debug-preview")]
+    batched: bool,
 }
 
 impl OriginClock {
@@ -97,6 +109,10 @@ impl OriginClock {
             return Err(Error::Inputs);
         }
         self.needs_steps = self.needs_steps.max(self.move_end + self.delay());
+        #[cfg(feature = "file-debug-preview")]
+        if self.batched {
+            self.scheduled = true;
+        }
         *consumed += 1;
         while deferred.first().is_some_and(|(n, _)| *n == *consumed) {
             let (_, advance) = deferred.remove(0);
@@ -126,8 +142,45 @@ impl OriginClock {
         Ok(())
     }
 
+    #[cfg(feature = "file-debug-preview")]
+    fn advance_debug(&mut self, output: &mut Vec<Event>, wire: f64, gen: f64) {
+        self.wire = self.wire.max(wire).max(gen - 0.050);
+        self.last_steps = self.last_steps.max(gen).max(self.wire);
+        output.push(Event::Generation {
+            at: self.last_steps,
+            retirement: self.last_steps - self.delay(),
+        });
+        output.push(Event::DebugTransmit(self.wire));
+    }
+
+    #[cfg(feature = "file-debug-preview")]
+    fn debug_batch(
+        &mut self,
+        output: &mut Vec<Event>,
+        mut before: impl FnMut(&mut Self, f64, &mut Vec<Event>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        if !self.scheduled {
+            return Ok(());
+        }
+        let mut cadence = cadence::Cadence::new(self.needs_steps, self.last_steps, self.wire)
+            .ok_or(Error::Inputs)?;
+        for (wire, target) in cadence.by_ref() {
+            // Timer callbacks can append pending lookahead before step
+            // generation; the cadence's limit is the pre-callback snapshot.
+            before(self, target, output)?;
+            self.advance_debug(output, wire, target);
+        }
+        self.scheduled = cadence.more_armed();
+        Ok(())
+    }
+
     fn flush(&mut self, output: &mut Vec<Event>, tail: f64) {
         self.priming = true;
+        #[cfg(feature = "file-debug-preview")]
+        if self.batched {
+            self.advance_debug(output, self.needs_steps + tail, 0.0);
+            return;
+        }
         self.last_steps = self.last_steps.max(self.needs_steps + tail);
         output.push(Event::Generation {
             at: self.last_steps,
@@ -150,6 +203,65 @@ pub fn plan(
     start: [f64; 3],
     opt: Options,
     geometries: [&Extruder; 2],
+) -> Result<Vec<Event>, Error> {
+    plan_body(script, start, opt, geometries, 0)
+}
+
+#[cfg(feature = "file-debug-preview")]
+fn plan_file_debug(
+    file: &str,
+    start: [f64; 3],
+    opt: Options,
+    geometries: [&Extruder; 2],
+) -> Result<Vec<Event>, Error> {
+    // Unlike the compact preview, the pinned debug reader batches the
+    // original bytes, including comments. Limit this mode to ASCII LF.
+    if file.len() > 65_536
+        || !file.ends_with('\n')
+        || file.lines().count() > 512
+        || file.lines().any(|line| line.len() >= 4096)
+        || !file
+            .bytes()
+            .all(|b| matches!(b, b'\n' | b'\t' | 0x20..=0x7e))
+    {
+        return Err(Error::Inputs);
+    }
+    let (header, body) = file.split_once('\n').ok_or(Error::Inputs)?;
+    let mut words = header
+        .split(';')
+        .next()
+        .ok_or(Error::Inputs)?
+        .split_ascii_whitespace();
+    if words.next() != Some("SET_KINEMATIC_POSITION") {
+        return Err(Error::Inputs);
+    }
+    for (axis, expected) in ['X', 'Y', 'Z'].into_iter().zip(start) {
+        let value = words
+            .next()
+            .and_then(|w| w.strip_prefix(axis))
+            .and_then(|s| s.strip_prefix('='))
+            .ok_or(Error::Inputs)?;
+        // Stock's extended parameter dispatch is separate from traditional
+        // G-code parsing; use this explicit fixture header only as a check.
+        let position: f64 = value.parse().map_err(|_| Error::Inputs)?;
+        if !position.is_finite() || position != expected {
+            return Err(Error::Inputs);
+        }
+    }
+    if words.next().is_some() {
+        return Err(Error::Inputs);
+    }
+    plan_body(body, start, opt, geometries, header.len() + 1)
+}
+
+#[cfg_attr(not(feature = "file-debug-preview"), inline(always))]
+fn plan_body(
+    script: &str,
+    start: [f64; 3],
+    opt: Options,
+    geometries: [&Extruder; 2],
+    #[cfg_attr(not(feature = "file-debug-preview"), allow(unused_variables))]
+    debug_prefix_bytes: usize,
 ) -> Result<Vec<Event>, Error> {
     let inside = |coords: &[f64]| {
         opt.xyz_bounds.iter().zip(coords).all(|(b, v)| {
@@ -180,6 +292,12 @@ pub fn plan(
         priming: true,
         bound: Some(0),
         smoothing: opt.smooth * 0.5,
+        #[cfg(feature = "file-debug-preview")]
+        wire: 0.0,
+        #[cfg(feature = "file-debug-preview")]
+        scheduled: false,
+        #[cfg(feature = "file-debug-preview")]
+        batched: debug_prefix_bytes != 0,
     };
     let mut result = vec![
         Event::Gain {
@@ -194,12 +312,50 @@ pub fn plan(
     let mut deferred = Vec::new();
     let mut consumed = 0;
     let mut last_was_wait = false;
+    #[cfg(feature = "file-debug-preview")]
+    let mut encoded_bytes = debug_prefix_bytes;
+    #[cfg(feature = "file-debug-preview")]
+    let batch = |time: &mut OriginClock,
+                 result: &mut Vec<Event>,
+                 preview: &mut Preview,
+                 lane: u8,
+                 consumed: &mut usize,
+                 deferred: &mut Vec<(usize, f64)>| {
+        time.debug_batch(result, |time, target, result| {
+            if !time.priming && target >= time.move_end - time.delay() - 0.001 {
+                for movement in preview.finish()? {
+                    time.profile(result, lane, movement, consumed, deferred)?;
+                }
+                time.priming = true;
+            }
+            Ok(())
+        })
+    };
+    #[cfg(feature = "file-debug-preview")]
+    let mut prev_chunk = 0;
     for (i, line) in script.lines().enumerate() {
+        #[cfg(feature = "file-debug-preview")]
+        if time.batched {
+            encoded_bytes += line.len() + 1;
+            let chunk = (encoded_bytes - 1) / 4096;
+            if chunk > prev_chunk {
+                batch(
+                    &mut time,
+                    &mut result,
+                    &mut preview,
+                    selected.active(),
+                    &mut consumed,
+                    &mut deferred,
+                )?;
+            }
+            prev_chunk = chunk;
+        }
         let pure = line.split(';').next().unwrap().trim();
         if pure.is_empty() {
             continue;
         }
-        if i >= 128 {
+        let max_lines = if debug_prefix_bytes == 0 { 128 } else { 512 };
+        if i >= max_lines {
             return Err(Error::Inputs);
         }
         let was_wait = std::mem::take(&mut last_was_wait);
@@ -319,6 +475,18 @@ pub fn plan(
     }
     if !last_was_wait || !deferred.is_empty() {
         return Err(Error::Inputs);
+    }
+    #[cfg(feature = "file-debug-preview")]
+    if time.batched {
+        batch(
+            &mut time,
+            &mut result,
+            &mut preview,
+            selected.active(),
+            &mut consumed,
+            &mut deferred,
+        )?;
+        time.flush(&mut result, 0.0);
     }
     time.flush(&mut result, 0.25);
     Ok(result)

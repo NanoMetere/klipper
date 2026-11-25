@@ -222,7 +222,7 @@ impl TraceEncoder {
     }
 
     #[cfg(feature = "capture-replay")]
-    fn flush_before(&mut self, clock: u64) -> Result<(), Error> {
+    pub(crate) fn flush_before(&mut self, clock: u64) -> Result<(), Error> {
         if self
             .filter
             .pending
