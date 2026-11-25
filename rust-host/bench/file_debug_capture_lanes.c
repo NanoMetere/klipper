@@ -85,7 +85,7 @@ render_xyz(struct lane *lane, FILE *in, FILE *out)
             char axis;
             int n;
             if (fscanf(in, " %c %d", &axis, &n) != 2
-                || (axis != 'x' && axis != 'y') || n <= 0 || n > 10)
+                || (axis != 'x' && axis != 'y') || n < 0 || n > 10)
                 goto done;
             for (int k = 0; k < n; k++)
                 if (fscanf(in, "%lf %lf", a+k, t+k) != 2)

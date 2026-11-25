@@ -422,6 +422,14 @@ justify changing either solver. No live performance claim follows.
   shared E lane, and a pinned C adapter independently replays captured
   stock windows. This does not enable Z shaping, runtime shaper updates,
   calibration, or a hardware run.
+  A separate runtime-shaper preview additionally handles bounded
+  X/Y `SET_INPUT_SHAPER` updates during file-debug prediction. In 20
+  job/tolerance combinations, independent Rust and captured native C
+  replay matched the stock motor direction and compressed packet rows
+  through shared A→B→A switches, changes in active windows, disabled
+  and re-enabled axes, bare status commands, argument precedence,
+  and byte-chunk boundaries. This does not run macros, install a
+  toolchanger, or configure a real printer.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

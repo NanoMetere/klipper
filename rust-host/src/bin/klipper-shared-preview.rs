@@ -225,6 +225,14 @@ mod shaped;
 #[allow(unused_imports)]
 pub(crate) use shaped::entry as entry_shaped;
 
+#[cfg(feature = "runtime-shaper-preview")]
+#[allow(dead_code)]
+#[path = "support/runtime_shaper_entry.rs"]
+mod runtime_shaper;
+#[cfg(feature = "runtime-shaper-preview")]
+#[allow(unused_imports)]
+pub(crate) use runtime_shaper::entry as entry_runtime_shaper;
+
 // Also included as a module by the separate opt-in binary.
 #[allow(dead_code)]
 fn main() {

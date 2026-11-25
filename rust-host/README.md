@@ -2223,6 +2223,40 @@ setups, add `--worker-rounds 120 --cores 0,1,2,3`. The C counterpart
 replays captured steps; the Rust tool starts from G-code, so their
 absolute times are not directly comparable.
 
+For G-code that changes X/Y input shaping during a tool swap, use the
+separate `runtime-shaper-preview` feature and CLI. It takes the same
+model, original G-code, and isolated `[input_shaper]` file with at least
+one X/Y shaper initially enabled. Up to 32 parameter setting commands
+may change either axis's supported type, frequency, or damping.
+Use plain `KEY=VALUE` tokens. A global `SHAPER_TYPE` takes precedence
+over axis-specific types supplied in that command, as in the pinned
+stock host. A frequency of zero disables that axis; a parameterless
+`SET_INPUT_SHAPER` leaves the trace state unchanged. Pending motion is
+generated before a new pulse schedule takes effect.
+
+```sh
+cargo run --locked --release --features runtime-shaper-preview \
+  --bin klipper-runtime-shaper-preview -- \
+  bench/shared_extruder_fixture/offline_model.json path.gcode shape.cfg
+```
+
+This serial mode emits `klipper.shared-corexy.runtime-shaper.v1`. It is
+still an offline prediction for the bounded shared-E model, not a
+macro runtime or a printer configuration tool. It does not support
+Z shaping, arbitrary parameters, includes or calibration. The fixed
+shaper and existing unshaped modes are unchanged.
+
+```sh
+python3 bench/runtime_shaper.py UPSTREAM UPSTREAM/out/klipper.dict \
+  target/release/klipper-runtime-shaper-preview
+```
+
+The test compares exact ordered Rust packets from G-code with drained
+stock and independent C replay of the captured windows, including
+shared A→B→A motion, disabling and re-enabling shaping, and byte-chunk
+boundaries. Add `--rounds 16 --cores 0` to compare complete normalized
+JSON turnaround for selected offline profiles, not live printing.
+
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

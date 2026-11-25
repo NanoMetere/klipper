@@ -150,13 +150,24 @@ pub fn trace_file_debug_shaped(
     shaper: &crate::input_shaper::Shaper,
 ) -> Result<MotionTrace, TraceError> {
     use crate::input_shaper::captured;
-    let (events, captures, lanes) = shaped_plan(file, start, options, geometries, wire, shaper)?;
+    let (events, captures, lanes) = shaped_plan(
+        file,
+        start,
+        options,
+        geometries,
+        wire,
+        shaper,
+        #[cfg(feature = "runtime-shaper-preview")]
+        None,
+    )?;
     let [a, b, z] = captured::replay(
         shaper,
         &captures,
         lanes,
         wire.clock_hz,
         wire.max_error_ticks,
+        #[cfg(feature = "runtime-shaper-preview")]
+        None,
     )
     .map_err(replay_error)?;
     let e = solve_e(&events, options.smooth, wire)?;
@@ -172,6 +183,12 @@ type ShapedPlan = (
     [(Axis, f64, bool); 3],
 );
 
+#[cfg(feature = "runtime-shaper-preview")]
+pub(super) struct ShapeCaptureSchedule<'a> {
+    pub(super) delays: &'a [(usize, f64)],
+    pub(super) positions: &'a mut Vec<(usize, usize)>,
+}
+
 #[cfg(feature = "shaped-file-debug-preview")]
 #[inline(always)]
 pub(super) fn shaped_plan(
@@ -181,6 +198,7 @@ pub(super) fn shaped_plan(
     geometries: [&Extruder; 2],
     wire: OutputOptions,
     shaper: &crate::input_shaper::Shaper,
+    #[cfg(feature = "runtime-shaper-preview")] updates: Option<ShapeCaptureSchedule<'_>>,
 ) -> Result<ShapedPlan, TraceError> {
     use crate::{input_shaper::captured::Capture, trajectory::Trapezoid};
     if !(1.0..=1e9).contains(&wire.clock_hz) || wire.max_error_ticks > 200_000 {
@@ -194,9 +212,49 @@ pub(super) fn shaped_plan(
         let (pre, post) = shaper.window(lane);
         delay.max(pre).max(post)
     });
+    #[cfg(feature = "runtime-shaper-preview")]
+    let mut positions = Vec::new();
+    #[cfg(feature = "runtime-shaper-preview")]
+    let (events, mut output_positions) = if let Some(ShapeCaptureSchedule {
+        delays,
+        positions: output_positions,
+    }) = updates
+    {
+        let events = super::plan_file_debug_with_updates(
+            file,
+            start,
+            options,
+            geometries,
+            delay,
+            Some(super::RuntimePlan {
+                updates: delays,
+                positions: &mut positions,
+            }),
+        )?;
+        (events, Some(output_positions))
+    } else {
+        (
+            super::plan_file_debug_with_delay(file, start, options, geometries, delay)?,
+            None,
+        )
+    };
+    #[cfg(not(feature = "runtime-shaper-preview"))]
     let events = super::plan_file_debug_with_delay(file, start, options, geometries, delay)?;
     let mut captures = vec![Capture::Bind(start)];
-    for event in &events {
+    #[cfg(feature = "runtime-shaper-preview")]
+    let mut positions = positions.into_iter().peekable();
+    #[cfg_attr(
+        not(feature = "runtime-shaper-preview"),
+        allow(clippy::unused_enumerate_index)
+    )]
+    for (_index, event) in events.iter().enumerate() {
+        #[cfg(feature = "runtime-shaper-preview")]
+        if let Some(output) = output_positions.as_deref_mut() {
+            while positions.peek().is_some_and(|p| p.0 == _index) {
+                let (_, which) = positions.next().ok_or(TraceError::Options)?;
+                output.push((captures.len(), which));
+            }
+        }
         match event {
             Event::Profile {
                 at, movement: p, ..

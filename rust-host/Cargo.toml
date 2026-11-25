@@ -17,6 +17,7 @@ long-step-preview = []
 capture-replay = []
 file-debug-preview = ["capture-replay"]
 shaped-file-debug-preview = ["file-debug-preview"]
+runtime-shaper-preview = ["shaped-file-debug-preview"]
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
@@ -98,3 +99,8 @@ required-features = ["webhooks", "file-debug-preview"]
 [[bin]]
 name = "klipper-shaped-file-debug-preview"
 required-features = ["webhooks", "shaped-file-debug-preview"]
+
+
+[[bin]]
+name = "klipper-runtime-shaper-preview"
+required-features = ["webhooks", "runtime-shaper-preview"]

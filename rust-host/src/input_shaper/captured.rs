@@ -109,12 +109,20 @@ impl WindowSolver {
     }
 }
 
+#[cfg(feature = "runtime-shaper-preview")]
+#[derive(Clone, Copy)]
+pub(crate) struct ReplayUpdates<'a> {
+    pub(crate) positions: &'a [(usize, usize)],
+    pub(crate) shapes: &'a [Shaper],
+}
+
 pub(crate) fn replay<const N: usize>(
     shaper: &Shaper,
     events: &[Capture],
     lanes: [(Axis, f64, bool); N],
     hz: f64,
     error: u32,
+    #[cfg(feature = "runtime-shaper-preview")] updates: Option<ReplayUpdates<'_>>,
 ) -> Result<[Vec<Command>; N], ReplayError> {
     let mut out = std::array::from_fn(|_| Vec::new());
     let clock = Clock {
@@ -133,7 +141,22 @@ pub(crate) fn replay<const N: usize>(
         let mut encoder = TraceEncoder::new(clock, error, invert);
         let mut scratch = Vec::new();
         let mut prior = 0.;
-        for event in events {
+        #[cfg(feature = "runtime-shaper-preview")]
+        let mut shaper = shaper;
+        #[cfg(feature = "runtime-shaper-preview")]
+        let mut change = 0;
+        #[cfg_attr(
+            not(feature = "runtime-shaper-preview"),
+            allow(clippy::unused_enumerate_index)
+        )]
+        for (_index, event) in events.iter().enumerate() {
+            #[cfg(feature = "runtime-shaper-preview")]
+            if let Some(ReplayUpdates { positions, shapes }) = updates {
+                while let Some(&(_, idx)) = positions.get(change).filter(|p| p.0 == _index) {
+                    shaper = shapes.get(idx).ok_or(ReplayError::Options)?;
+                    change += 1;
+                }
+            }
             match *event {
                 Capture::Bind(position) => {
                     if !timeline.segments().is_empty() {

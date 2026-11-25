@@ -5,11 +5,15 @@
 #[cfg(feature = "file-debug-preview")]
 mod cadence;
 mod render;
+#[cfg(feature = "runtime-shaper-preview")]
+mod runtime_shaper;
 #[cfg(feature = "shaped-file-debug-preview")]
 pub use render::trace_file_debug_shaped;
 pub use render::{trace, MotionTrace, OutputOptions, TraceError};
 #[cfg(feature = "file-debug-preview")]
 pub use render::{trace_file_debug, trace_file_debug_parallel};
+#[cfg(feature = "runtime-shaper-preview")]
+pub use runtime_shaper::trace_file_debug_runtime_shaper;
 #[cfg(feature = "shaped-file-debug-preview")]
 mod shaped_workers;
 #[cfg(feature = "shaped-file-debug-preview")]
@@ -66,6 +70,13 @@ pub struct Options {
     pub simulation_temp: [f64; 2],
     pub smooth: f64,
     pub initial_advance: f64,
+}
+
+// Runtime-only sideband: keep the stable motion events unchanged.
+#[cfg(feature = "runtime-shaper-preview")]
+pub(super) struct RuntimePlan<'a> {
+    updates: &'a [(usize, f64)],
+    positions: &'a mut Vec<(usize, usize)>,
 }
 
 struct OriginClock {
@@ -223,18 +234,20 @@ pub fn plan(
         0,
         #[cfg(feature = "shaped-file-debug-preview")]
         0.,
+        #[cfg(feature = "runtime-shaper-preview")]
+        None,
     )
 }
 
 #[cfg(feature = "file-debug-preview")]
 macro_rules! file_debug_planner {
-    ($name:ident $(, $shape_delay:ident)?) => {
+    ($name:ident $(, $shape_delay:ident $(, $shape_updates:ident)?)?) => {
         fn $name(
             file: &str,
             start: [f64; 3],
             opt: Options,
             geometries: [&Extruder; 2],
-            $($shape_delay: f64,)?
+            $($shape_delay: f64, $($shape_updates: Option<RuntimePlan<'_>>,)?)?
         ) -> Result<Vec<Event>, Error> {
             // Unlike the compact preview, the pinned debug reader batches the
             // original bytes, including comments. Limit this mode to ASCII LF.
@@ -275,10 +288,14 @@ macro_rules! file_debug_planner {
             }
             #[cfg(feature = "shaped-file-debug-preview")]
             let delay = 0.0 $(+ $shape_delay)?;
+            #[cfg(feature = "runtime-shaper-preview")]
+            let updates = None $($(.or($shape_updates))?)?;
             plan_body(
                 body, start, opt, geometries, header.len() + 1,
                 #[cfg(feature = "shaped-file-debug-preview")]
                 delay,
+                #[cfg(feature = "runtime-shaper-preview")]
+                updates,
             )
         }
     };
@@ -287,6 +304,8 @@ macro_rules! file_debug_planner {
 file_debug_planner!(plan_file_debug);
 #[cfg(feature = "shaped-file-debug-preview")]
 file_debug_planner!(plan_file_debug_with_delay, shape_delay);
+#[cfg(feature = "runtime-shaper-preview")]
+file_debug_planner!(plan_file_debug_with_updates, shape_delay, shape_updates);
 
 #[cfg_attr(not(feature = "file-debug-preview"), inline(always))]
 fn plan_body(
@@ -297,6 +316,7 @@ fn plan_body(
     #[cfg_attr(not(feature = "file-debug-preview"), allow(unused_variables))]
     debug_prefix_bytes: usize,
     #[cfg(feature = "shaped-file-debug-preview")] shape_delay: f64,
+    #[cfg(feature = "runtime-shaper-preview")] mut shape_updates: Option<RuntimePlan<'_>>,
 ) -> Result<Vec<Event>, Error> {
     let inside = |coords: &[f64]| {
         opt.xyz_bounds.iter().zip(coords).all(|(b, v)| {
@@ -403,6 +423,31 @@ fn plan_body(
             }
             Ok::<(), Error>(())
         };
+        #[cfg(feature = "runtime-shaper-preview")]
+        if let Some(runtime) = shape_updates.as_mut() {
+            let mut words = pure.split_ascii_whitespace();
+            if words
+                .next()
+                .is_some_and(|w| w.eq_ignore_ascii_case("SET_INPUT_SHAPER"))
+            {
+                if words.next().is_none() {
+                    last_was_wait = was_wait;
+                    continue;
+                }
+                let (index, &(_, delay)) = runtime
+                    .updates
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (line, _))| *line == i)
+                    .ok_or(Error::Inputs)?;
+                // Stock flushes pending work before updating pulse windows.
+                append(preview.finish()?, &mut time)?;
+                time.flush(&mut result, 0.);
+                time.shape_delay = delay;
+                runtime.positions.push((result.len(), index));
+                continue;
+            }
+        }
         match gcode::shared_debug_control(pure)? {
             Some(gcode::SharedDebugControl::Sync(queue)) => {
                 append(preview.finish()?, &mut time)?;

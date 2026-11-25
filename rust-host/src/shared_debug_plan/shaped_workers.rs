@@ -18,7 +18,16 @@ pub fn trace_file_debug_shaped_parallel(
     wire: OutputOptions,
     shaper: &Shaper,
 ) -> Result<MotionTrace, TraceError> {
-    let (events, captures, lanes) = shaped_plan(file, start, options, geometries, wire, shaper)?;
+    let (events, captures, lanes) = shaped_plan(
+        file,
+        start,
+        options,
+        geometries,
+        wire,
+        shaper,
+        #[cfg(feature = "runtime-shaper-preview")]
+        None,
+    )?;
     std::thread::scope(|scope| {
         let events = &events;
         let captures = &captures;
@@ -31,6 +40,8 @@ pub fn trace_file_debug_shaped_parallel(
                     [lane],
                     wire.clock_hz,
                     wire.max_error_ticks,
+                    #[cfg(feature = "runtime-shaper-preview")]
+                    None,
                 )
                 .map(|[lane]| lane)
                 .map_err(replay_error)
