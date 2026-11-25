@@ -128,7 +128,7 @@ def main():
     if a.moonraker_http:
         phases.append(("moonraker_status_frontend", [sys.executable, ROOT/"bench/moonraker_frontend.py",
                                                     a.moonraker.resolve(),
-                                                    examples/"moonraker_status_fixture"]))
+                                                    examples/"moonraker_status_fixture", "--delay-ready"]))
     if a.moonraker_job:
         phases.append(("moonraker_virtual_job", [sys.executable, ROOT/"bench/moonraker_frontend.py",
                                                 a.moonraker.resolve(), examples/"moonraker_status_fixture",

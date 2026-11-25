@@ -21,7 +21,7 @@ import uuid
 from moonraker_connection import PIN
 
 
-async def exercise(root, fixture, with_program=False):
+async def exercise(root, fixture, with_program=False, delay_ready=False):
     from moonraker.server import Server
     from moonraker.eventloop import EventLoop
     from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest
@@ -56,6 +56,15 @@ enable_object_processing: False
                 "msgspec_enabled":False,"uvloop_enabled":False}
     app_args["software_version"] = f"moonraker-fixture-{PIN[:8]}"
     server = Server(app_args,types.SimpleNamespace(set_rollover_info=lambda *a:None, set_server=lambda *a:None),EventLoop())
+    if delay_ready:
+        # Test-only: make public READY precede completed init deterministically.
+        verify = server.klippy_connection._verify_klippy_requirements
+
+        async def delayed_requirements():
+            await asyncio.sleep(.85)
+            await verify()
+
+        server.klippy_connection._verify_klippy_requirements = delayed_requirements
     offered = asyncio.Queue()
     children = []
     # Only the inbound Klippy dial is replaced. The app bootstraps ordinary
@@ -124,6 +133,10 @@ enable_object_processing: False
         assert (await state_is("startup"))["klippy_connected"]
         set_state("ready",10)
         await state_is("ready")
+        # HTTP reports ready before Moonraker finishes its own init hooks.
+        # Injecting shutdown during that interval can suppress the WebSocket
+        # notification. Exercise shutdown only after stock init completes.
+        assert await server.klippy_connection.wait_started(timeout=4)
         for i in range(30):
             try:
                 ans=await get("/printer/objects/query?toolhead=position")
@@ -230,6 +243,7 @@ enable_object_processing: False
         assert (await state_is("startup"))["klippy_connected"]
         set_state("ready",20)
         await state_is("ready")
+        assert await server.klippy_connection.wait_started(timeout=4)
         await receive(lambda v:v.get("method")=="notify_klippy_ready")
         set_state("ready",21)
         for _ in range(30):
@@ -275,6 +289,7 @@ def main():
     parser.add_argument("moonraker", type=lambda s: Path(s).resolve())
     parser.add_argument("fixture", type=lambda s: Path(s).resolve())
     parser.add_argument("--program",action="store_true",help="also stream the routed virtual job state")
+    parser.add_argument("--delay-ready", action="store_true", help="exercise a slow stock initialization callback")
     args = parser.parse_args()
     pin = subprocess.check_output(["git","-C",args.moonraker,"rev-parse","HEAD"],text=True).strip()
     if pin != PIN:
@@ -282,7 +297,7 @@ def main():
     subprocess.run(["git","-C",args.moonraker,"diff","--quiet","HEAD","--"],check=True)
     sys.path.insert(0,str(args.moonraker))
     with tempfile.TemporaryDirectory(prefix="klipper-moonraker-frontend-") as d:
-        asyncio.run(asyncio.wait_for(exercise(Path(d),args.fixture,args.program),23))
+        asyncio.run(asyncio.wait_for(exercise(Path(d),args.fixture,args.program,args.delay_ready),23))
 
 
 if __name__ == "__main__":
