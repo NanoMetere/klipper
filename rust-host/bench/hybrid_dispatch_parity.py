@@ -16,7 +16,8 @@ ODD = [
     'G0 X+1 Y-2', 'G1 X.123 Y-.2', 'G1 E--1', 'G1 F.1 Z0 X-0',
     'G1 X1 X2', 'G1 Z.1 E1E-4', 'G1 E1e-4', 'G1X2Y3', 'G1 X5  ',
     '  G1 X2', 'G1 X2 ;comment', 'G1\tX2', 'G1 V2', 'G1', 'G0 X2\nG1 Y3',
-    'G1 Y3\x00', 'G1 X2 ;😸', 'G01 X12', ' G1 Z4\r', 'N72 G1 F30*12',
+    'G1 Y3\x00', 'G1 X2 ;😸', 'G1 X2;日本語\t', 'G1 X2\u00a0;注释',
+    'G01 X12', ' G1 Z4\r', 'N72 G1 F30*12',
     'SET_GCODE_OFFSET X=2', 'M400', '', ';ignored',
 ]
 

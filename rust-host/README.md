@@ -932,9 +932,10 @@ writing are all outside the measured child-process interval.
 
 `--rust-dispatch` on the pinned debug-output benchmark recognizes
 bounded batches of canonical ASCII, space-delimited G0/G1 with unique
-X/Y/Z/E/F arguments. The Rust scanner returns only offsets; the
+X/Y/Z/E/F arguments. Bounded inline comments can follow the ASCII
+arguments, including UTF-8 text. The Rust scanner returns only offsets; the
 original Klippy handlers still validate values, plan motion, and
-produce ACKs and error responses. Comments, unsupported spellings,
+produce ACKs and error responses. Standalone comments, unsupported spellings,
 short batches, and uncertain syntax use the stock dispatcher. It is
 disabled by default and refuses an unrecognized dispatcher. It is not
 a printer installation option or proof of full plugin compatibility.
@@ -957,6 +958,16 @@ comparisons retained 43,033 exact XYZ and 57,245 shaped-extrusion
 motor records with 12,000 moves and a wait every 80 moves. The 12 paired
 elapsed medians improved 6.98% and 5.57%, respectively, versus stock.
 
+The synthetic `layered` fixture uses perimeters, infill, variable
+extrusion, retract/unretract, non-extruding travel, layer changes,
+comments and periodic waits. With 12,000 moves, support for inline
+comments and UTF-8 batches increased native dispatch coverage from
+2,992/12,000 to 11,727/12,000; all 60,602 timed motor records matched.
+Two 20-pair runs against stock changed elapsed by −4.29% and +4.81%;
+the same comparison against the prior optional scanner was −2.94% and
+−0.26%. This fixture demonstrates broader coverage, not a dependable
+whole-host speed gain for slicer-style files.
+
 ```sh
 cargo build --locked --release --features python-bridge --lib
 python3 bench/hybrid_dispatch_parity.py /path/to/pinned/klipper \
@@ -964,6 +975,9 @@ python3 bench/hybrid_dispatch_parity.py /path/to/pinned/klipper \
 taskset -c 2 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
   /path/to/pinned/klipper/out/klipper.dict target/release/libklipper_host_protocol.so \
   --rust-dispatch --moves 40000 --rounds 15 --profile shaped-extrusion --wait-interval 0
+taskset -c 2 python3 bench/hybrid_process_timing.py /path/to/pinned/klipper \
+  /path/to/pinned/klipper/out/klipper.dict target/release/libklipper_host_protocol.so \
+  --rust-dispatch --moves 12000 --rounds 20 --profile layered --wait-interval 1024 --json layered.json
 ```
 
 Step timing now retains the clock epoch until compression advances it,

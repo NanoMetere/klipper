@@ -38,7 +38,7 @@ def install(gcode, library):
                 totals["stock"] += len(commands)
             return stock(self, commands, need_ack)
         try:
-            source = "\n".join(commands).encode("ascii")
+            source = "\n".join(commands).encode("utf-8")
         except (TypeError, UnicodeError):
             totals["stock"] += len(commands)
             return stock(self, commands, need_ack)
@@ -61,7 +61,9 @@ def install(gcode, library):
                 if not field:
                     break
                 params[_FIELDS[field]] = line[row[i + 1]:row[i + 2]]
-            gcmd = factory(self, cmd, line, params, need_ack)
+            # Every accepted offset is in the ASCII prefix, before any
+            # Unicode comment. The stock handler still sees the full line.
+            gcmd = factory(self, cmd, line.rstrip(), params, need_ack)
             # Preserve the verified stock handler and ACK/error policy.
             handler = self.gcode_handlers.get(cmd, self.cmd_default)
             try:

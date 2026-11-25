@@ -41,11 +41,64 @@ shaper_freq_y: 39
 """
 
 
+def layered():
+    """Synthetic slicer-style walls, infill, retractions and travels."""
+    for layer in range(240):  # More than the harness needs at its 40k-move cap.
+        z = 1.2 + layer * .2
+        yield f"; LAYER {layer} · perimeter and infill", False
+        yield f"G1 Z{z:.3f} F900 ; layer change", True
+        yield "G1 E-.65 F1500 ; retract", True
+        yield "G0 X12 Y12 F6000 ; travel to wall", True
+        yield "G1 E.65 F1500", True
+        now = (12., 12.)
+        for n, end in enumerate(((28., 12.), (28., 28.), (12., 28.), (12., 12.))):
+            start = now
+            for j in range(1, 33):
+                point = tuple(a + (b - a) * j / 32 for a, b in zip(start, end, strict=True))
+                e = math.dist(now, point) * (.033 + n * .001)
+                comment = " ; perimeter" if j <= 20 else ""
+                yield f"G1 X{point[0]:.3f} Y{point[1]:.3f} E{e:.6f} F2100{comment}", True
+                now = point
+        yield "G1 E-.65 F1500", True
+        yield "G0 X13 Y13 F6000", True
+        yield "G1 E.65 F1500 ; unretract", True
+        now = (13., 13.)
+        for j in range(19):
+            y = 13. + j * .75
+            x = now[0]
+            if j:
+                yield f"G0 X{x:.3f} Y{y:.3f} F6000", True
+                now = x, y
+            end = 27. if j % 2 == 0 else 13.
+            for k in range(1, 9):
+                target = x + (end - x) * k / 8
+                e = abs(target - now[0]) * (.026 + .001 * (k % 3))
+                # Compact lowercase lines exercise the stock fallback.
+                if k == 8 and j % 3 == 0:
+                    yield f"g1x{target:.3f}y{y:.3f}e{e:.6f}f2700", True
+                else:
+                    comment = " ; infill" if k % 3 else ""
+                    yield f"G1 X{target:.3f} Y{y:.3f} E{e:.6f} F2700{comment}", True
+                now = target, y
+
+
 def gcode(count, profile="xyz", wait_interval=80):
     yield "SET_KINEMATIC_POSITION X=10 Y=10 Z=1"
     yield "G90"
-    if profile == "shaped-extrusion":
+    if profile != "xyz":
         yield "M83"
+    if profile == "layered":
+        n = 0
+        for line, moves in layered():
+            yield line
+            n += moves
+            if moves and wait_interval and n % wait_interval == 0:
+                yield "M400"
+            if n == count:
+                break
+        assert n == count
+        yield "M400"
+        return
     last = (10.0, 10.0, 1.0)
     for i in range(count):
         x = 10 + (i % 100) * .12
@@ -75,7 +128,7 @@ def main():
     p.add_argument("library", type=Path)
     p.add_argument("--rounds", type=int, default=9)
     p.add_argument("--moves", type=int, default=12000)
-    p.add_argument("--profile", choices=("xyz", "shaped-extrusion"), default="xyz")
+    p.add_argument("--profile", choices=("xyz", "shaped-extrusion", "layered"), default="xyz")
     p.add_argument("--wait-interval", type=int, default=80,
                    help="moves between explicit M400 waits (0 disables intermediate waits)")
     p.add_argument("--baseline-library", type=Path,
@@ -107,8 +160,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="klippy-process-time-") as d:
         root = Path(d)
         cfg, script = root / "printer.cfg", root / "input.gcode"
-        cfg.write_text(CFG + (SHAPED_EXTRUSION_CFG if a.profile == "shaped-extrusion" else ""))
+        cfg.write_text(CFG + (SHAPED_EXTRUSION_CFG if a.profile != "xyz" else ""))
         script.write_text("\n".join(gcode(a.moves, a.profile, a.wait_interval)) + "\n")
+        script_digest = hashlib.sha256(script.read_bytes()).hexdigest()
         reference = None
         for r in range(a.rounds + 1):
             for label in tuple(times)[::(1 if r % 2 == 0 else -1)]:
@@ -143,14 +197,17 @@ def main():
                 if label == "adapter" and a.rust_dispatch:
                     row = next(line for line in proc.stdout.splitlines() if line.startswith("RUST_DISPATCH_STATS "))
                     stats = json.loads(row.split(" ", 1)[1])
-                    assert stats["canonical"] == a.moves and stats["stock"] > 0, stats
+                    if a.profile == "layered":
+                        assert 0 < stats["canonical"] <= a.moves and stats["stock"] > 0, stats
+                    else:
+                        assert stats["canonical"] == a.moves and stats["stock"] > 0, stats
                     if r:
                         dispatch.append(stats)
                 if r:
                     times[label].append(elapsed)
             print(f"round {r}: all {sum(map(len, reference.values()))} motor records match", flush=True)
         # One OID per configured motor; require all of them to contribute.
-        lanes = 4 if a.profile == "shaped-extrusion" else 3
+        lanes = 4 if a.profile != "xyz" else 3
         assert len(reference) == lanes and all(len(rows) > 1 for rows in reference.values())
         motor_records = sum(map(len, reference.values()))
         for label, values in times.items():
@@ -169,8 +226,12 @@ def main():
     for label, path in entries.items():
         if path and hashlib.sha256(path.read_bytes()).hexdigest() != hashes[label]:
             raise RuntimeError(f"{label} library changed during the benchmark")
+    if dispatch:
+        print(f"Rust scanner canonical moves: {min(s['canonical'] for s in dispatch)}"
+              f"–{max(s['canonical'] for s in dispatch)} of {a.moves}")
     if a.json:
         report = {"stock_pin": pin, "profile": a.profile, "moves": a.moves,
+                  "gcode_sha256": script_digest,
                   "wait_interval": a.wait_interval, "motor_count": lanes,
                   "exact_motor_records": motor_records, "bridge_coverage": coverage,
                   "dispatch_coverage": dispatch,

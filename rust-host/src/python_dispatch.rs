@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Optional scanner for the pinned Klippy debug-only adapter.
 
-/// Scan ASCII input composed of newline-separated command rows.
+/// Scan UTF-8 input composed of newline-separated command rows.
 /// A record is one code byte (0 = stock fallback, 1 = G0, 2 = G1)
 /// followed by up to five (field ID, inclusive start, exclusive end)
 /// triples. A zero field terminates an incomplete record. No G-code
@@ -59,14 +59,17 @@ fn fast(line: &[u8], dst: &mut [u8]) {
     let mut n = 1;
     let mut seen = 0u8;
     while p < line.len() {
+        if line[p] == b';' {
+            break;
+        }
         if line[p] != b' ' {
             return;
         }
         while p < line.len() && line[p] == b' ' {
             p += 1;
         }
-        if p == line.len() {
-            return;
+        if p == line.len() || line[p] == b';' {
+            break;
         }
         let axis = match line[p] {
             b'X' => 1,
@@ -92,6 +95,9 @@ fn fast(line: &[u8], dst: &mut [u8]) {
         }
         dst[n..n + 3].copy_from_slice(&[axis, start as u8, p as u8]);
         n += 3;
+    }
+    if seen == 0 {
+        return;
     }
     if n < dst.len() {
         dst[n] = 0;
@@ -124,7 +130,6 @@ mod tests {
         for line in [
             &b" G1 X2"[..],
             b"N1 G1 X2*3",
-            b"G1 X2 ;comment",
             b"G1 X2 X3",
             b"G1 X2E-4",
             b"g1 X2",
@@ -134,6 +139,12 @@ mod tests {
             fast(line, &mut row);
             assert_eq!(row[0], 0, "{line:?}");
         }
+        fast("G1 X2 ; 주석".as_bytes(), &mut row);
+        assert_eq!(&row[..5], &[2, 1, 4, 5, 0]);
+        fast("G1 X2;주석".as_bytes(), &mut row);
+        assert_eq!(&row[..5], &[2, 1, 4, 5, 0]);
+        fast("G1 X2é ;".as_bytes(), &mut row);
+        assert_eq!(row[0], 0);
     }
 
     #[test]
