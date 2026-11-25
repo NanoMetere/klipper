@@ -250,13 +250,14 @@ def compare_runtime(upstream, executable, cli, directory, run_long=False):
     cases = [(8, False, ""), (96, False, ""), (96, True, ""),
              (96, True, "load"), (96, True, "xy"), (96, True, "zfade")]
     if run_long:
-        cases.append((96, True, "long"))
+        cases.extend(((96, True, "long"), (96, True, "long-mesh")))
     for count, named, mesh_mode in cases:
         mesh = bool(mesh_mode) and mesh_mode != "long"
-        offset = mesh_mode in ("xy", "zfade")
+        long_trace = mesh_mode.startswith("long")
+        offset = mesh_mode in ("xy", "zfade", "long-mesh")
         moves = list(line for line in long_gcode(count, True) if line.startswith("G1"))
         def block(tag):
-            if mesh_mode == "long":
+            if long_trace:
                 return [f"G1 X{10+tag*0.2+(4.4 if i%2 else 0.2):.5f} Y{14+(i%13)*.13:.5f} "
                         f"Z{.3+tag*.01:.5f} E{.05 if i%12 else -.03:.4f} F3000"
                         for i in range(count)]
@@ -312,7 +313,7 @@ def compare_runtime(upstream, executable, cli, directory, run_long=False):
                 ("T0", "BED_MESH_OFFSET Y=5.5"),
             ):
                 lines.insert(lines.index(anchor), op)
-        if mesh_mode == "zfade":
+        if mesh_mode in ("zfade", "long-mesh"):
             i = lines.index("BED_MESH_OFFSET X=7 Y=-3")
             lines[i] += " ZFADE=0.94"
             for anchor, op in (
@@ -320,7 +321,7 @@ def compare_runtime(upstream, executable, cli, directory, run_long=False):
                 ("T0", "BED_MESH_OFFSET ZFADE=3"),
             ):
                 lines.insert(lines.index(anchor), op)
-        if mesh_mode == "long":
+        if long_trace:
             old = run(lines, flags=flags)
             assert old.returncode and "EventLimit" in old.stderr and not old.stdout, old.stderr
             flags += ("--long-step-preview",)
@@ -334,7 +335,7 @@ def compare_runtime(upstream, executable, cli, directory, run_long=False):
         for i, (want, got) in enumerate(zip(expected, rows, strict=True)):
             assert want == got, (count, i, want, got)
         control = decode(run([line for line in lines if not line.startswith("SET_PRESSURE_ADVANCE")],
-                             flags=flags if mesh or mesh_mode == "long" else ()))
+                             flags=flags if mesh or long_trace else ()))
         assert result["motors"] == control["motors"]
         assert result["planned_duration_seconds"] == control["planned_duration_seconds"]
         assert all(a["commands"] != b["commands"] for a, b in
@@ -343,7 +344,7 @@ def compare_runtime(upstream, executable, cli, directory, run_long=False):
             no_offset = decode(run([line for line in lines if not line.startswith("BED_MESH_OFFSET")],
                                    flags=flags))
             assert result["motors"][2] != no_offset["motors"][2]
-        if mesh_mode == "zfade":
+        if mesh_mode in ("zfade", "long-mesh"):
             xy_only = decode(run([line.split(" ZFADE=")[0] for line in lines], flags=flags))
             assert result["motors"][2] != xy_only["motors"][2]
         if named:
@@ -353,7 +354,7 @@ def compare_runtime(upstream, executable, cli, directory, run_long=False):
             assert only_t6_removed["planned_duration_seconds"] == result["planned_duration_seconds"]
             assert only_t6_removed["extruder_lanes"][:2] == result["extruder_lanes"][:2]
             assert only_t6_removed["extruder_lanes"][2] != result["extruder_lanes"][2]
-        if mesh_mode != "long":
+        if not long_trace:
             threaded = decode(run(lines, flags=(*flags, "--lane-workers", "4")))
             assert threaded == result
         sizes = [len(lane) for lane in result["motors"]] + [

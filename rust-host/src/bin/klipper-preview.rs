@@ -405,8 +405,7 @@ fn run() -> Result<(), String> {
             || virtual_sd
             || workers.is_some()
             || initial_tool.is_some()
-            || mesh_script
-            || mesh_profile.is_some()
+            || (mesh_profile.is_some() && !mesh_script)
             || (parsed.values("toolchanger").is_some() && !multi_pressure)
             || tool_temps
                 .as_ref()

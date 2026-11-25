@@ -182,6 +182,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("upstream", type=Path, help=f"checkout at {PIN}")
     p.add_argument("--binary", type=Path, required=True)
+    p.add_argument("--long-steps", action="store_true", help="test the optional long preview binary")
     a = p.parse_args()
     upstream = a.upstream.resolve()
     fixture = ROOT/"examples/preview"
@@ -342,6 +343,67 @@ def main():
         assert constant["planned_duration_seconds"] == got["planned_duration_seconds"]
         assert constant["extruder_lanes"] != got["extruder_lanes"]
         print(f"runtime saved mesh with fixed-window pressure changes: {len(decoded)-4} exact XYZ+E stock motor records")
+
+
+        if a.long_steps:
+            def block(stage, extrude):
+                return [f"G1 X{12.0 + (8.0 if n % 2 else 0.2) + stage:.3f} "
+                        f"Y{10.0 + n % 13 * 0.21:.3f} Z{0.45 + stage * 0.17:.3f}"
+                        + (f" E{0.052 if n % 12 else -0.028:.3f}" if extrude else "") + " F2400"
+                        for n in range(72)]
+
+            for use_e, line_args, config in ((False, cmd, cfg), (True, args, e_cfg)):
+                long_lines = ["G90", *(["M83"] if use_e else []),
+                              "BED_MESH_OFFSET X=3.3 ZFADE=-0.2",
+                              f"BED_MESH_PROFILE LOAD={PROFILE}", *block(0, use_e),
+                              "BED_MESH_OFFSET X=4 Y=-1.5 ZFADE=.63",
+                              *(["SET_PRESSURE_ADVANCE ADVANCE=.071"] if use_e else []),
+                              *block(1, use_e), "BED_MESH_CLEAR", *block(2, use_e),
+                              f"BED_MESH_PROFILE LOAD={PROFILE}", "BED_MESH_OFFSET Y=2.25 ZFADE=-.31",
+                              *(["SET_PRESSURE_ADVANCE ADVANCE=.033"] if use_e else []),
+                              *block(3, use_e), "M400"]
+                path.write_text("\n".join(long_lines) + "\n")
+                capped = subprocess.run(line_args, capture_output=True)
+                assert capped.returncode and not capped.stdout and b"EventLimit" in capped.stderr, capped.stderr
+                long_cmd = [line_args[0], "--long-step-preview", *line_args[1:]]
+                new = json.loads(subprocess.check_output(long_cmd))
+                expected, duration = reference(upstream, c, config, path, runtime=True, runtime_e=use_e)
+                assert math.isclose(new["planned_duration_seconds"], duration, rel_tol=1e-12, abs_tol=1e-12)
+                assert new["mesh_script_profile"] == PROFILE and "mesh_profile" not in new
+                decoded = cli_rows(new)
+                for i, (want, row) in enumerate(zip(expected, decoded, strict=True)):
+                    assert want == row, (use_e, i, want, row)
+                if use_e:
+                    path.write_text("\n".join(line for line in long_lines
+                                                if not line.startswith("SET_PRESSURE_ADVANCE")) + "\n")
+                    control = json.loads(subprocess.check_output(long_cmd))
+                    assert control["motors"] == new["motors"]
+                    assert control["planned_duration_seconds"] == new["planned_duration_seconds"]
+                    assert control["extruder_lanes"] != new["extruder_lanes"]
+                print(f"long runtime saved mesh: {len(decoded) - (4 if use_e else 3)} exact "
+                      f"{'XYZ+E' if use_e else 'XYZ'} timed stock records")
+
+            guarded = [cmd[0], "--long-step-preview", *cmd[1:]]
+            path.write_text("G90\n")
+            for flags, reason in (
+                (["--long-step-preview", "--mesh-profile", PROFILE], b"--long-step-preview"),
+                (["--long-step-preview", "--mesh-script"], b"--mesh-script"),
+                (["--long-step-preview", "--mesh-script", "--mesh-profile", PROFILE, "--mixed-plan"],
+                 b"--long-step-preview"),
+                (["--long-step-preview", "--mesh-script", "--mesh-profile", PROFILE, "--expand-macros"],
+                 b"--long-step-preview"),
+                (["--long-step-preview", "--mesh-script", "--mesh-profile", PROFILE, "--virtual-sd"],
+                 b"--long-step-preview"),
+            ):
+                denied = subprocess.run([cmd[0], *flags, *cmd[4:]], capture_output=True)
+                assert denied.returncode and not denied.stdout and reason in denied.stderr, (flags, denied.stderr)
+            for bad in ("BED_MESH_CALIBRATE", "PROBE", "PROBE_ACCURACY", "G28",
+                        "INITIALIZE_TOOLCHANGER T=2", "BED_MESH_PROFILE LOAD=missing",
+                        f"BED_MESH_PROFILE SAVE={PROFILE}", f"BED_MESH_PROFILE REMOVE={PROFILE}",
+                        "BED_MESH_OFFSET ZFADE=1001"):
+                path.write_text(f"G90\n{bad}\n")
+                failed = subprocess.run(guarded, capture_output=True)
+                assert failed.returncode and not failed.stdout, (bad, failed.stderr)
 
 
 if __name__ == "__main__":

@@ -432,8 +432,12 @@ extruders. The aggregate upper bounds are six million crossing/commit
 events and 1,572,864 retained output records; only one lane's step queue
 and phase scratch are active at once. The existing input/trajectory
 limits are unchanged. This option rejects extra worker/initial-tool flags,
-physical toolchanger operations, mixed heater plans, saved mesh, macro
-expansion, and virtual SD. The flag-free path keeps its earlier limits.
+physical toolchanger operations, mixed heater plans, macro expansion, and
+virtual SD. Saved mesh is supported in this mode only by explicit
+`--mesh-script --mesh-profile NAME`. The script can load its selected profile,
+clear it, or change validated X/Y/ZFADE offsets. Static profile-only mesh,
+probing, homing, calibration and saving/removing profiles stay rejected.
+The flag-free path keeps its earlier limits.
 
 Pinned stock's planner, input shaper, pressure advance and C clock queue
 matched all 257,111 timed records on a 3,000-move layered path and 115,855
@@ -443,7 +447,10 @@ Rust output byte-for-byte; an XYZ fixture without an extruder and a
 script with named pressure changes matched 304,753 timed C records across
 all six lanes. Re-selecting a lane preserves its dormant extruder position;
 changing pressure on an inactive lane leaves XYZ, the other lanes and
-duration unchanged. These are compatibility tests, not printing speed
+duration unchanged. Scripted mesh fixtures that exceed the short event
+limit matched 174,305 XYZ records, 176,641 single-extruder XYZ/E records,
+and 309,466 shaped sparse-tool motor records against the pinned stock
+handler and C solver. These are compatibility tests, not printing speed
 measurements.
 
 ```sh
