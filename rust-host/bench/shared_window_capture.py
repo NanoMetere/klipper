@@ -127,6 +127,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("upstream", type=lambda s: Path(s).resolve())
     p.add_argument("--dictionary", required=True, type=lambda s: Path(s).resolve())
+    p.add_argument("--shared-preview", type=lambda s: Path(s).resolve())
     a = p.parse_args()
     actual = subprocess.check_output(["git", "-C", a.upstream, "rev-parse", "HEAD"], text=True).strip()
     assert actual == PIN
@@ -156,6 +157,8 @@ def main():
         integrated = temp / "integrated"
         subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_integrated_render.rs",
                         "--extern", f"klipper_host_protocol={lib}", "-o", integrated], check=True)
+        model = json.loads((fixture / "offline_model.json").read_text())
+        mt, body = temp / "model.json", temp / "body.gcode"
         for zero_error in (True, False):
             mode = 0 if zero_error else 1
             for name, script, e_counts, e_ticks, xyz_counts in cases:
@@ -182,6 +185,21 @@ def main():
                 full = subprocess.check_output([integrated, tol], input=executable, text=True, timeout=15)
                 lanes = full.split("end\n")
                 assert lanes[-1] == "" and len(lanes) == 5
+                if a.shared_preview:
+                    model["max_error_ticks"] = int(tol)
+                    mt.write_text(json.dumps(model))
+                    body.write_text(executable)
+                    cli = subprocess.check_output([a.shared_preview, mt, body], text=True, timeout=10)
+                    assert cli == subprocess.check_output([a.shared_preview, mt, body],
+                                                          text=True, timeout=10)
+                    preview = json.loads(cli)
+                    assert preview["schema"] == "klipper.shared-corexy.offline.v1"
+                    assert preview["lane_order"] == ["corexy_a", "corexy_b", "z", "shared_e"]
+                    assert preview["clock_hz"] == float(hz)
+                    for c_lane, expected_lane in zip(preview["lanes"], lanes[:-1], strict=True):
+                        got = [f"d {int(r['positive'])}" if r["kind"] == "direction" else
+                               "s {interval} {count} {add} {last_clock}".format(**r) for r in c_lane]
+                        assert got == wire_records(expected_lane), (name, tol)
                 for i, stock_axis in enumerate([*xyz_stock_files, stock_file]):
                     expected, _ = flatten_file(stock_axis)
                     assert expected == wire_records(lanes[i]), (name, tol, i)
@@ -210,6 +228,25 @@ def main():
                 assert (records, tick_count) == (xyz_counts[mode], 20488)
                 print(f"Actual stock debug, max compress error {tol} ticks, XYZ, case={name}: "
                       f"{records} compressed blocks/directions, {tick_count} individual ticks, exact independently planned Rust")
+        if a.shared_preview:
+            def rejected(path, why):
+                r = subprocess.run([a.shared_preview, mt, path], capture_output=True, timeout=10)
+                assert r.returncode == 2 and not r.stdout and why in r.stderr, r.stderr
+
+            model["serial"] = "unsupported"
+            mt.write_text(json.dumps(model))
+            rejected(body, b"unknown field")
+            del model["serial"]
+            mt.write_text(json.dumps(model))
+            body.write_text("G28\nM400\n")
+            rejected(body, b"Offline preview")
+            symlink = temp / "symlink.gcode"
+            symlink.symlink_to(body)
+            rejected(symlink, b"non-symlink")
+            body.write_bytes(b" " * 65_537)
+            rejected(body, b"exceeds 65536 bytes")
+            print("Standalone shared preview matched all six stock file cases; invalid inputs rejected")
+
 
 
 if __name__ == "__main__":

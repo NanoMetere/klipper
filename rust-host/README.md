@@ -2068,3 +2068,27 @@ After adding the offline bootstrap and clock codecs, a validation rerun
 measured the mixed profile at 18.02 ns/frame for the optimized Rust checker,
 36.45 for C and 43.32 for the original Rust implementation. The frame checker
 itself was not changed, and this rerun does not benchmark dictionary loading.
+
+### Standalone shared-extrusion preview
+
+`klipper-shared-preview` is a separate offline command that does not change
+the existing `klipper-preview` executable. It reads an explicit model JSON
+and G-code from ordinary files. It never reads a printer configuration,
+serial endpoint, or hardware state. The XYZ start and both extrusion
+temperatures in the JSON are simulated, not measured.
+
+From this directory, to preview the absolute-extrusion test body:
+
+```sh
+sed '1d' bench/shared_extruder_fixture/absolute_flow.gcode > /tmp/shared-body.gcode
+cargo run --locked --release --bin klipper-shared-preview -- \
+  bench/shared_extruder_fixture/offline_model.json /tmp/shared-body.gcode
+```
+
+The sample's first line is fixture-only virtual initialization. For your
+input, set the virtual start in the JSON instead of adding a homing or
+position-forcing command. Finish with M400. The model covers CoreXY with two
+logical extrusion queues and one shared E lane, fixed positive pressure
+smoothing, and motion and queue switches supported by the offline planner.
+It does not run macros, model a physical changer, or perform live pacing.
+Unsupported commands and unknown model fields fail without a trace.

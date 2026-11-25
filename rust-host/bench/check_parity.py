@@ -160,7 +160,8 @@ def main():
         phases.append(("shared_extruder_binding", [sys.executable, ROOT/"bench/shared_extruder.py",
                                                   upstream, "--dictionary", dictionary]))
         phases.append(("stock_captured_shared_axes", [sys.executable, ROOT/"bench/shared_window_capture.py",
-                                                      upstream, "--dictionary", dictionary]))
+                                                      upstream, "--dictionary", dictionary,
+                                                      "--shared-preview", target / "release/klipper-shared-preview"]))
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
         phases.append(("mcu_config_payloads", [sys.executable, ROOT/"bench/mcu_config.py", upstream,

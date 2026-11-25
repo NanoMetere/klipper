@@ -286,7 +286,9 @@ justify changing either solver. No live performance claim follows.
   reference test verifies that path record-for-record. Its bounded
   no-pacing debug planner requires a final M400 and fixed positive
   smoothing; it is not a live scheduler or physical nozzle-changer
-  support.
+  support. The separate optional `klipper-shared-preview` executable
+  exposes this typed path as four JSON streams from a strict model file
+  and a bounded G-code file; it has no printer or hardware path.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented

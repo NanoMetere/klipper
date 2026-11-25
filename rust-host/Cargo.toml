@@ -82,3 +82,7 @@ name = "mixed_tool_steps"
 [[example]]
 name = "display_status_replay"
 required-features = ["webhooks"]
+
+[[bin]]
+name = "klipper-shared-preview"
+required-features = ["webhooks"]
