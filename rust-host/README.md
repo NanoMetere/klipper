@@ -583,7 +583,7 @@ cargo run --locked --release --bin klipper-preview -- --mesh-profile test_surfac
   20000000 1 1 .2 printer.cfg rails.cfg
 ```
 
-In XYZ-only preview, `--mesh-script --mesh-profile test_surface`
+In a motion-only preview, `--mesh-script --mesh-profile test_surface`
 instead starts unmeshed and lets the script load its one allowed saved
 profile with `BED_MESH_PROFILE LOAD=test_surface` or disable compensation
 with `BED_MESH_CLEAR`. It reinterprets logical coordinates at the current
@@ -592,7 +592,11 @@ The output's `mesh_script_profile` records the allowed name, not the
 profile active at the end. A pinned stock handler comparison across
 load, clear and reload matched all 8,804 timed motor records. This mode
 rejects unknown profiles, saving/removing profiles, calibration, mixed
-heater stages, and multi-tool previews.
+heater stages, and multi-tool previews. An explicitly modeled single
+extruder can combine this with `--fixed-pressure-script --tool-temps 0:210`.
+The stock mesh and pressure callbacks together matched all 4,640 timed
+XYZ/E records across loaded, cleared and reloaded mesh states. Removing
+gain changes leaves the XYZ trace and duration unchanged.
 
 ## Inert multiple-extruder coordinates
 

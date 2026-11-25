@@ -135,9 +135,11 @@ is limited to the tested dense debug-file workload.
 - Configuration and motion: bounded Cartesians/CoreXY, stock move
   look-ahead, a bounded G-code subset, input shaping, pressure advance,
   runtime motion limits (`M204` and `SET_VELOCITY_LIMIT`), and fixed
-  saved bed meshes in the offline CLI. The XYZ-only mesh-script opt-in
-  loads or clears one allowed saved profile without flushing;
-  8,804 timed records matched stock across reloads. A motion-only
+  saved bed meshes in the offline CLI. The mesh-script opt-in loads or
+  clears one allowed profile without flushing: 8,804 XYZ records
+  matched stock. Combined with a single modeled positive fixed-window
+  extruder, 4,640 XYZ/E records matched stock across reloads and gain
+  changes. A motion-only
   job can use distinct extruder lanes for sparse physical tool IDs.
   With explicit opt-in, positive pressure-advance gain updates preserve
   the stock queue boundary and configured smoothing independently for
