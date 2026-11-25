@@ -132,6 +132,8 @@ pub(crate) struct TraceEncoder {
     direction: Option<bool>,
     epoch: Option<f64>,
     count: usize,
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    limit: usize,
 }
 
 impl TraceEncoder {
@@ -146,7 +148,17 @@ impl TraceEncoder {
             direction: None,
             epoch: None,
             count: 0,
+            #[cfg(feature = "runtime-pickup-extended-preview")]
+            limit: MAX_EVENTS,
         }
+    }
+
+    // Only the opt-in shared pickup file preview may raise the cumulative
+    // count. Batch, compressor, geometry and time bounds remain independent.
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    pub(crate) fn extended_pickup(mut self) -> Self {
+        self.limit = 262_144;
+        self
     }
 
     // The optional workers add more call sites. Keep this body shared rather
@@ -184,7 +196,17 @@ impl TraceEncoder {
     }
 
     pub(crate) fn push(&mut self, events: &[Event]) -> Result<(), Error> {
-        if events.len() > MAX_EVENTS - self.count {
+        if events.len() > {
+            #[cfg(feature = "runtime-pickup-extended-preview")]
+            {
+                self.limit
+            }
+            #[cfg(not(feature = "runtime-pickup-extended-preview"))]
+            {
+                MAX_EVENTS
+            }
+        } - self.count
+        {
             return Err(Error::Capacity);
         }
         self.count += events.len();
@@ -332,6 +354,25 @@ mod tests {
             segment_time: 0.,
             offset: f64::from(tick) / 1_000_000.,
         }
+    }
+
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    #[test]
+    fn extended_cumulative_budget_does_not_change_short_capacity() {
+        let clock = Clock {
+            last_encoded: 0,
+            time_origin: 0.,
+            hz: 20e6,
+        };
+        let hints = vec![Event::Commit; 65_536];
+        let mut ordinary = TraceEncoder::new(clock, 0, false);
+        assert_eq!(ordinary.push(&hints), Err(Error::Capacity));
+        let mut extended = TraceEncoder::new(clock, 0, false).extended_pickup();
+        for _ in 0..4 {
+            extended.push(&hints).unwrap();
+        }
+        assert_eq!(extended.push(&hints[..1]), Err(Error::Capacity));
+        assert_eq!(extended.finish().unwrap(), vec![]);
     }
 
     #[test]

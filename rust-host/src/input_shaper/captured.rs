@@ -112,6 +112,8 @@ impl WindowSolver {
 #[cfg(feature = "runtime-shaper-preview")]
 #[derive(Clone, Copy)]
 pub(crate) struct ReplayUpdates<'a> {
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    pub(crate) extended_pickup: bool,
     pub(crate) positions: &'a [(usize, usize)],
     pub(crate) shapes: &'a [Shaper],
 }
@@ -139,6 +141,10 @@ pub(crate) fn replay<const N: usize>(
             lane,
         };
         let mut encoder = TraceEncoder::new(clock, error, invert);
+        #[cfg(feature = "runtime-pickup-extended-preview")]
+        if updates.is_some_and(|u| u.extended_pickup) {
+            encoder = encoder.extended_pickup();
+        }
         let mut scratch = Vec::new();
         let mut prior = 0.;
         #[cfg(feature = "runtime-shaper-preview")]
@@ -151,7 +157,10 @@ pub(crate) fn replay<const N: usize>(
         )]
         for (_index, event) in events.iter().enumerate() {
             #[cfg(feature = "runtime-shaper-preview")]
-            if let Some(ReplayUpdates { positions, shapes }) = updates {
+            if let Some(ReplayUpdates {
+                positions, shapes, ..
+            }) = updates
+            {
                 while let Some(&(_, idx)) = positions.get(change).filter(|p| p.0 == _index) {
                     shaper = shapes.get(idx).ok_or(ReplayError::Options)?;
                     change += 1;

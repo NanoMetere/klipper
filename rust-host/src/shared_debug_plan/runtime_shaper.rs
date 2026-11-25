@@ -157,6 +157,8 @@ macro_rules! trace_runtime {
                 mesh_bank: None,
                 #[cfg(feature = "runtime-pickup-pressure-preview")]
                 dynamic_pressure: false,
+                #[cfg(feature = "runtime-pickup-extended-preview")]
+                extended_pickup: false,
                 delays: &delays,
                 positions: &mut positions,
                 #[cfg(feature = "runtime-pickup-preview")]
@@ -170,6 +172,8 @@ macro_rules! trace_runtime {
             $wire.clock_hz,
             $wire.max_error_ticks,
             Some(captured::ReplayUpdates {
+                #[cfg(feature = "runtime-pickup-extended-preview")]
+                extended_pickup: false,
                 positions: &positions,
                 shapes: &updates,
             }),
@@ -255,6 +259,8 @@ pub(super) fn prepare_runtime(
             mesh_bank: None,
             #[cfg(feature = "runtime-pickup-pressure-preview")]
             dynamic_pressure: false,
+            #[cfg(feature = "runtime-pickup-extended-preview")]
+            extended_pickup: false,
             delays: &delays,
             positions: &mut positions,
             #[cfg(feature = "runtime-pickup-preview")]
@@ -308,6 +314,8 @@ pub fn trace_file_debug_runtime_pickup(
             mesh_bank: None,
             #[cfg(feature = "runtime-pickup-pressure-preview")]
             dynamic_pressure: false,
+            #[cfg(feature = "runtime-pickup-extended-preview")]
+            extended_pickup: false,
             delays: &delays,
             positions: &mut positions,
             pressure: Some(&mut pressure),
@@ -320,6 +328,8 @@ pub fn trace_file_debug_runtime_pickup(
         wire.clock_hz,
         wire.max_error_ticks,
         Some(captured::ReplayUpdates {
+            #[cfg(feature = "runtime-pickup-extended-preview")]
+            extended_pickup: false,
             positions: &positions,
             shapes: &updates,
         }),
@@ -335,6 +345,8 @@ pub fn trace_file_debug_runtime_pickup(
         &pressure,
         wire,
         #[cfg(feature = "runtime-pickup-pressure-preview")]
+        false,
+        #[cfg(feature = "runtime-pickup-extended-preview")]
         false,
     )?;
     Ok(MotionTrace {
@@ -365,6 +377,8 @@ pub fn trace_file_debug_runtime_pickup_mesh(
         None,
         #[cfg(feature = "runtime-pickup-pressure-preview")]
         false,
+        #[cfg(feature = "runtime-pickup-extended-preview")]
+        false,
     )
 }
 
@@ -390,6 +404,8 @@ pub fn trace_file_debug_runtime_pickup_mesh_bank(
         Some(bank),
         #[cfg(feature = "runtime-pickup-pressure-preview")]
         false,
+        #[cfg(feature = "runtime-pickup-extended-preview")]
+        false,
     )
 }
 
@@ -414,6 +430,33 @@ pub fn trace_file_debug_runtime_pickup_pressure(
         None,
         Some(bank),
         true,
+        #[cfg(feature = "runtime-pickup-extended-preview")]
+        false,
+    )
+}
+
+/// Predict an offline pickup with an extended cumulative work bound.
+#[cfg(feature = "runtime-pickup-extended-preview")]
+pub fn trace_file_debug_runtime_pickup_extended(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    initial: &config::Config,
+    bank: &crate::bed_mesh::profile_bank::Bank,
+) -> Result<MotionTrace, TraceError> {
+    trace_pickup_with_mesh(
+        file,
+        start,
+        options,
+        geometries,
+        wire,
+        initial,
+        None,
+        Some(bank),
+        true,
+        true,
     )
 }
 
@@ -435,6 +478,7 @@ fn trace_pickup_with_mesh(
         &crate::bed_mesh::profile_bank::Bank,
     >,
     #[cfg(feature = "runtime-pickup-pressure-preview")] dynamic_pressure: bool,
+    #[cfg(feature = "runtime-pickup-extended-preview")] extended_pickup: bool,
 ) -> Result<MotionTrace, TraceError> {
     let shaper = Shaper::from_file_debug_config(initial).map_err(|_| TraceError::Options)?;
     let (_, body) = file.split_once('\n').ok_or(TraceError::Options)?;
@@ -462,6 +506,8 @@ fn trace_pickup_with_mesh(
             mesh_bank: bank,
             #[cfg(feature = "runtime-pickup-pressure-preview")]
             dynamic_pressure,
+            #[cfg(feature = "runtime-pickup-extended-preview")]
+            extended_pickup,
             delays: &delays,
             positions: &mut positions,
             pressure: Some(&mut pressure),
@@ -474,6 +520,8 @@ fn trace_pickup_with_mesh(
         wire.clock_hz,
         wire.max_error_ticks,
         Some(captured::ReplayUpdates {
+            #[cfg(feature = "runtime-pickup-extended-preview")]
+            extended_pickup,
             positions: &positions,
             shapes: &updates,
         }),
@@ -490,6 +538,8 @@ fn trace_pickup_with_mesh(
         wire,
         #[cfg(feature = "runtime-pickup-pressure-preview")]
         dynamic_pressure,
+        #[cfg(feature = "runtime-pickup-extended-preview")]
+        extended_pickup,
     )?;
     Ok(MotionTrace {
         lanes: [a, b, z, e],

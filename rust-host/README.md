@@ -2413,3 +2413,24 @@ absolute timings between these different interfaces. The multi-tool fixture
 `bench/long_parallel_tools.py` checks sparse T0/T2/T6 identifiers,
 inactive-tool pressure callbacks, mesh offsets and a parked extruder with
 no steps, while running the equivalent native C schedule separately.
+
+### Longer repeated shared pickup (offline)
+
+The `runtime-pickup-extended-preview` build feature adds the explicit
+`--extended-pickup` option to the mesh-bank preview. It enables the
+existing dynamic-pressure behavior, but permits up to 1,024 lines and
+262,144 cumulative encoder events per motor lane. It does not extend
+the 120-second modeled time, byte/line limits, 32 shaper updates, or
+per-batch bounds. Other modes, including ordinary dynamic pressure,
+retain their original limits. A rejected job produces no motion trace.
+
+```sh
+cargo run --locked --release --features runtime-pickup-extended-preview \
+  --bin klipper-runtime-pickup-mesh-bank-preview -- --extended-pickup \
+  MODEL.json GCODE SHAPER.cfg MESH.cfg first_surface second_surface
+```
+
+The fixture `bench/runtime_pickup_extended.py` uses repeated A/B/A
+pickups and verifies exact output against the pinned stock/C replay in
+both ordinary and zero compression-error modes. These are offline
+preview limits, not changes to Klipper's production C or hardware.

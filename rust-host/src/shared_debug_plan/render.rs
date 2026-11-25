@@ -191,6 +191,8 @@ pub(super) struct ShapeCaptureSchedule<'a> {
     pub(super) mesh_bank: Option<&'a crate::bed_mesh::profile_bank::Bank>,
     #[cfg(feature = "runtime-pickup-pressure-preview")]
     pub(super) dynamic_pressure: bool,
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    pub(super) extended_pickup: bool,
     pub(super) delays: &'a [(usize, f64)],
     pub(super) positions: &'a mut Vec<(usize, usize)>,
     #[cfg(feature = "runtime-pickup-preview")]
@@ -230,6 +232,8 @@ pub(super) fn shaped_plan(
         mesh_bank,
         #[cfg(feature = "runtime-pickup-pressure-preview")]
         dynamic_pressure,
+        #[cfg(feature = "runtime-pickup-extended-preview")]
+        extended_pickup,
         delays,
         positions: output_positions,
         #[cfg(feature = "runtime-pickup-preview")]
@@ -249,6 +253,8 @@ pub(super) fn shaped_plan(
                 mesh_bank,
                 #[cfg(feature = "runtime-pickup-pressure-preview")]
                 dynamic_pressure,
+                #[cfg(feature = "runtime-pickup-extended-preview")]
+                extended_pickup,
                 updates: delays,
                 positions: &mut positions,
                 #[cfg(feature = "runtime-pickup-preview")]
@@ -423,6 +429,7 @@ pub(super) fn solve_e_pickup(
     pressure: &[super::PressureBoundary],
     wire: OutputOptions,
     #[cfg(feature = "runtime-pickup-pressure-preview")] dynamic_pressure: bool,
+    #[cfg(feature = "runtime-pickup-extended-preview")] extended_pickup: bool,
 ) -> Result<Vec<Command>, TraceError> {
     let clock = Clock {
         last_encoded: 0,
@@ -431,6 +438,10 @@ pub(super) fn solve_e_pickup(
     };
     let mut e = WindowStepper::new_pickup(wire.step_distances[3], smooth)?;
     let mut encoder = TraceEncoder::new(clock, wire.max_error_ticks, wire.invert[3]);
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    if extended_pickup {
+        encoder = encoder.extended_pickup();
+    }
     let mut queues = [Trajectory::new(1024)?, Trajectory::new(1024)?];
     let mut gains = Vec::new();
     let mut bound = None;

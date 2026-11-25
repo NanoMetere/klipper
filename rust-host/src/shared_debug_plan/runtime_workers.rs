@@ -23,6 +23,8 @@ pub fn trace_file_debug_runtime_shaper_parallel(
         for lane in work.lanes {
             let result = std::thread::Builder::new().spawn_scoped(scope, move || {
                 let updates = captured::ReplayUpdates {
+                    #[cfg(feature = "runtime-pickup-extended-preview")]
+                    extended_pickup: false,
                     positions: &work.positions,
                     shapes: &work.updates,
                 };

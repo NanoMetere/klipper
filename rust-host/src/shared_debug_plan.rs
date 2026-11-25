@@ -81,6 +81,8 @@ pub(super) struct RuntimePlan<'a> {
     mesh_bank: Option<&'a crate::bed_mesh::profile_bank::Bank>,
     #[cfg(feature = "runtime-pickup-pressure-preview")]
     dynamic_pressure: bool,
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    extended_pickup: bool,
     updates: &'a [(usize, f64)],
     positions: &'a mut Vec<(usize, usize)>,
     #[cfg(feature = "runtime-pickup-preview")]
@@ -264,11 +266,20 @@ macro_rules! file_debug_planner {
             geometries: [&Extruder; 2],
             $($shape_delay: f64, $($shape_updates: Option<RuntimePlan<'_>>,)?)?
         ) -> Result<Vec<Event>, Error> {
+            #[cfg(feature = "runtime-pickup-extended-preview")]
+            let extended_pickup = false $($(
+                || $shape_updates.as_ref().is_some_and(|plan| plan.extended_pickup)
+            )?)?;
             // Unlike the compact preview, the pinned debug reader batches the
             // original bytes, including comments. Limit this mode to ASCII LF.
             if file.len() > 65_536
                 || !file.ends_with('\n')
-                || file.lines().count() > 512
+                || file.lines().count() > {
+                    #[cfg(feature = "runtime-pickup-extended-preview")]
+                    if extended_pickup { 1024 } else { 512 }
+                    #[cfg(not(feature = "runtime-pickup-extended-preview"))]
+                    512
+                }
                 || file.lines().any(|line| line.len() >= 4096)
                 || !file
                     .bytes()
@@ -466,7 +477,21 @@ fn plan_body(
         if pure.is_empty() {
             continue;
         }
-        let max_lines = if debug_prefix_bytes == 0 { 128 } else { 512 };
+        let max_lines = if debug_prefix_bytes == 0 {
+            128
+        } else {
+            #[cfg(feature = "runtime-pickup-extended-preview")]
+            if shape_updates
+                .as_ref()
+                .is_some_and(|plan| plan.extended_pickup)
+            {
+                1024
+            } else {
+                512
+            }
+            #[cfg(not(feature = "runtime-pickup-extended-preview"))]
+            512
+        };
         if i >= max_lines {
             return Err(Error::Inputs);
         }
@@ -711,6 +736,9 @@ pub use runtime_shaper::trace_file_debug_runtime_pickup_mesh_bank;
 
 #[cfg(feature = "runtime-pickup-pressure-preview")]
 pub use runtime_shaper::trace_file_debug_runtime_pickup_pressure;
+
+#[cfg(feature = "runtime-pickup-extended-preview")]
+pub use runtime_shaper::trace_file_debug_runtime_pickup_extended;
 
 #[cfg(test)]
 mod tests {

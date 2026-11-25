@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::*;
+#[cfg(feature = "runtime-pickup-extended-preview")]
+use klipper_host_protocol::shared_debug_plan::trace_file_debug_runtime_pickup_extended;
 #[cfg(feature = "runtime-pickup-pressure-preview")]
 use klipper_host_protocol::shared_debug_plan::trace_file_debug_runtime_pickup_pressure;
 use klipper_host_protocol::{
@@ -14,6 +16,8 @@ fn run() -> Result<(), String> {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
     if args.len() == 1 && args[0] == "--help" {
         println!("{HELP}");
+        #[cfg(feature = "runtime-pickup-extended-preview")]
+        println!("Use --extended-pickup for the extended offline motion preview (includes dynamic pressure).");
         #[cfg(feature = "runtime-pickup-pressure-preview")]
         println!(
             "Optional --dynamic-pressure before MODEL.json enables bounded SMOOTH_TIME updates."
@@ -21,6 +25,12 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let args = &args[..];
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    let (extended_pickup, args) = if args.first().is_some_and(|x| x == "--extended-pickup") {
+        (true, &args[1..])
+    } else {
+        (false, args)
+    };
     #[cfg(feature = "runtime-pickup-pressure-preview")]
     let (dynamic_pressure, args) = if args.first().is_some_and(|x| x == "--dynamic-pressure") {
         (true, &args[1..])
@@ -59,6 +69,12 @@ fn run() -> Result<(), String> {
     #[cfg(feature = "runtime-pickup-pressure-preview")]
     let trace = if dynamic_pressure {
         trace_file_debug_runtime_pickup_pressure
+    } else {
+        trace
+    };
+    #[cfg(feature = "runtime-pickup-extended-preview")]
+    let trace = if extended_pickup {
+        trace_file_debug_runtime_pickup_extended
     } else {
         trace
     };
