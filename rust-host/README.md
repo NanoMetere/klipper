@@ -831,9 +831,22 @@ simulated duration matched each round. Median process CPU time was
 7.742 ms stock, 5.332 ms previous Rust, and 4.842 ms optimized Rust
 (9% less than previous Rust, 37% less than stock).
 
+The pulse sampler now retains a reference to the current trajectory
+phase and only looks it up again when crossing a boundary. Pulse order
+and floating-point operations are unchanged. Two independent single-CPU,
+35-round runs with prior Rust at `ab3f1ac7a366171cf9f681e04d54faf601c9ee58`
+gave 5.123 → 4.906 ms and 4.691 → 4.557 ms median CPU (4.2% and 2.9%
+lower). Stock was 8.450 and 7.595 ms respectively. All 6,835 records and
+11.342102983 simulated seconds matched in all rounds. This is not a
+benchmark of the full Klippy host or of physical print time.
+The complete offline preview CLI, including parsing and JSON output, saw
+paired elapsed changes of +0.1% and −2.3% across two 40-round runs of
+2,500 three-tool moves. All 21,683 output records were byte-identical.
+That test did not establish a repeatable CLI-wide gain from this change.
+
 ```sh
 taskset -c 2 python3 bench/machine_trace.py /path/to/pinned/klipper \
-  --rounds 30 --shape-timing --baseline-rust /path/to/baseline/rust-host
+  --rounds 35 --shape-timing --baseline-rust /path/to/baseline/rust-host
 ```
 
 The optional Python/Rust look-ahead adapter reuses aligned per-thread
@@ -1466,8 +1479,12 @@ drives an actual virtual Rust Program and checks HTTP and WebSocket
 views of its temperature gate, routed motion proof and fan demand.
 A partial synthetic peer receipt leaves the state unchanged. Complete
 synthetic evidence updates the visible tool and fan and opens the next
-temperature gate. The fixture's controls never become Moonraker
-endpoints and are not instructions for a real printer.
+temperature gate. The same exercise checks the config and filtered
+`fan.speed` subscription used by KlipperScreen's fan panel, with 0%
+at startup, a 40% update and a fresh 0% after reconnect. RPM is null
+because this is modeled demand, not fan feedback. The fixture does not
+launch KlipperScreen or implement fan control. Its controls never
+become Moonraker endpoints and cannot operate a printer.
 
 ```sh
 python3 bench/moonraker_frontend.py "$moonraker" \

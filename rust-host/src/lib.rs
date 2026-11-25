@@ -115,12 +115,8 @@ static CRC_TABLES: [[u16; 256]; 4] = crc_tables();
 
 fn crc16(bytes: &[u8]) -> [u8; 2] {
     let mut crc = 0xffffu16;
-    let blocks = bytes.chunks_exact(4);
-    let remaining = blocks.remainder();
-    for block in blocks {
-        let [a, b, c, d] = *block else {
-            unreachable!("four-byte chunk")
-        };
+    let (blocks, remaining) = bytes.as_chunks::<4>();
+    for &[a, b, c, d] in blocks {
         crc = CRC_TABLES[3][(a ^ crc as u8) as usize]
             ^ CRC_TABLES[2][(b ^ (crc >> 8) as u8) as usize]
             ^ CRC_TABLES[1][c as usize]

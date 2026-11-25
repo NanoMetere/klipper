@@ -91,17 +91,18 @@ impl Pulses {
         time: f64,
         axis: usize,
     ) -> Result<f64, Error> {
-        let nominal = |i, t| {
-            let segment = phases.pick(i);
+        let nominal = |segment: &Segment, t| {
             let distance = (segment.start_velocity + segment.half_acceleration * t) * t;
             segment.position[axis] + segment.direction[axis] * distance
         };
+        let current = phases.pick(index);
         if self.len == 0 {
-            return Ok(nominal(index, time));
+            return Ok(nominal(current, time));
         }
         let mut value = 0.0;
         let mut i = index;
         let mut t = time;
+        let mut segment = current;
         let mut budget = MAX_PHASES;
         for pulse in self.values[..self.split].iter().rev() {
             t += pulse.time;
@@ -111,24 +112,27 @@ impl Pulses {
                 }
                 budget = budget.checked_sub(1).ok_or(Error::Time)?;
                 i -= 1;
-                t += phases.pick(i).duration;
+                segment = phases.pick(i);
+                t += segment.duration;
             }
-            value += pulse.amplitude * nominal(i, t);
+            value += pulse.amplitude * nominal(segment, t);
             t -= pulse.time;
         }
         i = index;
         t = time;
+        segment = current;
         for pulse in &self.values[self.split..self.len] {
             t += pulse.time;
-            while t > phases.pick(i).duration {
+            while t > segment.duration {
                 if i >= phases.segments.len() as isize {
                     return Err(Error::Time);
                 }
                 budget = budget.checked_sub(1).ok_or(Error::Time)?;
-                t -= phases.pick(i).duration;
+                t -= segment.duration;
                 i += 1;
+                segment = phases.pick(i);
             }
-            value += pulse.amplitude * nominal(i, t);
+            value += pulse.amplitude * nominal(segment, t);
             t -= pulse.time;
         }
         value.is_finite().then_some(value).ok_or(Error::Time)

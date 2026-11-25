@@ -137,7 +137,7 @@ enable_object_processing: False
         assert ans["status"]=={"toolhead":{"position":[10,2,3,0]}},ans
         objects = {"webhooks", "toolhead"}
         if with_program:
-            objects.update(("virtual_mixed_job", "virtual_fixture"))
+            objects.update(("configfile", "fan", "virtual_mixed_job", "virtual_fixture"))
         assert set((await get("/printer/objects/list"))["objects"]) == objects
         ws=await websocket_connect(HTTPRequest(base.replace("http:","ws:")+"/websocket",headers=headers))
         async def receive(predicate):
@@ -163,27 +163,40 @@ enable_object_processing: False
                                 {"position":[position,2,3,0]})
             assert "position" in frame["params"][0]["toolhead"]
         if with_program:
+            # KlipperScreen reads the fan config and subscribes to fan.speed.
+            # Test only this read-only protocol contract, not the GTK client.
+            fan_query = "/printer/objects/query?configfile=config&fan"
+            def check_fan(status, speed):
+                assert "fan" in status["configfile"]["config"], status
+                assert status["fan"] == {"speed": speed, "rpm": None}, status
+            check_fan((await get(fan_query))["status"], 0.0)
             await ws.write_message(json.dumps({
                 "jsonrpc":"2.0","id":100,"method":"printer.objects.subscribe",
-                "params":{"objects":{"virtual_mixed_job":None,"virtual_fixture":None}},
+                "params":{"objects":{"virtual_mixed_job":None,"virtual_fixture":None,
+                                     "fan":["speed"]}},
             }))
             subscribed=await receive(lambda v:v.get("id")==100)
             initial=subscribed["result"]["status"]["virtual_mixed_job"]
             assert initial["mode"]=="simulation" and initial["state"]=="ready"
             assert initial["active_tool"]==2 and initial["peer_proof"] is None
+            assert subscribed["result"]["status"]["fan"] == {"speed": 0.0}
             for step in (1,2,3,4,5):
                 set_program(step)
                 pushed=await receive(lambda v: v.get("method")=="notify_status_update" and
                                     v.get("params") and v["params"][0].get("virtual_fixture",{})
                                     .get("fixture_step")==step)
-                diff = pushed["params"][0].get("virtual_mixed_job",{})
+                changed = pushed["params"][0]
+                diff = changed.get("virtual_mixed_job",{})
+                if step < 5:
+                    assert "fan" not in changed, changed
                 if step==3:
                     assert diff["state"]=="waiting_for_motion_proof"
                     assert [r["peer"] for r in diff["peer_proof"]["requirements"]]==[0,1]
                 elif step==4:
                     assert not diff
                 elif step==5:
-                    assert diff["active_tool"]==5 and diff["print_fan_demand"]==0.5
+                    assert diff["active_tool"]==5 and diff["print_fan_demand"]==0.4
+                    assert changed["fan"] == {"speed": 0.4}, changed
                     assert diff["state"]=="waiting_for_temperature" and diff["peer_proof"] is None
                 row=await get("/printer/objects/query?virtual_mixed_job")
                 job=row["status"]["virtual_mixed_job"]
@@ -196,10 +209,11 @@ enable_object_processing: False
                     requirements=job["peer_proof"]["requirements"]
                     assert [(p["peer"],p["accepted_commands"]) for p in requirements]==[(0,10),(1,3)]
                 if step<5:
-                    assert job["active_tool"]==2 and job["print_fan_demand"] is None
+                    assert job["active_tool"]==2 and job["print_fan_demand"] == 0.0
                 else:
-                    assert job["active_tool"]==5 and job["print_fan_demand"]==0.5
+                    assert job["active_tool"]==5 and job["print_fan_demand"]==0.4
                     assert job["heater_targets_c"]==[210.,220.] and job["peer_proof"] is None
+            check_fan((await get(fan_query))["status"], 0.4)
             print("Moonraker streamed real virtual Program states; held partial proof, "
                   "then updated tool, cached fan demand and heater target",flush=True)
         await subscribe(1,10)
@@ -226,6 +240,18 @@ enable_object_processing: False
         else:
             raise AssertionError("reconnected Rust status not updated")
         await subscribe(2,21,require_clean=True)
+        if with_program:
+            check_fan((await get(fan_query))["status"], 0.0)
+            await ws.write_message(json.dumps({
+                "jsonrpc":"2.0","id":101,"method":"printer.objects.subscribe",
+                "params":{"objects":{"fan":["speed"], "toolhead":["position"]}},
+            }))
+            frame = await receive(lambda v: v.get("id") == 101)
+            assert frame["result"]["status"] == {
+                "fan": {"speed": 0.0}, "toolhead": {"position": [21, 2, 3, 0]}
+            }, frame
+            print("Read-only fan contract: HTTP 0%/40%, a projected WebSocket change, "
+                  "and a fresh 0% on reconnect; no tachometer or control", flush=True)
         set_state("ready",22)
         await updated(22)
         print("Moonraker read-only frontend: auth, HTTP readiness/query, WebSocket changes, "

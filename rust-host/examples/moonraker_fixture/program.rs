@@ -18,7 +18,7 @@ use std::{collections::BTreeMap, io};
 
 const HZ: f64 = 20e6;
 const SCRIPT: &str =
-    "M109 S210\nG90\nM83\nG1 X4 E.1 F800\nM106 S127.5\nT5\nM109 S220\nG1 Y5 E.2 F800\n";
+    "M107\nM109 S210\nG90\nM83\nG1 X4 E.1 F800\nM106 S102\nT5\nM109 S220\nG1 Y5 E.2 F800\n";
 
 fn err(e: impl std::fmt::Debug) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("{e:?}"))
@@ -191,6 +191,20 @@ impl FixtureProgram {
 
     pub fn publish(&self, source: &mut Snapshot) {
         assert!(self.program.publish_status(source));
+        // Stock-shaped read-only fields for frontend compatibility. Speed
+        // is simulated demand; there is no tachometer, PWM or command API.
+        for (name, data) in [
+            (
+                "configfile",
+                json!({"config":{"fan":{"pin":"virtual"}}, "warnings":[]}),
+            ),
+            (
+                "fan",
+                json!({"speed":self.program.fan_demand().unwrap_or(0.0), "rpm":null}),
+            ),
+        ] {
+            assert!(source.set_object(name.into(), data.as_object().unwrap().clone()));
+        }
         let extra = json!({"fixture_step":self.step});
         assert!(source.set_object("virtual_fixture".into(), extra.as_object().unwrap().clone()));
     }

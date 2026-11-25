@@ -13,7 +13,7 @@ them as changes in the elapsed time of a real print.
 
 | Workload | Baseline and result | Meaning |
 | --- | --- | --- |
-| Shaped CoreXY + pressure advance, 6,835 exact records | Stock Python+C 7.789 ms → Rust 4.750 ms median CPU; repeat 7.699 → 4.772 ms | 38–39% less CPU for the offline config-to-step kernel |
+| Shaped CoreXY + pressure advance, 6,835 exact records | Stock Python+C 8.450/7.595 ms, prior Rust 5.123/4.691 ms, current Rust 4.906/4.557 ms median CPU | 3–4% less CPU vs prior Rust and 40–42% vs stock for this offline config-to-step workload; not a whole-host benchmark |
 | Klippy move look-ahead, 25,836 moves including Python/Rust conversions | Stock 48.309 → bridge 44.712 ms and stock 46.044 → bridge 42.003 ms median CPU | 7–9% less CPU in the captured queue flush seam |
 | Whole pinned Klippy process, XYZ or shaped extrusion | 1,200 to 40,000 moves, every timed motor record equal; run-level paired elapsed changes vary in direction | No repeatable end-to-end speedup demonstrated from the optional bridge |
 | Offline Rust CLI, 2,500 CoreXY moves | Prior Rust CLI 35.136 → 7.100 ms median elapsed | About 80% less elapsed time after streaming identical JSON to a file |
@@ -80,7 +80,12 @@ but cannot measure printer I/O or physical print duration.
   installation are not verified. The same loopback fixture can stream
   a real simulated Rust program's read-only proof, tool, fan demand and
   temperature gate; the driver supplies only synthetic observations
-  and exposes no control endpoint. The mixed preview provides separate
+  and exposes no control endpoint. The fixture provides read-only
+  objects for the fan configuration and speed used
+  by frontend subscribers, with 0% on startup, 40% when virtual
+  demand changes, and 0% after a fresh peer reconnect. Tachometer RPM
+  is unavailable; no frontend UI or fan hardware is exercised. The
+  mixed preview provides separate
   motion queues around typed heater boundaries and never infers that
   a real heater is ready. The GPIO-free firmware exercise additionally
   checks that both temperature evidence and prior motion completion
