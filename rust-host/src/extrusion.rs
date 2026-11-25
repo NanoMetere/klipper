@@ -110,6 +110,16 @@ pub fn append_prepared(queue: &mut Trajectory, move_: Trapezoid) -> Result<(), t
     queue.append_signed(move_)
 }
 
+/// Remove retired prepared E phases after a completed generation window.
+/// The caller owns the cutoff and must retain the neighbors needed for
+/// future pressure smoothing. This does not shift the queue's clock.
+pub fn prune_prepared(queue: &mut Trajectory, cutoff: f64) -> Result<usize, trajectory::Error> {
+    if !(-1.0..=1e12).contains(&cutoff) {
+        return Err(trajectory::Error::Invalid);
+    }
+    Ok(queue.discard_ended_before(cutoff))
+}
+
 /// Add signed extrusion phases to a dedicated timeline (X is the E axis).
 /// Caller supplies the shared scheduled time and tracks dwells/XYZ-only
 /// blocks. This intentionally models no pressure advance.
@@ -161,6 +171,32 @@ mod tests {
             min_simulated_temperature: 170.,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn retire_only_ended_phases_and_keep_stock_idle_gap_for_a_fresh_queue() {
+        let mut queue = Trajectory::new(8).unwrap();
+        let phase = |at, start| Trapezoid {
+            at,
+            phase_sec: [0.0, 0.25, 0.0],
+            start: [start, 0.0, 0.0],
+            direction: [1.0, 0.0, 0.0],
+            start_velocity: 4.0,
+            cruise_velocity: 4.0,
+            accel: 0.0,
+        };
+        append_prepared(&mut queue, phase(2.0, 0.0)).unwrap();
+        assert_eq!(
+            prune_prepared(&mut queue, f64::NAN),
+            Err(trajectory::Error::Invalid)
+        );
+        assert_eq!(prune_prepared(&mut queue, 2.0), Ok(1));
+        assert_eq!(queue.segments()[0].at, 2.0);
+        assert_eq!(prune_prepared(&mut queue, 2.25), Ok(1));
+        assert!(queue.segments().is_empty());
+        append_prepared(&mut queue, phase(5.0, 1.0)).unwrap();
+        let idle = &queue.segments()[0];
+        assert_eq!((idle.at, idle.duration, idle.position[0]), (4.0, 1.0, 1.0));
     }
 
     #[test]

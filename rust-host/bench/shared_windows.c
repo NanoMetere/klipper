@@ -26,7 +26,7 @@ struct stepper_kinematics *extruder_stepper_alloc(void);
 void extruder_stepper_free(struct stepper_kinematics *sk);
 void extruder_set_pressure_advance(struct stepper_kinematics *, double, double, double);
 
-int main(void)
+int main(int argc, char *argv[])
 {
     const double dist = 22.17 / 3200.;
 #ifdef WIRE
@@ -34,8 +34,13 @@ int main(void)
     list_init(&messages);
     struct stepcompress *sink = stepcompress_alloc(&messages);
     stepcompress_fill(sink, 1, 0, 3, 4);
-    stepcompress_set_time(sink, 0., 20000000.);
+    double hz = argc == 2 ? strtod(argv[1], NULL) : 20000000.;
+    if (!(hz > 0.))
+        return 2;
+    stepcompress_set_time(sink, 0., hz);
 #else
+    (void)argc;
+    (void)argv;
     struct stepcompress raw = {0};
     struct stepcompress *sink = &raw;
 #endif
@@ -64,6 +69,12 @@ int main(void)
                 itersolve_set_position(sk, x, 0., 0.);
             itersolve_set_trapq(sk, q >= 0 ? queue[q] : NULL, dist);
             printf("bind %d %.17g\n", q, sk->commanded_pos);
+        } else if (op == 't') {
+            int q;
+            double before, clear;
+            if (scanf("%d %lf %lf", &q, &before, &clear) != 3 || q < 0 || q > 1)
+                return 2;
+            trapq_finalize_moves(queue[q], before, clear);
         } else if (op == 'f') {
             double end;
             if (scanf("%lf", &end) != 1)

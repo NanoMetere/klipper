@@ -77,6 +77,12 @@ impl Trajectory {
         &self.segments
     }
 
+    pub(crate) fn discard_ended_before(&mut self, cutoff: f64) -> usize {
+        let first = self.segments.partition_point(|m| m.end() <= cutoff);
+        self.segments.drain(..first);
+        first
+    }
+
     /// Append the kinematic portion of a verified look-ahead profile.
     /// Tiny negative cruise durations from zero-cruise rounding are normalized;
     /// genuinely negative or non-finite intervals are rejected.

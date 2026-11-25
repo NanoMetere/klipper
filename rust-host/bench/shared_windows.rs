@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use klipper_host_protocol::{
-    extrusion::append_prepared,
+    extrusion::{append_prepared, prune_prepared},
     pressure_advance::{Advance, WindowStepper},
     step_clock::{encode_trace, Clock, Command},
     step_times::Event,
@@ -9,7 +9,11 @@ use klipper_host_protocol::{
 use std::io::{self, BufRead};
 
 fn main() {
-    let wire = std::env::args().nth(1).is_some_and(|s| s == "--wire");
+    let mut args = std::env::args().skip(1);
+    let wire = args.next().is_some_and(|s| s == "--wire");
+    let hz = args
+        .next()
+        .map_or(20_000_000., |s| s.parse::<f64>().unwrap());
     let mut all = Vec::new();
     let mut motor = WindowStepper::new(22.17 / 3200., 0.04).unwrap();
     let mut queues = [
@@ -47,6 +51,10 @@ fn main() {
                 }
                 println!("bind {q} {:.17e}", motor.commanded());
             }
+            "t" => {
+                prune_prepared(&mut queues[fields[1].parse::<usize>().unwrap()], values(2))
+                    .unwrap();
+            }
             "f" => {
                 let end = values(1);
                 let a = Advance::new(0.04, &gains).unwrap();
@@ -81,7 +89,7 @@ fn main() {
         let clock = Clock {
             last_encoded: 0,
             time_origin: 0.,
-            hz: 20_000_000.,
+            hz,
         };
         for command in encode_trace(clock, &all, 0, false).unwrap() {
             match command {

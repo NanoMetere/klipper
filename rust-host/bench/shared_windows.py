@@ -55,6 +55,29 @@ def compare(stock, rust):
     return dict(total)
 
 
+def wire_records(text):
+    return [line for line in text.splitlines() if line.startswith(("s ", "d "))]
+
+
+def build(upstream, d):
+    helper = upstream / "klippy/chelper"
+    c = ROOT / "bench/shared_windows.c"
+    stock_raw, stock_wire, rust = (d / name for name in ("stock-raw", "stock-wire", "rust"))
+    lib = d / "libklipper_host_protocol.rlib"
+    common = ["cc", "-O3", "-I", helper, c,
+              *(helper / f"{src}.c" for src in ("itersolve", "trapq", "kin_extruder"))]
+    subprocess.run([*common, "-o", stock_raw], check=True)
+    subprocess.run([*common, "-DWIRE",
+                    *(helper / f"{src}.c" for src in ("stepcompress", "msgblock", "pyhelper")),
+                    "-lm", "-o", stock_wire], check=True)
+    subprocess.run(["rustc", "--edition=2021", "-O", "--crate-type", "rlib",
+                    "--crate-name", "klipper_host_protocol", ROOT / "src/lib.rs",
+                    "-o", lib], check=True)
+    subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_windows.rs",
+                    "--extern", f"klipper_host_protocol={lib}", "-o", rust], check=True)
+    return stock_raw, stock_wire, rust
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("upstream", type=lambda path: Path(path).resolve())
@@ -62,23 +85,8 @@ def main():
     assert subprocess.check_output(["git", "-C", a.upstream, "rev-parse", "HEAD"],
                                    text=True).strip() == PIN
     subprocess.run(["git", "-C", a.upstream, "diff", "--quiet", "HEAD", "--"], check=True)
-    helper = a.upstream / "klippy/chelper"
-    c = ROOT / "bench/shared_windows.c"
     with tempfile.TemporaryDirectory(prefix="klipper-shared-windows-") as temp:
-        d = Path(temp)
-        stock_raw, stock_wire, rust = (d / name for name in ("stock-raw", "stock-wire", "rust"))
-        lib = d / "libklipper_host_protocol.rlib"
-        common = ["cc", "-O3", "-I", helper, c,
-                  *(helper / f"{src}.c" for src in ("itersolve", "trapq", "kin_extruder"))]
-        subprocess.run([*common, "-o", stock_raw], check=True)
-        subprocess.run([*common, "-DWIRE",
-                        *(helper / f"{src}.c" for src in ("stepcompress", "msgblock", "pyhelper")),
-                        "-lm", "-o", stock_wire], check=True)
-        subprocess.run(["rustc", "--edition=2021", "-O", "--crate-type", "rlib",
-                        "--crate-name", "klipper_host_protocol", ROOT / "src/lib.rs",
-                        "-o", lib], check=True)
-        subprocess.run(["rustc", "--edition=2021", "-O", ROOT / "bench/shared_windows.rs",
-                        "--extern", f"klipper_host_protocol={lib}", "-o", rust], check=True)
+        stock_raw, stock_wire, rust = build(a.upstream, Path(temp))
         raw = compare([stock_raw], [rust])
         wire = compare([stock_wire], [rust, "--wire"])
         assert raw == {"bind": 565, "step": 133188, "commit": 269845, "flush": 3936}
