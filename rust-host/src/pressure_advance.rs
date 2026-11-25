@@ -88,6 +88,36 @@ impl GainCallbacks {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Integrals {
+    base_shift: f64,
+    half_velocity: f64,
+    third_velocity: f64,
+    third_accel: f64,
+    quarter_accel: f64,
+}
+
+impl Integrals {
+    fn new(m: &Segment, gain: f64) -> Self {
+        let vel = m.start_velocity + gain * 2.0 * m.half_acceleration;
+        Self {
+            base_shift: gain * m.start_velocity,
+            half_velocity: 0.5 * vel,
+            third_velocity: (1.0 / 3.0) * vel,
+            third_accel: (1.0 / 3.0) * m.half_acceleration,
+            quarter_accel: 0.25 * m.half_acceleration,
+        }
+    }
+
+    fn integrate(self, m: &Segment, mut base: f64, start: f64, end: f64, offset: f64) -> f64 {
+        let (from, to) = (start.max(0.0), end.min(m.duration));
+        base += self.base_shift;
+        let i = |t: f64| t * (base + t * (self.half_velocity + t * self.third_accel));
+        let w = |t: f64| t * t * (0.5 * base + t * (self.third_velocity + t * self.quarter_accel));
+        (w(to) - w(from)) - offset * (i(to) - i(from))
+    }
+}
+
 impl Advance {
     /// A time-ordered gain change list, in the same clock domain as the
     /// extrusion trajectory. A move uses the gain active at its phase start.
@@ -123,7 +153,11 @@ impl Advance {
         i.checked_sub(1).map_or(0.0, |i| self.changes[i].1)
     }
 
-    fn phase_gains(&self, segs: &[Segment]) -> Vec<f64> {
+    fn prepare_phases<T>(
+        &self,
+        segs: &[Segment],
+        mut prepare: impl FnMut(&Segment, f64) -> T,
+    ) -> Vec<T> {
         if self.half == 0.0 {
             return Vec::new();
         }
@@ -136,23 +170,10 @@ impl Advance {
                 while let Some(&(_, active)) = next_change.next_if(|&&(at, _)| at <= m.at) {
                     gain = active;
                 }
-                if m.direction[1] == 0.0 {
-                    0.0
-                } else {
-                    gain
-                }
+                let effective = if m.direction[1] == 0.0 { 0.0 } else { gain };
+                prepare(m, effective)
             })
             .collect()
-    }
-
-    fn integrate(m: &Segment, gain: f64, mut base: f64, start: f64, end: f64, offset: f64) -> f64 {
-        let (from, to) = (start.max(0.0), end.min(m.duration));
-        base += gain * m.start_velocity;
-        let vel = m.start_velocity + gain * 2.0 * m.half_acceleration;
-        let accel = m.half_acceleration;
-        let i = |t: f64| t * (base + t * (0.5 * vel + t * ((1.0 / 3.0) * accel)));
-        let w = |t: f64| t * t * (0.5 * base + t * ((1.0 / 3.0) * vel + t * (0.25 * accel)));
-        (w(to) - w(from)) - offset * (i(to) - i(from))
     }
 
     /// Interpolate a prepared E trajectory. X is filament position and Y's
@@ -187,40 +208,33 @@ impl Advance {
         let m = pick(segs, &head, &tail, k);
         let lookup = |i| {
             let phase = pick(segs, &head, &tail, i);
-            (phase, self.gain_for(phase))
+            (phase, Integrals::new(phase, self.gain_for(phase)))
         };
         Ok(Some(self.sample_relative(lookup, k, time - m.at)?))
     }
 
     fn sample_relative<'a>(
         &self,
-        lookup: impl Fn(isize) -> (&'a Segment, f64),
+        lookup: impl Fn(isize) -> (&'a Segment, Integrals),
         k: isize,
         local: f64,
     ) -> Result<f64, Error> {
-        let (m, gain) = lookup(k);
+        let (m, coeff) = lookup(k);
         let base = m.position[0];
         if self.half == 0.0 {
             return Ok(base + (m.start_velocity + m.half_acceleration * local) * local);
         }
         let (mut left, mut right) = (local - self.half, local + self.half);
-        let mut area = Self::integrate(m, gain, 0.0, left, local, left);
-        area -= Self::integrate(m, gain, 0.0, local, right, right);
+        let mut area = coeff.integrate(m, 0.0, left, local, left);
+        area -= coeff.integrate(m, 0.0, local, right, right);
         let mut budget = MAX_PHASES_PER_SAMPLE;
         let mut idx = k;
         while left < 0.0 {
             budget = budget.checked_sub(1).ok_or(Error::TooManyPhases)?;
             idx -= 1;
-            let (prev, gain) = lookup(idx);
+            let (prev, coeff) = lookup(idx);
             left += prev.duration;
-            area += Self::integrate(
-                prev,
-                gain,
-                prev.position[0] - base,
-                left,
-                prev.duration,
-                left,
-            );
+            area += coeff.integrate(prev, prev.position[0] - base, left, prev.duration, left);
         }
         idx = k;
         let mut m = m;
@@ -228,9 +242,9 @@ impl Advance {
             budget = budget.checked_sub(1).ok_or(Error::TooManyPhases)?;
             right -= m.duration;
             idx += 1;
-            let (next, gain) = lookup(idx);
+            let (next, coeff) = lookup(idx);
             m = next;
-            area -= Self::integrate(m, gain, m.position[0] - base, 0.0, right, right);
+            area -= coeff.integrate(m, m.position[0] - base, 0.0, right, right);
         }
         let sample = base + area * self.inverse_half_squared;
         if !sample.is_finite() {
@@ -265,11 +279,12 @@ impl Advance {
         let mut solver = Solver::new(Axis::X, distance, [initial, 0., 0.])?;
         let head = idle(first.at - 1.0, 1.0, first.position[0]);
         let tail = idle(last.end(), 1.0, last.local(last.duration)[0]);
-        let gains = self.phase_gains(segs);
+        let coefficients = self.prepare_phases(segs, Integrals::new);
+        let inactive = Integrals::new(&head, 0.0);
         let lookup = |i: isize| {
             (
                 pick(segs, &head, &tail, i),
-                gains.get(i as usize).copied().unwrap_or(0.0),
+                coefficients.get(i as usize).copied().unwrap_or(inactive),
             )
         };
         let mut out = Vec::new();
@@ -366,6 +381,36 @@ mod tests {
     }
 
     #[test]
+    fn prepared_integrals_keep_stock_operation_order() {
+        for sv in [-23.7, -0.0, 0.0007, 38.6] {
+            for accel in [-1715.5, -0.0, 0.31, 166.53] {
+                let mut m = idle(0.0, 0.25, 0.0);
+                m.start_velocity = sv;
+                m.half_acceleration = accel;
+                for gain in [0.0, 0.021, 0.0773] {
+                    let prepared = Integrals::new(&m, gain);
+                    for (mut base, start, end, offset) in [
+                        (0.0, -0.012, 0.017, -0.012),
+                        (-0.0, 0.0, 0.0, 0.013),
+                        (-0.25, 0.201, 0.332, 0.29),
+                    ] {
+                        let actual = prepared.integrate(&m, base, start, end, offset);
+                        base += gain * m.start_velocity;
+                        let vel = m.start_velocity + gain * 2.0 * m.half_acceleration;
+                        let i = |t: f64| t * (base + t * (0.5 * vel + t * ((1.0 / 3.0) * accel)));
+                        let w = |t: f64| {
+                            t * t * (0.5 * base + t * ((1.0 / 3.0) * vel + t * (0.25 * accel)))
+                        };
+                        let (from, to) = (start.max(0.0), end.min(m.duration));
+                        let expected = (w(to) - w(from)) - offset * (i(to) - i(from));
+                        assert_eq!(actual.to_bits(), expected.to_bits());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn prepared_gains_match_queries_at_exact_phase_boundaries() {
         let a = Advance::new(0.08, &[(1.0, 0.1), (2.0, 0.2), (2.5, 0.0), (4.0, 0.4)]).unwrap();
         let phases: Vec<_> = [
@@ -384,7 +429,7 @@ mod tests {
             phase
         })
         .collect();
-        let prepared = a.phase_gains(&phases);
+        let prepared = a.prepare_phases(&phases, |_, gain| gain);
         assert_eq!(prepared, [0.0, 0.0, 0.1, 0.2, 0.0, 0.0, 0.4]);
         assert_eq!(
             prepared,
@@ -392,7 +437,7 @@ mod tests {
         );
         assert!(Advance::new(0.0, &[(0.0, 0.1)])
             .unwrap()
-            .phase_gains(&phases)
+            .prepare_phases(&phases, |_, gain| gain)
             .is_empty());
     }
 }

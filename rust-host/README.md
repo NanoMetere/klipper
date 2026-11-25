@@ -1434,6 +1434,16 @@ taskset -c 2 python3 bench/preview_cli_timing.py \
   --tools --rounds 50 --moves 2500
 ```
 
+The iterative solver also prepares pressure-integration terms once per
+phase, without changing the order of floating-point operations. On two
+45-pair reruns of the same 2,500-move CLI job against
+`3af52d0d33ea2c45859f2f53863f957b4b3a6b7c`, the paired median elapsed
+reduction with one worker was 2.9% and 3.9% (33/45 and 36/45 wins).
+With four workers on four CPUs, it was 2.7% and 0.9% (28/45 and 23/45
+wins), a smaller and less stable effect. All 21,683 timed records and
+the complete JSON file remained identical. This is additional offline
+preview processing improvement, not a real-print speed measurement.
+
 ## Offline Classic CAN packetization
 
 `can` splits a bounded Klipper write into up-to-eight-byte data fields
