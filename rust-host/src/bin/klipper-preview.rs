@@ -26,7 +26,7 @@ use std::{
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 const HELP: &str =
-    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] [--mesh-profile NAME] [--mixed-plan] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
+    "Usage: klipper-preview [--expand-macros] [--virtual-sd] [--tool-temps T:C,...] [--initial-tool T] [--lane-workers N] [--mesh-profile NAME] [--mixed-plan] [--fixed-pressure-script] ROOT ENTRY.cfg SCRIPT.gcode HZ X Y Z [INCLUDE.cfg ...]\n\
     ROOT contains config files; ENTRY and INCLUDE paths must be relative to it.\n\
     List every included file needed, including matches for wildcard includes.\n\
     XYZ is the explicit virtual starting position in millimeters.\n\
@@ -38,7 +38,8 @@ const HELP: &str =
     --mesh-profile uses a saved Klipper mesh for this offline preview.\n\
     --mixed-plan prints separate motion stages around stock heater commands; waits remain unresolved.
 \
-    A multi-tool mixed plan requires --initial-tool and every modeled tool temperature.";
+    A multi-tool mixed plan requires --initial-tool and every modeled tool temperature.\n\
+    --fixed-pressure-script previews positive ADVANCE-only changes on one configured extruder with --tool-temps 0:C.";
 
 fn read(path: &Path, limit: usize) -> Result<String, String> {
     let status = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -295,6 +296,7 @@ fn run() -> Result<(), String> {
     let mut workers = None;
     let mut mesh_profile = None;
     let mut mixed_plan = false;
+    let mut fixed_pressure = false;
     let mut args = args.as_slice();
     while let Some(flag) = args.first() {
         if flag == "--expand-macros" && !expand_macros {
@@ -324,6 +326,8 @@ fn run() -> Result<(), String> {
             args = &args[1..];
         } else if flag == "--mixed-plan" && !mixed_plan {
             mixed_plan = true;
+        } else if flag == "--fixed-pressure-script" && !fixed_pressure {
+            fixed_pressure = true;
         } else if flag == "--mesh-profile" && mesh_profile.is_none() {
             mesh_profile = Some(args.get(1).ok_or("missing bed mesh profile name")?.as_str());
             args = &args[1..];
@@ -367,6 +371,17 @@ fn run() -> Result<(), String> {
     }
 
     let parsed = config::parse(&files, entry).map_err(|e| format!("configuration: {e:?}"))?;
+    if fixed_pressure
+        && (mixed_plan
+            || initial_tool.is_some()
+            || workers.is_some()
+            || parsed.values("toolchanger").is_some()
+            || !tool_temps
+                .as_ref()
+                .is_some_and(|t| t.len() == 1 && t.contains_key(&0)))
+    {
+        return Err("--fixed-pressure-script requires only a single modeled T0 temperature and no toolchanger, mixed plan, or parallel lane options".into());
+    }
     let sd = if virtual_sd {
         let mut job = SdJob::select(script.as_bytes());
         let parse = |e| format!("virtual SD: {e:?}");
@@ -568,7 +583,29 @@ fn run() -> Result<(), String> {
         time_origin: 0.,
         hz,
     };
-    let (motors, duration, tools) = if let Some(temps) = tool_temps {
+    let (motors, duration, tools) = if fixed_pressure {
+        let mut profiles =
+            tool_profiles::read(&parsed).map_err(|e| format!("tool profile: {e:?}"))?;
+        if profiles.len() != 1 || profiles[0].section != "extruder" {
+            return Err("--fixed-pressure-script requires exactly one [extruder]".into());
+        }
+        let profile = profiles.pop().unwrap();
+        let lane = profile
+            .lane(tool_temps.unwrap()[&0], 0.)
+            .map_err(|e| format!("tool profile: {e:?}"))?;
+        if lane.extruder.pressure_advance.is_none() {
+            return Err("--fixed-pressure-script requires positive configured pressure advance and smoothing".into());
+        }
+        let trace = machine
+            .trace_with_extruder(script, start, 2., clock, 0, [false; 3], Some(lane.extruder))
+            .map_err(|e| format!("preview: {e:?}"))?;
+        let commands = trace.extruder.ok_or("missing modeled extrusion lane")?;
+        (
+            trace.motors,
+            trace.duration,
+            Some(vec![(profile, (0, commands))]),
+        )
+    } else if let Some(temps) = tool_temps {
         let profiles = tool_profiles::read(&parsed).map_err(|e| format!("tool profiles: {e:?}"))?;
         if profiles.len() != temps.len() {
             return Err("supply one modeled temperature for every configured tool".into());
@@ -615,7 +652,14 @@ fn run() -> Result<(), String> {
                 }
             })
             .collect();
-        (Some("lane_selection_without_docking"), Some(lanes))
+        (
+            Some(if fixed_pressure {
+                "fixed_extruder_without_docking"
+            } else {
+                "lane_selection_without_docking"
+            }),
+            Some(lanes),
+        )
     } else {
         (None, None)
     };

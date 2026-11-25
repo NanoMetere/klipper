@@ -64,7 +64,8 @@ def fixture():
             yield cmd + sep + sep.join(f"{a}{values[a]:.6f}" for a in axes)
 
 
-def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=None, arc_resolution=None, extend_directive=None):
+def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=None,
+          arc_resolution=None, extend_directive=None, pressure_command=None):
     from extras.gcode_move import GCodeMove
     from gcode import GCodeDispatch
     from kinematics.extruder import PrinterExtruder
@@ -79,7 +80,7 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
     handlers = dispatch.gcode_handlers
     def register(name, f, *args, **kwargs):
         if name in ("SET_GCODE_OFFSET", "SAVE_GCODE_STATE", "RESTORE_GCODE_STATE",
-                    "SET_VELOCITY_LIMIT"):
+                    "SET_VELOCITY_LIMIT", "SET_PRESSURE_ADVANCE"):
             handlers[name] = lambda params: f(dispatch._get_extended_params(params))
         else:
             handlers[name] = f
@@ -138,6 +139,11 @@ def stock(lines, emit, settings=None, emit_profiles=None, simulated_extruder=Non
     ToolHeadCommandHelper(SimpleNamespace(get_printer=lambda: SimpleNamespace(
         lookup_object=lambda name: head if name == "toolhead" else dispatch,
         set_rollover_info=printer.set_rollover_info)))
+    if pressure_command is not None:
+        head.register_lookahead_callback = lambda cb: ToolHead.register_lookahead_callback(head, cb)
+        head.flush_step_generation = lambda: (_ for _ in ()).throw(
+            AssertionError("fixed smoothing must not flush step generation"))
+        register("SET_PRESSURE_ADVANCE", lambda gcmd: pressure_command(head, gcmd))
     root_transform = SimpleNamespace(move=lambda p, v: ToolHead.move(head, p, v),
                                      get_position=lambda: head.commanded_pos[:])
     objects["toolhead"] = root_transform

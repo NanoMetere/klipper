@@ -76,6 +76,10 @@ is limited to the tested dense debug-file workload.
   runtime motion limits (`M204` and `SET_VELOCITY_LIMIT`), and fixed
   saved bed meshes in the offline CLI. A motion-only
   job can use distinct extruder lanes for sparse physical tool IDs.
+  An explicit single-extruder option also preserves the stock queue
+  boundary for positive pressure-advance gain updates with fixed
+  smoothing. It matched 3,792 timed records across four shaped stock
+  reference runs; no live calibration or smoothing changes are supported.
 - Tool exchange: the inert program separates outbound and inbound
   extrusion, verifies supplied pickup evidence and validates the
   staged coordinates before exposing a trace. The modern stock Klippy

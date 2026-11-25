@@ -7,6 +7,7 @@ use crate::{
     step_times::{self, Axis, Event, Solver},
     trajectory::{Segment, Trajectory},
 };
+use std::collections::VecDeque;
 
 const MAX_CHANGES: usize = 128;
 const MAX_PHASES_PER_SAMPLE: usize = 256;
@@ -22,6 +23,69 @@ pub struct Advance {
     half: f64,
     inverse_half_squared: f64,
     changes: Vec<(f64, f64)>,
+}
+
+/// Offline counterpart to a stock look-ahead timing callback. Sequence
+/// points count all accepted motions, including extrusion-only moves.
+pub(crate) struct GainCallbacks {
+    smooth_time: f64,
+    pending: VecDeque<(usize, f64)>,
+    changes: Vec<(f64, f64)>,
+}
+
+impl GainCallbacks {
+    pub(crate) fn new(base: &Advance, at: f64) -> Result<Self, Error> {
+        let &[(start, gain)] = base.changes.as_slice() else {
+            return Err(Error::Settings);
+        };
+        if base.half <= 0.0 || gain <= 0.0 || start > at {
+            return Err(Error::Settings);
+        }
+        Ok(Self {
+            smooth_time: base.half * 2.0,
+            pending: VecDeque::new(),
+            changes: vec![(start, gain)],
+        })
+    }
+
+    pub(crate) fn defer(&mut self, target: usize, gain: f64) -> Result<(), Error> {
+        if let Some((last, older)) = self.pending.back_mut() {
+            if *last == target {
+                *older = gain;
+                return Ok(());
+            }
+        }
+        if self.pending.len() + self.changes.len() >= MAX_CHANGES {
+            return Err(Error::Settings);
+        }
+        self.pending.push_back((target, gain));
+        Ok(())
+    }
+
+    pub(crate) fn resolve(&mut self, passed: usize, at: f64) -> Result<(), Error> {
+        if let Some(&(target, _)) = self.pending.front() {
+            if target < passed {
+                return Err(Error::Time);
+            }
+            if target == passed {
+                let (_, gain) = self.pending.pop_front().unwrap();
+                let previous = self.changes.last_mut().unwrap();
+                if at == previous.0 {
+                    previous.1 = gain;
+                } else if gain != previous.1 {
+                    self.changes.push((at, gain));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Result<Advance, Error> {
+        if !self.pending.is_empty() {
+            return Err(Error::Time);
+        }
+        Advance::new(self.smooth_time, &self.changes)
+    }
 }
 
 impl Advance {

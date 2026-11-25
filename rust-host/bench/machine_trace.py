@@ -92,6 +92,39 @@ G1 X5 Y4 E.11
 M400
 """
 
+RUNTIME_PRESSURE = """G90
+M83
+SET_PRESSURE_ADVANCE ADVANCE=.034
+G1 X5 Y3 Z.3 E.19 F1600
+SET_PRESSURE_ADVANCE ADVANCE=.065
+SET_PRESSURE_ADVANCE ADVANCE=.084
+G1 X9 Y4 E.22
+G1 X11 Y5 E.15
+G4 P37
+SET_PRESSURE_ADVANCE ADVANCE=.052
+G1 X12 Y7 E.12 F1900
+G1 E-.04 F300
+SET_PRESSURE_ADVANCE ADVANCE=.061
+G1 X15 Y8 E.18 F1800
+G1 X14 Y9 E.13
+M400
+"""
+
+
+def rolling_pressure():
+    # Hundreds of short moves drive the real lazy look-ahead path.
+    script = ["G90", "M83", "SET_PRESSURE_ADVANCE ADVANCE=.034"]
+    for i in range(320):
+        if i == 51:
+            script.extend(("SET_PRESSURE_ADVANCE ADVANCE=.065",
+                           "SET_PRESSURE_ADVANCE ADVANCE=.084"))
+        if i == 151:
+            script.extend(("M400", "SET_PRESSURE_ADVANCE ADVANCE=.052"))
+        if i == 279:
+            script.append("SET_PRESSURE_ADVANCE ADVANCE=.061")
+        script.append(f"G1 X{10 + (i % 47) * .0625:.4f} Y{12 + (i % 31) * .125:.4f} Z.3 E.003 F2100")
+    return "\n".join((*script, "M400", ""))
+
 
 SHAPES = [
     [(0.0, 1.0), (0.013, 0.8)],
@@ -100,11 +133,11 @@ SHAPES = [
 ]
 
 
-def traced(config_path, c, script, use_extruder, pressure, shaped=False):
+def traced(config_path, c, script, use_extruder, pressure, shaped=False, runtime_pressure=False):
     from configfile import ConfigFileReader, ConfigWrapper
     from kinematics.cartesian import CartKinematics
     from kinematics.corexy import CoreXYKinematics
-    from kinematics.extruder import PrinterExtruder
+    from kinematics.extruder import PrinterExtruder, ExtruderStepper
     from types import SimpleNamespace
     from stepper import parse_step_distance
     reader = ConfigFileReader()
@@ -122,6 +155,7 @@ def traced(config_path, c, script, use_extruder, pressure, shaped=False):
                                                 "minimum_cruise_ratio", "max_z_velocity", "max_z_accel")),
                 start)
     rows = []
+    gains = []
     time = 2.
 
     extruder = None
@@ -148,10 +182,38 @@ def traced(config_path, c, script, use_extruder, pressure, shaped=False):
                 assert extruder is not None
                 extruder.process_move(time, m, 3)
             time = time + m.accel_t + cruise + m.decel_t
+            if runtime_pressure:
+                for callback in m.timing_callbacks:
+                    callback(time)
         time += dwell
 
-    stock(script.splitlines(), False, settings=settings, emit_profiles=output,
-          simulated_extruder=extruder)
+    pressure_command = None
+    if runtime_pressure:
+        import chelper
+        from unittest.mock import patch
+
+        stepper = object.__new__(ExtruderStepper)
+        stepper.name = "extruder"
+        stepper.sk_extruder = object()
+        stepper.pressure_advance = .05
+        stepper.pressure_advance_smooth_time = .04
+
+        def pressure_command(head, command):
+            head.get_last_move_time = lambda: time
+            stepper.printer = SimpleNamespace(
+                lookup_object=lambda name: head,
+                set_rollover_info=lambda *_: None,
+            )
+            ExtruderStepper.cmd_SET_PRESSURE_ADVANCE(stepper, command)
+
+        ffi = SimpleNamespace(extruder_set_pressure_advance=lambda _, *args: gains.append(args))
+        with patch.object(chelper, "get_ffi", return_value=(None, ffi)):
+            stock(script.splitlines(), False, settings=settings, emit_profiles=output,
+                  simulated_extruder=extruder, pressure_command=pressure_command)
+        assert len(gains) == 5 and gains[1][0] == gains[2][0], gains
+    else:
+        stock(script.splitlines(), False, settings=settings, emit_profiles=output,
+              simulated_extruder=extruder)
     elapsed = time - 2.
     shapes = SHAPES if shaped else None
     if raw.has_section("input_shaper"):
@@ -169,7 +231,10 @@ def traced(config_path, c, script, use_extruder, pressure, shaped=False):
                                      distances, (0, 1, 0), strict=True):
         rows.append(("s", axis, *start, distance, time + (.51 if shapes else .01), 20e6, 20, invert))
     if use_extruder:
-        if pressure:
+        if runtime_pressure:
+            rows.append(("g", 0., .05, .04))
+            rows.extend(("g", *entry) for entry in gains)
+        elif pressure:
             rows.extend([("g", 0., .05, .04), ("g", 2.46, .075, .04)])
         rows.append(("s", "e", 0., 0., 0., 0.004, time + .08, 20e6, 20, 1))
     run = subprocess.run([c], text=True, capture_output=True, check=True,
@@ -290,6 +355,39 @@ def main():
             for i, (x, y) in enumerate(zip(want, got, strict=True)):
                 assert x == y, ("runtime velocity limits", kin, i, x, y)
             print(f"Runtime limits, shaped {kin}: {len(got) - 4} exact commands")
+        for kin in ("cartesian", "corexy"):
+            cfg.write_text(CONFIG.format(kinematics=kin))
+            for tag, script in (("boundaries", RUNTIME_PRESSURE), ("rolling", rolling_pressure())):
+                want, want_duration, _ = traced(cfg, c, script, True, True,
+                                                shaped=True, runtime_pressure=True)
+                run = subprocess.run([rust, cfg, "--shape", "--runtime-pressure"],
+                                     input=script, text=True, capture_output=True, check=True)
+                got = run.stdout.splitlines()
+                duration = float(got.pop().split()[1])
+                assert math.isclose(want_duration, duration, abs_tol=1e-12, rel_tol=1e-12)
+                for i, (x, y) in enumerate(zip(want, got, strict=True)):
+                    assert x == y, ("runtime pressure advance", kin, tag, i, x, y)
+                uncued = "\n".join(line for line in script.splitlines()
+                                     if not line.startswith("SET_PRESSURE_ADVANCE")) + "\n"
+                control = subprocess.run([rust, cfg, "--shape", "--runtime-pressure"],
+                                         input=uncued, text=True, capture_output=True, check=True)
+                no_gain_rows = control.stdout.splitlines()
+                assert float(no_gain_rows.pop().split()[1]) == duration
+                stop = [i for i, line in enumerate(got) if line == "end"][2] + 1
+                assert got[:stop] == no_gain_rows[:stop], "gain change must not affect XYZ"
+                assert got[stop:] != no_gain_rows[stop:], "gain change must affect E"
+                print(f"Runtime pressure advance, shaped {kin}, {tag}: {len(got) - 4} exact commands")
+        for args, command in (
+            (("--runtime-pressure",), "SET_PRESSURE_ADVANCE ADVANCE=0"),
+            (("--runtime-pressure",), "SET_PRESSURE_ADVANCE ADVANCE=.1 SMOOTH_TIME=.04"),
+            (("--runtime-pressure",), "SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=.1"),
+            (("--runtime-pressure",), "SET_PRESSURE_ADVANCE ADVANCE=nan"),
+            (("--pressure",), "SET_PRESSURE_ADVANCE ADVANCE=.1"),
+            ((), "SET_PRESSURE_ADVANCE ADVANCE=.1"),
+        ):
+            denied = subprocess.run([rust, cfg, *args], input=f"G90\n{command}\n",
+                                    text=True, capture_output=True)
+            assert denied.returncode and not denied.stdout and "line: 2" in denied.stderr, denied.stderr
         benchmark_shape = ("[input_shaper]\nshaper_freq_x: 56.6\nshaper_type_y: ei\n"
                            "shaper_freq_y: 48.4\n") if a.shape_timing else ""
         cfg.write_text(CONFIG.format(kinematics="corexy") + benchmark_shape)

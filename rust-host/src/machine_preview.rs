@@ -11,7 +11,7 @@ use crate::{
     input_shaper::Shaper,
     input_shaper_defs,
     lookahead::{Limits, Profile},
-    pressure_advance::Advance,
+    pressure_advance::{self, Advance, GainCallbacks},
     step_clock::{self, Clock, Command},
     step_times::{self, Axis, Event, Solver},
     toolchange::{self, split_tool_gcode, ExtruderPositions, SegmentError},
@@ -815,15 +815,29 @@ impl Machine {
         };
         let mut time = at;
         let mut n = 0;
-        let mut append = |o: Output| -> Result<(), Error> {
+        let mut consumed = 0;
+        let mut callbacks: Option<GainCallbacks> = None;
+        let mut append = |o: Output,
+                          time: &mut f64,
+                          consumed: &mut usize,
+                          callbacks: &mut Option<GainCallbacks>,
+                          line|
+         -> Result<(), Error> {
             for m in o.moves {
                 if let Some(queue) = &mut e_queue {
-                    extrusion::append_nominal(queue, time, &m).map_err(Error::Trajectory)?;
+                    extrusion::append_nominal(queue, *time, &m).map_err(Error::Trajectory)?;
                 }
-                append_move(&mut queue, &mut time, &m).map_err(Error::Trajectory)?;
+                append_move(&mut queue, time, &m).map_err(Error::Trajectory)?;
+                *consumed += 1;
+                if let Some(c) = callbacks {
+                    c.resolve(*consumed, *time).map_err(|_| Error::Gcode {
+                        line,
+                        error: gcode::Error::InvalidSession,
+                    })?;
+                }
             }
-            time += o.dwell_seconds.unwrap_or(0.0);
-            if !time.is_finite() || time >= 1e12 {
+            *time += o.dwell_seconds.unwrap_or(0.0);
+            if !time.is_finite() || *time >= 1e12 {
                 return Err(Error::Trajectory(trajectory::Error::Invalid));
             }
             Ok(())
@@ -832,6 +846,28 @@ impl Machine {
             n += 1;
             if n > MAX_LINES {
                 return Err(Error::MaximumLines);
+            }
+            if let Some(gain) = Preview::fixed_pressure_gain(line)
+                .map_err(|error| Error::Gcode { line: n, error })?
+            {
+                let invalid = |_| Error::Gcode {
+                    line: n,
+                    error: gcode::Error::InvalidParameter,
+                };
+                if callbacks.is_none() {
+                    let base = extruder
+                        .as_ref()
+                        .and_then(|e| e.pressure_advance)
+                        .ok_or_else(|| invalid(pressure_advance::Error::Settings))?;
+                    callbacks = Some(GainCallbacks::new(base, at).map_err(invalid)?);
+                }
+                let c = callbacks.as_mut().unwrap();
+                // Match stock's current position when empty, otherwise the
+                // end of the last queued motion, without requesting a flush.
+                c.defer(consumed + preview.queued_moves(), gain)
+                    .map_err(invalid)?;
+                c.resolve(consumed, time).map_err(invalid)?;
+                continue;
             }
             let mut extrusion_error = None;
             let output = preview
@@ -858,15 +894,28 @@ impl Machine {
                     Some(e) => Error::Extrusion(e),
                     None => Error::Gcode { line: n, error },
                 })?;
-            append(output)?;
+            append(output, &mut time, &mut consumed, &mut callbacks, n)?;
         }
         let moves = preview
             .finish()
             .map_err(|error| Error::Gcode { line: n + 1, error })?;
-        append(Output {
-            moves,
-            dwell_seconds: None,
-        })?;
+        append(
+            Output {
+                moves,
+                dwell_seconds: None,
+            },
+            &mut time,
+            &mut consumed,
+            &mut callbacks,
+            n + 1,
+        )?;
+        let runtime_advance = callbacks
+            .map(GainCallbacks::finish)
+            .transpose()
+            .map_err(|_| Error::Gcode {
+                line: n + 1,
+                error: gcode::Error::InvalidSession,
+            })?;
         let mut commands = std::array::from_fn(|_| Vec::new());
         for (motor, output) in commands.iter_mut().enumerate() {
             let (axis, dist, inv) = (
@@ -888,23 +937,25 @@ impl Machine {
             };
         }
         let extruder = match (e_queue, extruder) {
-            (Some(queue), Some(e)) => Some(if let Some(advance) = e.pressure_advance {
-                let raw = advance
-                    .crossings(&queue, e.step_distance)
-                    .map_err(Error::Solver)?;
-                step_clock::encode_trace(clock, &raw, max_error, e.inverse_direction)
-                    .map_err(Error::Clock)?
-            } else {
-                step_lane(
-                    &queue,
-                    Axis::X,
-                    e.step_distance,
-                    [0.0; 3],
-                    clock,
-                    max_error,
-                    e.inverse_direction,
-                )?
-            }),
+            (Some(queue), Some(e)) => Some(
+                if let Some(advance) = runtime_advance.as_ref().or(e.pressure_advance) {
+                    let raw = advance
+                        .crossings(&queue, e.step_distance)
+                        .map_err(Error::Solver)?;
+                    step_clock::encode_trace(clock, &raw, max_error, e.inverse_direction)
+                        .map_err(Error::Clock)?
+                } else {
+                    step_lane(
+                        &queue,
+                        Axis::X,
+                        e.step_distance,
+                        [0.0; 3],
+                        clock,
+                        max_error,
+                        e.inverse_direction,
+                    )?
+                },
+            ),
             _ => None,
         };
         Ok(Trace {

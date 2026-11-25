@@ -1360,6 +1360,28 @@ the full `bench/machine_trace.py` comparison also matched 381 Cartesian
 and 423 CoreXY direction/step records across four lanes, including the
 E lane. No physical material flow was measured.
 
+The optional single-extruder offline mode recognizes
+`SET_PRESSURE_ADVANCE ADVANCE=<positive gain>` with an already-enabled
+fixed smoothing window. Like the pinned stock look-ahead callback, a
+gain starts at the end of the last queued move, or immediately if the
+queue is empty. It does not flush the queue. The reference invokes
+stock's Python handler and timing callback, then sends the resulting
+schedule through the real stock C step solver. Short boundary cases
+matched 342 Cartesian and 382 CoreXY records; rolling 320-move cases
+matched 1,334 and 1,734. Removing the commands left XYZ timing unchanged
+and changed the extruder trace. Named extruders, changing smoothing,
+zero gain, externally scheduled gain changes mixed with these commands,
+and multiple extruders are outside this mode.
+
+```sh
+cargo run --locked --release --bin klipper-preview -- \
+  --fixed-pressure-script --tool-temps 0:210 examples/preview single-pressure.cfg \
+  examples/preview/single-pressure.gcode 20000000 1 1 .2 printer.cfg rails.cfg
+```
+
+The temperature is a modeled input. This is an offline trace, not a
+printer installation or a live calibration command.
+
 The crossing solver now resolves the pressure gain once per ordered
 trajectory phase rather than looking it up inside each integration.
 Eligibility, gain-change boundaries, and floating-point calculation

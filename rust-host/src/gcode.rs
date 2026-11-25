@@ -470,6 +470,38 @@ impl Preview {
         self.line_with(line, |_, _| Ok(()))
     }
 
+    pub(crate) fn queued_moves(&self) -> usize {
+        self.planner.queued()
+    }
+
+    pub(crate) fn fixed_pressure_gain(line: &str) -> Result<Option<f64>, Error> {
+        let line = line.trim_start();
+        if !matches!(line.as_bytes().first(), Some(b'S' | b's')) {
+            return Ok(None);
+        }
+        let prefix = line
+            .split_once(';')
+            .map_or(line, |(prefix, _)| prefix)
+            .trim_end();
+        let end = prefix.find(char::is_whitespace).unwrap_or(prefix.len());
+        if !prefix[..end].eq_ignore_ascii_case("SET_PRESSURE_ADVANCE") {
+            return Ok(None);
+        }
+        if line.len() > MAX_LINE || prefix.contains(['\n', '\r', '\0']) {
+            return Err(Error::InvalidLine);
+        }
+        let args = extended::tokenize(&prefix[end..])?;
+        if args.len() != 1 {
+            return Err(Error::InvalidParameter);
+        }
+        let gain = extended::float(&args, "ADVANCE")?.ok_or(Error::InvalidParameter)?;
+        if gain <= 0.0 {
+            // Turning PA off changes the stock step-generation window.
+            return Err(Error::InvalidParameter);
+        }
+        Ok(Some(gain))
+    }
+
     pub(crate) fn line_with(
         &mut self,
         line: &str,

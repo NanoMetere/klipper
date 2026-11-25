@@ -4,6 +4,61 @@
 use std::{path::Path, process::Command};
 
 #[test]
+fn fixed_pressure_script_is_explicitly_offline_and_single_extruder() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/preview");
+    let run = |flags: &[&str], entry: &str| {
+        Command::new(env!("CARGO_BIN_EXE_klipper-preview"))
+            .args(flags)
+            .arg(&root)
+            .arg(entry)
+            .arg(root.join("single-pressure.gcode"))
+            .args(["20000000", "1", "1", ".2", "printer.cfg", "rails.cfg"])
+            .output()
+            .unwrap()
+    };
+    let reply = run(
+        &["--fixed-pressure-script", "--tool-temps", "0:210"],
+        "single-pressure.cfg",
+    );
+    assert!(
+        reply.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reply.stderr)
+    );
+    let data: serde_json::Value = serde_json::from_slice(&reply.stdout).unwrap();
+    assert_eq!(data["mode"], "offline");
+    assert_eq!(data["tool_mode"], "fixed_extruder_without_docking");
+    assert_eq!(data["extruder_lanes"][0]["extruder"], "extruder");
+    assert!(
+        data["extruder_lanes"][0]["commands"]
+            .as_array()
+            .unwrap()
+            .len()
+            > 10
+    );
+    for (flags, entry) in [
+        (&["--tool-temps", "0:210"][..], "single-pressure.cfg"),
+        (
+            &[
+                "--fixed-pressure-script",
+                "--tool-temps",
+                "0:210",
+                "--mixed-plan",
+            ][..],
+            "single-pressure.cfg",
+        ),
+        (
+            &["--fixed-pressure-script", "--tool-temps", "0:210"][..],
+            "sparse-tool.cfg",
+        ),
+    ] {
+        let denied = run(flags, entry);
+        assert_eq!(denied.status.code(), Some(2));
+        assert!(denied.stdout.is_empty());
+    }
+}
+
+#[test]
 fn previews_fixture_without_hardware_and_rejects_missing_includes() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/preview");
     let run = |files: &[&str]| {

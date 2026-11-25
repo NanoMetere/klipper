@@ -1,0 +1,9 @@
+; Offline-only fixture: keep the smoothing window unchanged.
+G90
+M83
+G1 X5 Y3 Z.3 E.19 F1600
+SET_PRESSURE_ADVANCE ADVANCE=.065
+SET_PRESSURE_ADVANCE ADVANCE=.084
+G1 X9 Y4 E.22
+G1 X11 Y5 E.15
+M400

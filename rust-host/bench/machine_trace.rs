@@ -59,13 +59,14 @@ fn main() {
         min_simulated_temperature: 170.0,
     })
     .unwrap();
-    let pressure = Advance::new(0.04, &[(0.0, 0.05), (2.46, 0.075)]).unwrap();
-    let extra = (has("--extruder") || has("--pressure")).then_some(SimulatedExtruder {
+    let runtime_pa = has("--runtime-pressure");
+    let pressure = Advance::new(0.04, if runtime_pa { &[(0.0, 0.05)] } else { &[(0.0, 0.05), (2.46, 0.075)] }).unwrap();
+    let extra = (has("--extruder") || has("--pressure") || runtime_pa).then_some(SimulatedExtruder {
         geometry: &e,
         temperature: 210.0,
         step_distance: 0.004,
         inverse_direction: true,
-        pressure_advance: has("--pressure").then_some(&pressure),
+        pressure_advance: (has("--pressure") || runtime_pa).then_some(&pressure),
     });
     let started = cpu_ns();
     let trace = machine
