@@ -79,9 +79,7 @@ impl OriginClock {
         deferred: &mut Vec<(usize, f64)>,
     ) -> Result<(), Error> {
         if self.priming {
-            self.move_end = self
-                .move_end
-                .max(0.25_f64.max(0.1_f64.max(self.last_steps) + self.delay()));
+            self.resync_print_time();
             self.priming = false;
         }
         output.push(Event::Profile {
@@ -110,6 +108,24 @@ impl OriginClock {
         Ok(())
     }
 
+    fn resync_print_time(&mut self) {
+        self.move_end = self
+            .move_end
+            .max(0.25_f64.max(0.1_f64.max(self.last_steps) + self.delay()));
+    }
+
+    fn dwell(&mut self, seconds: f64) -> Result<(), Error> {
+        // Stock dwell re-primes the look-ahead and advances only print
+        // time. A dwell itself does not place activity in a step queue.
+        self.priming = true;
+        self.resync_print_time();
+        self.move_end += seconds;
+        if !self.move_end.is_finite() || self.move_end >= 120. {
+            return Err(Error::Inputs);
+        }
+        Ok(())
+    }
+
     fn flush(&mut self, output: &mut Vec<Event>, tail: f64) {
         self.priming = true;
         self.last_steps = self.last_steps.max(self.needs_steps + tail);
@@ -125,7 +141,8 @@ impl OriginClock {
 /// geometries. The only supported device-binding vocabulary is the named
 /// shared stepper with extruder/extruder1, fixed positive smoothing and
 /// positive gain updates when look-ahead holds a move. M400 closes look-ahead
-/// without pacing. A final M400 is mandatory and is followed by the file drain.
+/// without pacing; G4 P schedules a dwell in milliseconds. A final M400 is
+/// mandatory and is followed by the file drain.
 /// Background timer interleavings, homing, shapers and physical I/O are
 /// not modeled. No input is ever sent to a printer.
 pub fn plan(
@@ -232,7 +249,32 @@ pub fn plan(
                 last_was_wait = true;
             }
             None => {
-                let opcode = pure.split_ascii_whitespace().next().ok_or(Error::Inputs)?;
+                let mut words = pure.split_ascii_whitespace();
+                let opcode = words.next().ok_or(Error::Inputs)?;
+                if opcode.eq_ignore_ascii_case("G4") {
+                    let delay = if let Some(word) = words.next() {
+                        let raw = word
+                            .strip_prefix('P')
+                            .or_else(|| word.strip_prefix('p'))
+                            .ok_or(Error::Inputs)?;
+                        let magnitude = raw.strip_prefix('+').unwrap_or(raw);
+                        if words.next().is_some()
+                            || !magnitude.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+                        {
+                            return Err(Error::Inputs);
+                        }
+                        let ms = raw.parse::<f64>().map_err(|_| Error::Inputs)?;
+                        if !ms.is_finite() || ms < 0. {
+                            return Err(Error::Inputs);
+                        }
+                        ms / 1000.
+                    } else {
+                        0.
+                    };
+                    append(preview.finish()?, &mut time)?;
+                    time.dwell(delay)?;
+                    continue;
+                }
                 if ![
                     "G0", "G1", "G90", "G91", "G92", "M82", "M83", "M220", "M221",
                 ]
@@ -301,6 +343,13 @@ mod tests {
             "SET_PRESSURE_ADVANCE EXTRUDER=shared_extruder ADVANCE=.065\nM400",
             "M400\nG1 X11",
             "G28\nM400",
+            "G4 P-1\nM400",
+            "G4 PNaN\nM400",
+            "G4 P1e2\nM400",
+            "G4 S10\nM400",
+            "G4 P1 P2\nM400",
+            "G4 P120000\nM400",
+            "M400\nG4 P5",
         ] {
             assert!(execute(denied).is_err(), "{denied}");
         }

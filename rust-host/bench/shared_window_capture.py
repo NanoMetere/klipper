@@ -147,6 +147,10 @@ def main():
          .replace("G1 X28 Y18 E0.83 F900\n", "G1 X28 Y18 E0.83 F900\nM400\nM400\n", 1)
          .replace("G1 Z1.42 F360\n", "G1 Z1.42 F360\nM400\n", 1),
          (578, 113), 1250, (7079, 101)),
+        ("bounded-dwell", source.replace("M83\n", "G4 P19\nM83\n", 1)
+         .replace("G1 Z1.17 F360\n", "G1 Z1.17 F360\nG4 P37.5\n", 1)
+         .replace("M400\n", "G4\nG4 P11\nM400\n", 1),
+         (578, 113), 1250, (7080, 100)),
     )
     with tempfile.TemporaryDirectory(prefix="klipper-captured-window-") as d:
         temp = Path(d)
@@ -244,12 +248,14 @@ def main():
             mt.write_text(json.dumps(model))
             body.write_text("G28\nM400\n")
             rejected(body, b"Offline preview")
+            body.write_text("G1 X11\nG4 P-1\nM400\n")
+            rejected(body, b"Offline preview")
             symlink = temp / "symlink.gcode"
             symlink.symlink_to(body)
             rejected(symlink, b"non-symlink")
             body.write_bytes(b" " * 65_537)
             rejected(body, b"exceeds 65536 bytes")
-            print("Standalone shared preview matched all eight stock file cases; invalid inputs rejected")
+            print("Standalone shared preview matched all ten stock file cases; invalid inputs rejected")
 
 
 

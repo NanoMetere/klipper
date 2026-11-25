@@ -2089,6 +2089,9 @@ The sample's first line is fixture-only virtual initialization. For your
 input, set the virtual start in the JSON instead of adding a homing or
 position-forcing command. Finish with M400. Intermediate M400 commands
 flush look-ahead but do not introduce wall-clock waits in this offline mode.
+`G4 P<number>` adds a nonnegative decimal dwell in milliseconds to the
+simulated timeline (plain `G4` is zero); neither command pauses the preview.
+The total simulated motion timeline remains under 120 seconds.
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

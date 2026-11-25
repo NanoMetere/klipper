@@ -328,6 +328,9 @@ justify changing either solver. No live performance claim follows.
   waits after XY/E and Z moves. All four lanes match at both tolerances
   (21,738 physical steps per mode). The intermediate waits drain look-ahead
   without pacing or advancing the step-generation boundary in file mode.
+  A fifth job checks leading, fractional mid-job, zero and trailing `G4`
+  dwells with all 21,738 steps matching on all four lanes at both tolerances.
+  Dwell changes simulated timestamps only and does not block the preview.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented
