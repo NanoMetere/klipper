@@ -10,6 +10,10 @@ pub use render::trace_file_debug_shaped;
 pub use render::{trace, MotionTrace, OutputOptions, TraceError};
 #[cfg(feature = "file-debug-preview")]
 pub use render::{trace_file_debug, trace_file_debug_parallel};
+#[cfg(feature = "shaped-file-debug-preview")]
+mod shaped_workers;
+#[cfg(feature = "shaped-file-debug-preview")]
+pub use shaped_workers::trace_file_debug_shaped_parallel;
 
 use crate::{
     extrusion::Extruder,

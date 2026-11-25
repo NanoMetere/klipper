@@ -2,11 +2,13 @@
 // The separate entry leaves the regular preview parser and code generation intact.
 use super::*;
 use klipper_host_protocol::{
-    config, input_shaper::Shaper, shared_debug_plan::trace_file_debug_shaped,
+    config,
+    input_shaper::Shaper,
+    shared_debug_plan::{trace_file_debug_shaped, trace_file_debug_shaped_parallel},
 };
 use std::collections::BTreeMap;
 
-const HELP: &str = "Usage: klipper-shaped-file-debug-preview MODEL.json GCODE SHAPER.cfg\nFixed X/Y offline file-debug preview. SHAPER.cfg is an isolated [input_shaper] section. No device access.";
+const HELP: &str = "Usage: klipper-shaped-file-debug-preview [--lane-workers 4] MODEL.json GCODE SHAPER.cfg\nFixed X/Y offline file-debug preview. SHAPER.cfg is an isolated [input_shaper] section. Default is serial; use four workers only with multiple CPUs. No device access.";
 
 fn run() -> Result<(), String> {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
@@ -14,8 +16,12 @@ fn run() -> Result<(), String> {
         println!("{HELP}");
         return Ok(());
     }
-    let [model, gcode, settings] = &args[..] else {
-        return Err(HELP.into());
+    let (model, gcode, settings, parallel) = match &args[..] {
+        [model, gcode, settings] => (model, gcode, settings, false),
+        [option, count, model, gcode, settings] if option == "--lane-workers" && count == "4" => {
+            (model, gcode, settings, true)
+        }
+        _ => return Err(HELP.into()),
     };
     let raw = read(Path::new(model), MAX_MODEL)?;
     let m: Model = serde_json::from_str(&raw).map_err(|e| format!("Model: {e}"))?;
@@ -35,7 +41,12 @@ fn run() -> Result<(), String> {
         m.min_cruise_ratio,
     )
     .map_err(|e| format!("Motion limits: {e:?}"))?;
-    let t = trace_file_debug_shaped(
+    let predict = if parallel {
+        trace_file_debug_shaped_parallel
+    } else {
+        trace_file_debug_shaped
+    };
+    let t = predict(
         &script,
         m.virtual_start_mm,
         Options {

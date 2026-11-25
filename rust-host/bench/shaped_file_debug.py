@@ -55,7 +55,7 @@ def check_c(exe, rows, stock, xyz, e, hz, shapers, tolerance):
             *map(str, meta["d"]), *(str(int(v)) for v in meta["inverted"])]
     for workers in ("1", "4"):
         assert subprocess.check_output([exe, workers, *args], timeout=10) == text
-    return expected
+    return expected, args, text
 
 
 def normalize(raw, hz):
@@ -84,6 +84,25 @@ def paired(arms, out, expected, rounds):
           f"{rounds} alternating pairs", flush=True)
 
 
+def paired_workers(label, arms, output, expected, rounds):
+    samples = []
+    for i in range(-6, rounds):
+        times = [0] * len(arms)
+        order = [(i+j) % len(arms) for j in range(len(arms))]
+        for j in (order if i % 2 == 0 else reversed(order)):
+            start = perf_counter_ns()
+            with output.open("wb") as f:
+                subprocess.run(arms[j], stdout=f, check=True)
+            times[j] = perf_counter_ns() - start
+            assert output.read_bytes() == expected, (label, i, j)
+        if i >= 0:
+            samples.append(times)
+    ms = [round(median(values)/1e6, 3) for values in zip(*samples)]
+    delta = [round(100*median(row[j]/row[0]-1 for row in samples), 2)
+             for j in range(1, len(arms))]
+    print(f"  {label}: ms {ms}, paired wall change {delta}%", flush=True)
+
+
 def invalid_inputs(cli, model, script, settings, root):
     good = settings.read_text()
     invalid = [
@@ -109,6 +128,10 @@ def invalid_inputs(cli, model, script, settings, root):
     assert attempt.returncode == 2 and not attempt.stdout and b"non-symlink" in attempt.stderr
     attempt = subprocess.run([cli, model, script], capture_output=True, timeout=5)
     assert attempt.returncode == 2 and not attempt.stdout and b"Usage:" in attempt.stderr
+    for workers in ("0", "1", "8", "04", "auto"):
+        attempt = subprocess.run([cli, "--lane-workers", workers, model, script, settings],
+                                 capture_output=True, timeout=5)
+        assert attempt.returncode == 2 and not attempt.stdout and b"Usage:" in attempt.stderr
     script.write_text("M400\n")
     attempt = subprocess.run([cli, model, script, settings], capture_output=True, timeout=5)
     assert attempt.returncode == 2 and not attempt.stdout
@@ -123,10 +146,17 @@ def main(argv):
     p.add_argument("dictionary", type=Path)
     p.add_argument("cli", type=Path)
     p.add_argument("--rounds", type=int, default=0, help="timing pairs for the first shaper setup")
+    p.add_argument("--worker-rounds", type=int, default=0, help="paired serial/worker timings on the first two presets")
+    p.add_argument("--baseline-cli", type=Path, help="prior shaped CLI to time as the first Rust arm")
     p.add_argument("--cores", help="comma-separated Linux CPU affinity")
     a = p.parse_args(argv)
     if not 0 <= a.rounds <= 80:
         p.error("--rounds must be 0–80")
+    if not 0 <= a.worker_rounds <= 200:
+        p.error("--worker-rounds must be 0–200")
+    if a.baseline_cli and not a.worker_rounds:
+        p.error("--baseline-cli requires --worker-rounds")
+    baseline = a.baseline_cli.resolve() if a.baseline_cli else None
     if a.cores:
         os.sched_setaffinity(0, {int(c) for c in a.cores.split(",")})
     upstream, dictionary, cli = (v.resolve() for v in (a.upstream, a.dictionary, a.cli))
@@ -149,7 +179,7 @@ def main(argv):
         exe, model, script, settings, xyz, e, output = (tmp / f for f in
             ("captured-c", "model.json", "moves.gcode", "shape.cfg", "xyz.txt", "e.txt", "out.json"))
         build_c(upstream, exe)
-        if a.rounds:
+        if a.rounds or a.worker_rounds:
             print("Effective Linux affinity:", sorted(os.sched_getaffinity(0)), flush=True)
         examples = list(cases(base_fixture))
         plain = (base_fixture / "path.gcode").read_text()
@@ -168,11 +198,14 @@ def main(argv):
                     rows, stock = run_stock(upstream, dictionary, fixture, tmp, script, tol == 0)
                     _, repeat = run_stock(upstream, dictionary, fixture, tmp, script, tol == 0)
                     assert stock == repeat
-                    expected = check_c(exe, rows, stock, xyz, e, hz, ((x, fx), (y, fy)), tol)
+                    expected, c_args, c_raw = check_c(
+                        exe, rows, stock, xyz, e, hz, ((x, fx), (y, fy)), tol)
                     model_cfg["max_error_ticks"] = tol
                     model.write_text(json.dumps(model_cfg))
                     rust = [cli, model, script, settings]
                     raw = subprocess.check_output(rust, timeout=10)
+                    workers = [cli, "--lane-workers", "4", model, script, settings]
+                    assert subprocess.check_output(workers, timeout=10) == raw, (spec, name, tol)
                     assert normalize(raw, hz) == [lane for lane, _ in expected], (spec, name, tol)
                     count = sum(n for _, n in expected)
                     print(f"{x}{fx}/{y}{fy} {name}, {tol} ticks: {count} exact steps", flush=True)
@@ -181,8 +214,15 @@ def main(argv):
                         native = [sys.executable, Path(__file__).resolve(), "--stock-arm",
                                   upstream, dictionary, fixture, model, script]
                         paired([native, rust], output, raw, a.rounds)
+                    if a.worker_rounds and spec in SHAPERS[:2] and not name.startswith("byte-"):
+                        arms = [rust, workers]
+                        if baseline:
+                            arms.insert(0, [baseline, model, script, settings])
+                        paired_workers("Rust whole CLI", arms, output, raw, a.worker_rounds)
+                        paired_workers("C captured replay", [[exe, n, *c_args] for n in ("1", "4")],
+                                       output, c_raw, a.worker_rounds)
         invalid_inputs(cli, model, script, settings, tmp)
-    print(f"{checked} shaped stock cases, exact C replay and Rust; invalid inputs rejected")
+    print(f"{checked} shaped stock cases, exact C replay and both Rust worker modes; invalid inputs rejected")
 
 
 if __name__ == "__main__":

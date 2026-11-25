@@ -2199,8 +2199,11 @@ cargo run --locked --release --features shaped-file-debug-preview \
 ```
 
 Output uses `klipper.shared-corexy.shaped-file-debug.v1` with the same
-four ordered lanes. The shaped runner is serial; it keeps the stock
-generation and transmission windows separate. Includes, Z shaping,
+four ordered lanes. The shaped runner keeps the stock generation and
+transmission windows separate and defaults to serial execution. Pass
+`--lane-workers 4` before the model path to evaluate independent lanes
+concurrently; use this only on a machine with at least four available
+CPUs. Both modes produce identical output. Includes, Z shaping,
 shaper updates during a job, calibration, and device I/O are outside
 this mode. The ordinary and unshaped previews do not acquire a shaper
 from the new feature.
@@ -2215,6 +2218,10 @@ native C replay of captured windows, and independent Rust output from
 the original G-code. Add `--rounds 20 --cores 0` to time the first shaper
 setup from process startup to identical normalized JSON. As above, this
 compares offline debug tools, not real print duration or two full hosts.
+For within-implementation worker timings on the first two shaper
+setups, add `--worker-rounds 120 --cores 0,1,2,3`. The C counterpart
+replays captured steps; the Rust tool starts from G-code, so their
+absolute times are not directly comparable.
 
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure

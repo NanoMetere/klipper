@@ -149,10 +149,40 @@ pub fn trace_file_debug_shaped(
     wire: OutputOptions,
     shaper: &crate::input_shaper::Shaper,
 ) -> Result<MotionTrace, TraceError> {
-    use crate::{
-        input_shaper::captured::{self, Capture, ReplayError},
-        trajectory::Trapezoid,
-    };
+    use crate::input_shaper::captured;
+    let (events, captures, lanes) = shaped_plan(file, start, options, geometries, wire, shaper)?;
+    let [a, b, z] = captured::replay(
+        shaper,
+        &captures,
+        lanes,
+        wire.clock_hz,
+        wire.max_error_ticks,
+    )
+    .map_err(replay_error)?;
+    let e = solve_e(&events, options.smooth, wire)?;
+    Ok(MotionTrace {
+        lanes: [a, b, z, e],
+    })
+}
+
+#[cfg(feature = "shaped-file-debug-preview")]
+type ShapedPlan = (
+    Vec<Event>,
+    Vec<crate::input_shaper::captured::Capture>,
+    [(Axis, f64, bool); 3],
+);
+
+#[cfg(feature = "shaped-file-debug-preview")]
+#[inline(always)]
+pub(super) fn shaped_plan(
+    file: &str,
+    start: [f64; 3],
+    options: Options,
+    geometries: [&Extruder; 2],
+    wire: OutputOptions,
+    shaper: &crate::input_shaper::Shaper,
+) -> Result<ShapedPlan, TraceError> {
+    use crate::{input_shaper::captured::Capture, trajectory::Trapezoid};
     if !(1.0..=1e9).contains(&wire.clock_hz) || wire.max_error_ticks > 200_000 {
         return Err(TraceError::Options);
     }
@@ -194,24 +224,19 @@ pub fn trace_file_debug_shaped(
             _ => {}
         }
     }
-    let lanes = std::array::from_fn(|i| (axes[i], wire.step_distances[i], wire.invert[i]));
-    let [a, b, z] = captured::replay(
-        shaper,
-        &captures,
-        lanes,
-        wire.clock_hz,
-        wire.max_error_ticks,
-    )
-    .map_err(|e| match e {
+    let lanes: [_; 3] = std::array::from_fn(|i| (axes[i], wire.step_distances[i], wire.invert[i]));
+    Ok((events, captures, lanes))
+}
+
+#[cfg(feature = "shaped-file-debug-preview")]
+pub(super) fn replay_error(e: crate::input_shaper::captured::ReplayError) -> TraceError {
+    use crate::input_shaper::captured::ReplayError;
+    match e {
         ReplayError::Options => TraceError::Options,
         ReplayError::Trajectory(e) => TraceError::Trajectory(e),
         ReplayError::Solver(e) => TraceError::Steps(e),
         ReplayError::Clock(e) => TraceError::Clock(e),
-    })?;
-    let e = solve_e(&events, options.smooth, wire)?;
-    Ok(MotionTrace {
-        lanes: [a, b, z, e],
-    })
+    }
 }
 
 #[cfg(feature = "file-debug-preview")]
@@ -258,7 +283,11 @@ fn solve_xyz(
 }
 
 #[cfg(feature = "file-debug-preview")]
-fn solve_e(events: &[Event], smooth: f64, wire: OutputOptions) -> Result<Vec<Command>, TraceError> {
+pub(super) fn solve_e(
+    events: &[Event],
+    smooth: f64,
+    wire: OutputOptions,
+) -> Result<Vec<Command>, TraceError> {
     let clock = Clock {
         last_encoded: 0,
         time_origin: 0.0,

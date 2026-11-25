@@ -109,14 +109,14 @@ impl WindowSolver {
     }
 }
 
-pub(crate) fn replay(
+pub(crate) fn replay<const N: usize>(
     shaper: &Shaper,
     events: &[Capture],
-    lanes: [(Axis, f64, bool); 3],
+    lanes: [(Axis, f64, bool); N],
     hz: f64,
     error: u32,
-) -> Result<[Vec<Command>; 3], ReplayError> {
-    let mut out = [Vec::new(), Vec::new(), Vec::new()];
+) -> Result<[Vec<Command>; N], ReplayError> {
+    let mut out = std::array::from_fn(|_| Vec::new());
     let clock = Clock {
         last_encoded: 0,
         time_origin: 0.,

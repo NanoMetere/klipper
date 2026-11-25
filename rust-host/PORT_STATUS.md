@@ -27,6 +27,8 @@ them as changes in the elapsed time of a real print.
 | Two GPIO-free software MCUs | 168 → 24 frames, 3.464 → 0.533 ms median enqueue through last software ACK | Same order, same five motor counters; this is Rust before/after framing, not physical transport or stock Klippy |
 | Mixed virtual job across two software MCUs, 39 commands | 39 → 9 frames; host enqueue through ACK 0.967 → 0.278 ms; single-CPU repeat 0.232 → 0.062 ms | 71–73% less enqueue time in this fixture, identical command order and counters, not real print duration |
 | Offline status polling, 8 subscriptions × 12,000 polls | Prior Rust 394.226 → 84.094 ms and 392.586 → 81.125 ms median CPU; 3,432 byte-identical frames | About 79% less CPU by avoiding copies of unchanged fields; synthetic sparse updates, not whole-host, Moonraker frontend or print speed |
+| Offline file-debug, fixed X/Y shaping and shared E, 25 µs tolerance | Stock debug + normalization 199.85–219.43 ms; Rust shaped preview 4.25–5.99 ms median elapsed | Four G-code fixtures, two single-CPU affinity sets, 16 alternating pairs per fixture and affinity; complete JSON identical. Measures the offline tool, not a replacement for the full host. |
+| Offline file-debug, unshaped shared E, zero tolerance | Prior Rust serial mode vs reusing already-validated tick order: 29–36% less whole-process elapsed | The 25 µs case was essentially unchanged. The comparable C lab change offered no benefit over stock C, which does not scan each remaining suffix. |
 
 All figures use the checked-in test fixtures, the same host for both
 sides within a run, and no printing hardware. The platform is Linux
@@ -414,6 +416,12 @@ justify changing either solver. No live performance claim follows.
   limited model. Both figures include startup and output completion.
   These are offline tool turnaround times, not a language or print-speed
   claim. The ordinary preview entry point had no repeatable regression.
+  The separate shaped CLI adds six fixed X/Y presets across 54 tested
+  shape/layout/tolerance combinations. Both selectable Rust worker modes
+  match the original stock ticks and compressed records, including the
+  shared E lane, and a pinned C adapter independently replays captured
+  stock windows. This does not enable Z shaping, runtime shaper updates,
+  calibration, or a hardware run.
 - Transport: frame/identify/clock code and bounded stock Linux PTY
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. A fragmented
