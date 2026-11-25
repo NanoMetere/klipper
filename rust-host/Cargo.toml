@@ -21,6 +21,7 @@ runtime-shaper-preview = ["shaped-file-debug-preview"]
 runtime-shaper-workers = ["runtime-shaper-preview"]
 runtime-mesh-preview = ["runtime-shaper-preview"]
 runtime-pickup-preview = ["runtime-shaper-preview"]
+runtime-pickup-mesh-preview = ["runtime-pickup-preview", "runtime-mesh-preview"]
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
@@ -119,3 +120,7 @@ required-features = ["webhooks", "runtime-mesh-preview"]
 [[bin]]
 name = "klipper-runtime-pickup-preview"
 required-features = ["webhooks", "runtime-pickup-preview"]
+
+[[bin]]
+name = "klipper-runtime-pickup-mesh-preview"
+required-features = ["webhooks", "runtime-pickup-mesh-preview"]

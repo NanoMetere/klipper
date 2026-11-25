@@ -262,3 +262,11 @@ mod runtime_pickup;
 #[cfg(feature = "runtime-pickup-preview")]
 #[allow(unused_imports)]
 pub(crate) use runtime_pickup::entry as entry_runtime_pickup;
+
+#[cfg(feature = "runtime-pickup-mesh-preview")]
+#[allow(dead_code)]
+#[path = "support/runtime_pickup_mesh_entry.rs"]
+mod runtime_pickup_mesh;
+#[cfg(feature = "runtime-pickup-mesh-preview")]
+#[allow(unused_imports)]
+pub(crate) use runtime_pickup_mesh::entry as entry_runtime_pickup_mesh;

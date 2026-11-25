@@ -2311,6 +2311,24 @@ python3 bench/runtime_pickup.py UPSTREAM UPSTREAM/out/klipper.dict \
 The fixture compares all four lanes with stock and pinned native C
 replay. Add `--rounds 16 --core 0` for same-output offline timing.
 
+To preview the same pickup with one active saved mesh, select the
+separate combined command. It accepts the same two mesh configuration
+formats as `klipper-runtime-mesh-preview` and the pressure-advance
+controls of `klipper-runtime-pickup-preview`. It changes no production
+defaults.
+
+```sh
+cargo run --locked --release --features runtime-pickup-mesh-preview \
+  --bin klipper-runtime-pickup-mesh-preview -- MODEL.json GCODE SHAPER.cfg MESH.cfg PROFILE
+python3 bench/runtime_pickup_mesh.py UPSTREAM UPSTREAM/out/klipper.dict \
+  target/release/klipper-runtime-pickup-mesh-preview
+```
+
+The combined fixture checks stock, Rust and pinned C output for mesh
+load, offset, clear and reload across a shared-extruder A/B/A sequence
+with disabled or positive pressure advance. Use `--rounds 16 --core 0`
+for identical-output offline timing.
+
 The model covers CoreXY with two
 logical extrusion queues and one shared E lane, fixed positive pressure
 smoothing, and motion and queue switches supported by the offline planner.

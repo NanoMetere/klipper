@@ -658,6 +658,9 @@ pub use runtime_shaper::trace_file_debug_runtime_mesh;
 #[cfg(feature = "runtime-pickup-preview")]
 pub use runtime_shaper::trace_file_debug_runtime_pickup;
 
+#[cfg(feature = "runtime-pickup-mesh-preview")]
+pub use runtime_shaper::trace_file_debug_runtime_pickup_mesh;
+
 #[cfg(test)]
 mod tests {
     use super::*;

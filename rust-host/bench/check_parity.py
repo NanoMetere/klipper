@@ -191,6 +191,12 @@ def main():
                        "klipper-runtime-pickup-preview", "--target-dir", runtime_pickup]))
         phases.append(("stock_runtime_pickup_preview", [sys.executable, ROOT/"bench/runtime_pickup.py",
                        upstream, dictionary, runtime_pickup / "release/klipper-runtime-pickup-preview"]))
+        runtime_pickup_mesh = target / "runtime-pickup-mesh-preview"
+        phases.append(("build_runtime_pickup_mesh_preview", ["cargo", "build", "--locked",
+                       "--release", "--features", "runtime-pickup-mesh-preview", "--bin",
+                       "klipper-runtime-pickup-mesh-preview", "--target-dir", runtime_pickup_mesh]))
+        phases.append(("stock_runtime_pickup_mesh_preview", [sys.executable, ROOT/"bench/runtime_pickup_mesh.py",
+                       upstream, dictionary, runtime_pickup_mesh / "release/klipper-runtime-pickup-mesh-preview"]))
         phases.append(("step_wire", [sys.executable, ROOT/"bench/step_wire.py", upstream,
                                      dictionary, examples/"step_wire_replay"]))
         phases.append(("mcu_config_payloads", [sys.executable, ROOT/"bench/mcu_config.py", upstream,
