@@ -9,6 +9,7 @@ pub enum Command<'a> {
     /// Stock ignores M73 without P. R (estimated minutes) is not displayed.
     Progress(Option<f64>),
     Message(Option<&'a str>),
+    ExtendedMessage(Option<String>),
 }
 
 /// The bounded, unnumbered subset used by the offline preview. For M117
@@ -26,7 +27,18 @@ pub fn parse(line: &str) -> Result<Option<Command<'_>>, Error> {
     };
     let message = prefix("M117");
     let progress = prefix("M73");
-    if message.is_none() && progress.is_none() {
+    let extended_message = "SET_DISPLAY_TEXT";
+    let extended = raw
+        .split_at_checked(extended_message.len())
+        .filter(|(head, tail)| {
+            head.eq_ignore_ascii_case(extended_message)
+                && tail
+                    .chars()
+                    .next()
+                    .is_none_or(|c| c.is_whitespace() || c == ';')
+        })
+        .map(|(_, tail)| tail);
+    if message.is_none() && progress.is_none() && extended.is_none() {
         return Ok(None);
     }
     if line.len() > MAX_LINE || line.chars().any(|c| c.is_control() && c != '\t') {
@@ -35,6 +47,10 @@ pub fn parse(line: &str) -> Result<Option<Command<'_>>, Error> {
     if let Some(tail) = message {
         let text = tail.strip_prefix(char::is_whitespace).unwrap_or(tail);
         return Ok(Some(Command::Message((!text.is_empty()).then_some(text))));
+    }
+    if let Some(tail) = extended {
+        let mut params = super::extended::display_args(tail)?;
+        return Ok(Some(Command::ExtendedMessage(params.remove("MSG"))));
     }
     let words = super::parse(raw)?.ok_or(Error::InvalidLine)?;
     words.allow(b"PRC")?;
@@ -68,6 +84,7 @@ impl Display {
             }
             Some(Command::Progress(None)) => {}
             Some(Command::Message(text)) => self.message = text.map(str::to_owned),
+            Some(Command::ExtendedMessage(text)) => self.message = text,
             None => return Ok(false),
         }
         Ok(true)

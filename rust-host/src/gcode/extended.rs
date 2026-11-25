@@ -142,15 +142,29 @@ pub(super) fn float(args: &BTreeMap<String, String>, key: &str) -> Result<Option
 }
 
 pub(super) fn tokenize(text: &str) -> Result<BTreeMap<String, String>, Error> {
+    tokenize_with(text, |c| c == '#', true)
+}
+
+pub(super) fn display_args(text: &str) -> Result<BTreeMap<String, String>, Error> {
+    // Stock extended commands accept both comment introducers outside
+    // quotes and the last duplicate field wins.
+    tokenize_with(text, |c| matches!(c, '#' | ';'), false)
+}
+
+fn tokenize_with(
+    text: &str,
+    comment: impl Fn(char) -> bool,
+    reject_duplicate: bool,
+) -> Result<BTreeMap<String, String>, Error> {
     let mut args = BTreeMap::new();
     let mut chars = text.chars().peekable();
     while let Some(&c) = chars.peek() {
         if c.is_whitespace() {
             chars.next();
-        } else if c == '#' {
+        } else if comment(c) {
             break;
         } else {
-            let token = word(&mut chars)?;
+            let token = word(&mut chars, &comment)?;
             let (key, val) = token.split_once('=').ok_or(Error::InvalidParameter)?;
             if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
                 return Err(Error::InvalidParameter);
@@ -158,6 +172,7 @@ pub(super) fn tokenize(text: &str) -> Result<BTreeMap<String, String>, Error> {
             if args
                 .insert(key.to_ascii_uppercase(), val.to_owned())
                 .is_some()
+                && reject_duplicate
             {
                 return Err(Error::DuplicateParameter);
             }
@@ -166,10 +181,10 @@ pub(super) fn tokenize(text: &str) -> Result<BTreeMap<String, String>, Error> {
     Ok(args)
 }
 
-fn word(chars: &mut Peekable<Chars<'_>>) -> Result<String, Error> {
+fn word(chars: &mut Peekable<Chars<'_>>, comment: &impl Fn(char) -> bool) -> Result<String, Error> {
     let mut token = String::new();
     while let Some(&c) = chars.peek() {
-        if c.is_whitespace() || c == '#' {
+        if c.is_whitespace() || comment(c) {
             break;
         }
         chars.next();

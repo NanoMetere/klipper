@@ -30,6 +30,15 @@ def fixture():
         (11, True, .40, "M73 P-.0"),
         (18, True, .50, None),
         (19, False, .55, None),
+        (19.1, False, .55, 'SET_DISPLAY_TEXT MSG=""'),
+        (19.2, False, .55, 'SET_DISPLAY_TEXT msg="A; # B" ; Ignore'),
+        (19.3, False, .55, r'SET_DISPLAY_TEXT MSG=Hello\ world # Ignore'),
+        (19.4, False, .55, 'SET_DISPLAY_TEXT MSG=One MSG=Two'),
+        (19.5, False, .55, 'SET_DISPLAY_TEXT MSG=ok;ignore'),
+        (19.6, False, .55, 'SET_DISPLAY_TEXT MSG=매크로'),
+        (19.7, False, .55, 'SET_DISPLAY_TEXT MSG more'),
+        (19.8, False, .55, 'SET_DISPLAY_TEXT'),
+        (19.9, False, .55, 'SET_DISPLAY_TEXT MSG="unterminated'),
     )
     rng = random.Random(11329)
     for i in range(280):
@@ -45,7 +54,12 @@ def stock(upstream, rows):
     now, printing, sd = 0., False, None
     dispatch = object.__new__(GCodeDispatch)
     dispatch.gcode_handlers = {}
-    dispatch.register_command = lambda name, command, **_: dispatch.gcode_handlers.update({name: command})
+    def register(name, handler, **_):
+        if name == "SET_DISPLAY_TEXT":
+            dispatch.gcode_handlers[name] = lambda cmd: handler(dispatch._get_extended_params(cmd))
+        else:
+            dispatch.gcode_handlers[name] = handler
+    dispatch.register_command = register
     dispatch.error = CommandError
     dispatch.is_printer_ready = True
     dispatch._respond_error = lambda _: None
@@ -86,6 +100,7 @@ def motion(cli):
         control = run(simple)
         mixed = run([*simple[:3], "M117 G1 X190 E20 ; do not move",
                      "M73 P40 R2", *simple[3:4], "M117 Layer 3",
+                     'SET_DISPLAY_TEXT MSG="G1 X190; E30" # text',
                      *simple[4:], "M73 P100", "M117"])
         assert mixed == control, "display lines alter the timed motion trace"
         result = json.loads(mixed)

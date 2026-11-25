@@ -154,8 +154,8 @@ is limited to the tested dense debug-file workload.
   experiments; software-only motion with deterministic clocks and
   fault injection, including two independent peers. No SocketCAN or
   real printer sessions are used.
-- Slicer display metadata: bounded `M73` and `M117` are inert in
-  motion previews. The read-only display fixture matches the pinned
+- Slicer display metadata: bounded `M73`, `M117` and `SET_DISPLAY_TEXT`
+  are inert in motion previews. The read-only display fixture matches the pinned
   stock progress and message behavior without a real display or UI.
 - State: virtual job/SD/control boundaries, read-only status snapshots
   and connection-pair tests. Pinned Moonraker client components

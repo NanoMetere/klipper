@@ -106,8 +106,10 @@ impl State {
     /// Evaluate one traditional line. Reject unsupported/ambiguous input rather
     /// than silently ignoring it. Errors leave coordinate state untouched.
     pub fn apply(&mut self, line: &str) -> Result<Effect, Error> {
-        if matches!(line.trim_start().as_bytes().first(), Some(b'M' | b'm'))
-            && display::parse(line)?.is_some()
+        if matches!(
+            line.trim_start().as_bytes().first(),
+            Some(b'M' | b'm' | b'S' | b's')
+        ) && display::parse(line)?.is_some()
         {
             return Ok(Effect::None);
         }
