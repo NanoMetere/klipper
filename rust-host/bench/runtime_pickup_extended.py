@@ -15,6 +15,21 @@ from shared_window_capture import ROOT, PIN, ATTRS, flatten_file, run_stock
 ALT = "alternate_surface"
 
 
+def pickup_arcs(to_b, to_a, extrusion_mode):
+    # The first extrusion after each pickup is a helical arc. Activation
+    # zeros logical E, so the second arc distinguishes M82 from M83.
+    second_e = ".40" if extrusion_mode == "M82" else ".15"
+    return (
+        f"{extrusion_mode}\nG17\nG1 X20 Y20 Z1.5 E.25 F840\n"
+        + to_b
+        + "G3 X36 Y20 I8 J0 Z1.60 E.25 F840\n"
+        + f"G2 X20 Y20 I-8 J0 Z1.50 E{second_e} F840\n"
+        + to_a
+        + "G2 X36 Y20 I8 J0 Z1.55 E.25 F840\n"
+        + f"G3 X20 Y20 I-8 J0 Z1.45 E{second_e} F840\n"
+    )
+
+
 def main(argv):
     if len(argv) == 6 and argv[0] == "--stock-arm":
         stock_arm(*(Path(v).resolve() for v in argv[1:]), schema=SCHEMA)
@@ -105,28 +120,36 @@ def main(argv):
         g,settings,m,x,y=[t/s for s in ('input.gcode','shape.cfg','model.json','xyz.txt','e.txt')]
         settings.write_text(CONFIG0)
         pa = "SET_PRESSURE_ADVANCE EXTRUDER=shared_extruder "
-        for rounds in (4, 16):
+        cases = [(4, None), (16, None)]
+        if args.arcs:
+            cases.extend(((1, "M83"), (1, "M82")))
+        for rounds, arc_extrusion_mode in cases:
             base = cfgbase
             initial = .04
             script = START + f"BED_MESH_PROFILE LOAD={NAME}\nG90\nM83\n"
             expected = [(.04,.04)]
             for hop in range(rounds):
-                first = ("G1 X21 Y17 Z1.2 E.5 F780\nG1 X31 Y22 Z1.2 E.7 F840\n"
-                         + "".join(f"G1 X{(27 if i%2 else 28)+hop*.001:.5f} Y{24+i*.14:.5f} Z1.2 E.019 F960\n"
-                                   for i in range(11)))
-                second = ("G1 X49 Y39 Z1.4 E.8 F960\nG1 X28 Y50 Z1.25 E.91 F840\n"
-                          + "".join(f"G1 X{(27 if i%2 else 28)+hop*.001:.5f} Y{43+i*.14:.5f} Z1.25 E.019 F960\n"
-                                    for i in range(11)) + "G1 E-.27 F840\n")
                 a = pickup("extruder1", .06, PROFILE1, True)
                 b = pickup("extruder", .085, PROFILE0, True)
                 a = a.replace(PROFILE1, f"BED_MESH_PROFILE LOAD={ALT}\n"+PROFILE1, 1)
                 b = b.replace(PROFILE0, f"BED_MESH_PROFILE LOAD={NAME}\n"+PROFILE0, 1)
                 a = a.replace(pa+"ADVANCE=0.06",pa+"ADVANCE=.06 SMOOTH_TIME=.075",1)
                 b = b.replace(pa+"ADVANCE=0.085",pa+"ADVANCE=.085 SMOOTH_TIME=.025",1)
-                script += first + a + second + b
+                if arc_extrusion_mode:
+                    script += pickup_arcs(a, b, arc_extrusion_mode)
+                else:
+                    first = ("G1 X21 Y17 Z1.2 E.5 F780\nG1 X31 Y22 Z1.2 E.7 F840\n"
+                             + "".join(f"G1 X{(27 if i%2 else 28)+hop*.001:.5f} Y{24+i*.14:.5f} Z1.2 E.019 F960\n"
+                                       for i in range(11)))
+                    second = ("G1 X49 Y39 Z1.4 E.8 F960\nG1 X28 Y50 Z1.25 E.91 F840\n"
+                              + "".join(f"G1 X{(27 if i%2 else 28)+hop*.001:.5f} Y{43+i*.14:.5f} Z1.25 E.019 F960\n"
+                                        for i in range(11)) + "G1 E-.27 F840\n")
+                    script += first + a + second + b
                 expected.extend(((.06,.075),(.085,.025)))
             expected = tuple(expected)
-            if args.arcs:
+            if arc_extrusion_mode:
+                script += "M400\n"
+            elif args.arcs:
                 script += ("G1 X20 Y20 Z1.5 E.25 F830\n"
                            "G17\nG3 X25 Y20 I2.5 J0 Z1.55 E.20 F840\n"
                            "G2 X20 Y20 I-2.5 J0 Z1.50 E.20 F840\n"
@@ -140,6 +163,8 @@ def main(argv):
                 for line in script.splitlines())+"\n"
             g.write_text(script)
             label = f"{rounds}-aba-loops"
+            if arc_extrusion_mode:
+                label += f"-interleaved-arcs-{arc_extrusion_mode}"
             print(label, len(script.splitlines()), len(script.encode()), "lines/bytes", flush=True)
             for tol in (0,int(hz*.000025)):
                 cfg.write_text(base + explicit)
@@ -193,6 +218,10 @@ def main(argv):
                         [*parallel_args, path, *names], timeout=25) == data
                     if args.fast_json:
                         assert subprocess.check_output([*fast_args, path, *names], timeout=25) == data
+                if arc_extrusion_mode:
+                    print(label, tol, sum(a for _, a in lanes),
+                          "steps; pinned stock, native C 1/4, and Rust exact", flush=True)
+                    continue  # Keep timing and size-bound cases identical to the released benchmark.
                 cfg.write_text(base + explicit)
                 narrow_case = rounds == 4 and not args.arcs
                 cap = 512 if narrow_case else 1024
